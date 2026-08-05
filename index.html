@@ -2865,6 +2865,56 @@ function refresh(){ if(STATE.master){ recompute(); diagnostics(); renderPage(); 
 
 // ---- History store ----
 const SNAP_FIELDS = ['units','orders_count','revenue_gross','refunds','revenue','revenue_ex','mkt_fee','affiliate','shop_ads','buying','shipping','oper','ads','ad_sales','total_cost','net_profit_ex','net_vat_due'];
+async function cloudSaveHistoryNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    await cloudEnsureAccount();
+    // daily entries only ever get ADDED/overwritten by the app (never individually
+    // deleted) so upsert-by-key is safe and avoids re-writing a growing table every save
+    const dailyRows = Object.entries(HIST.daily).map(([k,v]) => {
+      const p = k.indexOf('|'); const channel = k.slice(0,p), date = k.slice(p+1);
+      return { account_id: CUR_ACCT, channel, date, revenue: v.rev, units: v.units, refunds: v.refunds||0, orders: v.orders };
+    });
+    for(let i=0;i<dailyRows.length;i+=500){
+      const { error } = await sb.from('history_daily').upsert(dailyRows.slice(i,i+500), {onConflict:'account_id,channel,date'});
+      if(error) throw error;
+    }
+    // snapshots are a small capped set (max 36) that DOES get pruned locally - delete+
+    // reinsert so aged-out ones don't orphan in the cloud
+    const { error: delErr } = await sb.from('history_snapshots').delete().eq('account_id', CUR_ACCT);
+    if(delErr) throw delErr;
+    if(HIST.snapshots.length){
+      const snapRows = HIST.snapshots.map(s => ({
+        id: s.id, account_id: CUR_ACCT, saved_at: s.savedAt, from_date: s.from || null, to_date: s.to || null,
+        channels: s.channels, skus: s.skus || null
+      }));
+      const { error } = await sb.from('history_snapshots').insert(snapRows);
+      if(error) throw error;
+    }
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (history) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveHistory = debounce(cloudSaveHistoryNow, 600);
+async function cloudSyncHistory(){
+  if(!window.sb) return;
+  try{
+    const { data: dailyData, error: dErr } = await sb.from('history_daily').select('*').eq('account_id', CUR_ACCT);
+    if(dErr) throw dErr;
+    const { data: snapData, error: sErr } = await sb.from('history_snapshots').select('*').eq('account_id', CUR_ACCT).order('id', {ascending:true});
+    if(sErr) throw sErr;
+    if((dailyData && dailyData.length) || (snapData && snapData.length)){
+      const daily = {};
+      for(const r of (dailyData||[])) daily[r.channel+'|'+r.date] = { rev: r.revenue, units: r.units, refunds: r.refunds, orders: r.orders };
+      const snapshots = (snapData||[]).map(s => ({ id: s.id, savedAt: s.saved_at, from: s.from_date, to: s.to_date, channels: s.channels, skus: s.skus }));
+      HIST = { daily, snapshots };
+      if(STATE.page === 'reports') renderReports();
+    } else if(Object.keys(HIST.daily).length || HIST.snapshots.length){
+      cloudSaveHistory();
+    }
+  }catch(e){ console.warn('cloud sync (history) pull failed:', e); }
+}
+
 function saveHistoryNow(){
   if(!STATE.master) return false;
   // merge per-day data (channel|date keyed - re-saving the same period overwrites, so no double counting)
@@ -2901,6 +2951,7 @@ function saveHistoryNow(){
     for(const s of HIST.snapshots.slice(0,-3)) delete s.skus;
     try{ store.set(lsKey(LS_HIST), JSON.stringify(HIST)); }catch(e2){ return false; }
   }
+  cloudSaveHistory();
   return true;
 }
 function historyDailyByCh(){
@@ -4542,6 +4593,7 @@ function renderReports(){
   tb.querySelectorAll('[data-hdel]').forEach(b => b.addEventListener('click', () => {
     HIST.snapshots = HIST.snapshots.filter(s => String(s.id) !== b.dataset.hdel);
     store.set(lsKey(LS_HIST), JSON.stringify(HIST));
+    cloudSaveHistory();
     renderReports();
   }));
 }
@@ -4795,6 +4847,12 @@ document.getElementById('rsGo').addEventListener('click', () => {
   if(doHist){
     HIST = {daily:{}, snapshots:[]};
     store.set(lsKey(LS_HIST), JSON.stringify(HIST));
+    // full wipe - daily uses upsert (never deletes), so clear the cloud tables directly
+    // rather than relying on cloudSaveHistory() to reconcile an empty local HIST
+    if(window.sb){
+      sb.from('history_daily').delete().eq('account_id', CUR_ACCT).then(()=>{});
+      sb.from('history_snapshots').delete().eq('account_id', CUR_ACCT).then(()=>{});
+    }
   }
   if(doMaster){
     clearMasterProducts();
@@ -5162,7 +5220,7 @@ function switchAccount(id){
   restoreSkuMap();
   loadStock();
   // background: cloud copy wins over local/built-in once each arrives
-  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks();
+  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
   if(STATE.raw.master.length) STATE.master = buildMaster();
   renderAcctSelect();
@@ -5210,7 +5268,7 @@ function startApp(){
   restoreSkuMap();
   loadStock();
   // background: cloud copy wins over local/built-in once each arrives
-  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks();
+  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory();
   (async () => {
     await restoreFileRows();
     if(Object.keys(STATE.fileRows || {}).length){
