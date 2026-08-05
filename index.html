@@ -264,6 +264,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     </form>
   </div>
 </div>
+<div id="cloudSyncBadge" class="cloud-sync-badge idle" style="position:fixed;bottom:14px;right:14px;z-index:9000;background:#1f2d40;color:#fff;padding:6px 12px;border-radius:20px;font-size:11px;font-family:Arial,Helvetica,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.25);opacity:.9">☁ Synced</div>
 <div id="dragOverlay">Drop files to load</div>
 
 <div class="app">
@@ -2421,6 +2422,88 @@ function computeShopify(){
 // ================= master persistence =================
 const LS_MASTER = 'mcpd_master';
 const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit'];
+// ==================== CLOUD SYNC (Supabase) ====================
+// Mirrors local saves into the instasales.* tables so nothing is local-only. Local
+// storage/IndexedDB stay as a fast cache + offline fallback; the CLOUD copy is
+// authoritative - on load, if the cloud already has data for this account, it wins
+// over whatever local/built-in data was shown first.
+function debounce(fn, ms){ let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+const numOrNull = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
+function setSyncBadge(state){
+  const el = document.getElementById('cloudSyncBadge'); if(!el) return;
+  el.className = 'cloud-sync-badge ' + state;
+  el.textContent = state === 'saving' ? '☁ Saving…' : state === 'error' ? '⚠ Sync failed - retrying' : '☁ Synced';
+}
+async function cloudEnsureAccount(){
+  try{
+    const name = (ACCOUNTS.find(a => a.id === CUR_ACCT) || {}).name || CUR_ACCT;
+    await sb.from('accounts').upsert({ id: CUR_ACCT, name });
+  }catch(e){ /* non-fatal - table writes below will just fail loudly if this never worked */ }
+}
+
+async function cloudSaveMasterNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    await cloudEnsureAccount();
+    const rows = (STATE.raw.master || []).map(r => ({
+      account_id: CUR_ACCT,
+      platform: (r.platform || 'tiktok'),
+      name: r.Name ? String(r.Name).slice(0, 300) : null,
+      sku: r.sku || null, asin: r.asin || null, product_id: r.productid || null,
+      country: r.country || null, currency: r.currency || null,
+      buying_cost_per_unit: numOrNull(r.buying_cost_per_unit),
+      operational_cost_per_unit: numOrNull(r.operational_cost_per_unit),
+      shipping_cost_per_unit: numOrNull(r.shipping_cost_per_unit),
+      referral_pct: numOrNull(r['Refferal fee %'] != null ? r['Refferal fee %'] : r['Referral fee %']),
+      affiliate_pct: numOrNull(r.affiliate_pct), shopads_pct: numOrNull(r.shopads_pct),
+      regulatory_pct: numOrNull(r.regulatory_pct), fixed_fee_per_unit: numOrNull(r.fixed_fee_per_unit),
+      selling_price: numOrNull(r.selling_price)
+    }));
+    const { error: delErr } = await sb.from('master_products').delete().eq('account_id', CUR_ACCT);
+    if(delErr) throw delErr;
+    for(let i = 0; i < rows.length; i += 500){
+      const chunk = rows.slice(i, i + 500);
+      if(!chunk.length) continue;
+      const { error } = await sb.from('master_products').insert(chunk);
+      if(error) throw error;
+    }
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (master products) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveMaster = debounce(cloudSaveMasterNow, 600);
+
+// Pulls this account's master products FROM the cloud in the background (called after
+// the normal local/built-in restore already painted something, so there's no loading
+// flash). If the cloud already has rows, they replace the local/built-in data. If the
+// cloud is empty (first login), pushes whatever's currently loaded UP to the cloud so
+// it becomes the source of truth from now on.
+async function cloudSyncMaster(){
+  if(!window.sb) return;
+  try{
+    const { data, error } = await sb.from('master_products').select('*').eq('account_id', CUR_ACCT);
+    if(error) throw error;
+    if(data && data.length){
+      STATE.raw.master = data.map(r => ({
+        Name: r.name, platform: r.platform, sku: r.sku, asin: r.asin, productid: r.product_id,
+        country: r.country, currency: r.currency,
+        buying_cost_per_unit: r.buying_cost_per_unit, operational_cost_per_unit: r.operational_cost_per_unit,
+        shipping_cost_per_unit: r.shipping_cost_per_unit,
+        'Refferal fee %': r.referral_pct, affiliate_pct: r.affiliate_pct, shopads_pct: r.shopads_pct,
+        regulatory_pct: r.regulatory_pct, fixed_fee_per_unit: r.fixed_fee_per_unit, selling_price: r.selling_price
+      }));
+      STATE.files.master = ['(saved copy)'];
+      STATE.master = buildMaster();
+      const el = document.querySelector('.fs-item[data-t="master"]');
+      if(el){ el.classList.add('ok'); el.querySelector('.check').textContent = '✓'; el.querySelector('.cnt').textContent = `${data.length} rows (cloud)`; }
+      if(STATE.page === 'products') renderProducts();
+      if(STATE.raw.tt_orders.length || STATE.raw.amz_biz.length || STATE.raw.ebay_list.length || STATE.raw.shop_orders.length){ recompute(); renderPage(); }
+    } else if(STATE.raw.master.length){
+      cloudSaveMaster();
+    }
+  }catch(e){ console.warn('cloud sync (master products) pull failed:', e); }
+}
+
 function persistMaster(force){
   if(!STATE.raw.master.length) return;
   if(!force && (STATE.files.master||[])[0] === '(saved copy)') return;
@@ -2430,6 +2513,7 @@ function persistMaster(force){
     return o;
   });
   try{ store.set(lsKey(LS_MASTER), JSON.stringify({savedAt: todayISO(), rows: compact})); }catch(e){}
+  cloudSaveMaster();
 }
 function restoreMaster(){
   try{
@@ -4944,6 +5028,7 @@ function switchAccount(id){
   restoreMaster();
   restoreSkuMap();
   loadStock();
+  cloudSyncMaster();   // background: cloud copy wins over local/built-in once it arrives
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
   if(STATE.raw.master.length) STATE.master = buildMaster();
   renderAcctSelect();
@@ -4990,6 +5075,7 @@ function startApp(){
   restoreMaster();
   restoreSkuMap();
   loadStock();
+  cloudSyncMaster();   // background: cloud copy wins over local/built-in once it arrives
   (async () => {
     await restoreFileRows();
     if(Object.keys(STATE.fileRows || {}).length){
