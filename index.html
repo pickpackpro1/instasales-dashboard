@@ -1539,6 +1539,53 @@ function rebuildFromFileStore(){
     renderPage();
   }
 }
+// ---- cloud sync: uploaded files (per-file rows, largest payloads) ----
+// One cloud row per (file_type, file_name). Upsert whatever is currently loaded, then
+// delete any cloud rows whose (type,name) is no longer present locally - this covers
+// single-file removal, folder removal, and "remove all files" with one code path.
+async function cloudSaveFileRowsNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    await cloudEnsureAccount();
+    const fr = STATE.fileRows || {};
+    const rows = [];
+    for(const [type, files] of Object.entries(fr)){
+      for(const [name, data] of Object.entries(files)){
+        rows.push({ account_id: CUR_ACCT, file_type: type, file_name: name, rows: data, row_count: (data||[]).length });
+      }
+    }
+    for(let i = 0; i < rows.length; i += 5){   // small chunks - each "row" here is a whole file's data
+      const { error } = await sb.from('uploaded_files').upsert(rows.slice(i, i+5), { onConflict: 'account_id,file_type,file_name' });
+      if(error) throw error;
+    }
+    const { data: cloudFiles, error: listErr } = await sb.from('uploaded_files').select('id, file_type, file_name').eq('account_id', CUR_ACCT);
+    if(listErr) throw listErr;
+    const localKeys = new Set(rows.map(r => r.file_type + '|' + r.file_name));
+    const staleIds = (cloudFiles || []).filter(f => !localKeys.has(f.file_type + '|' + f.file_name)).map(f => f.id);
+    if(staleIds.length) await sb.from('uploaded_files').delete().in('id', staleIds);
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (uploaded files) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveFileRows = debounce(cloudSaveFileRowsNow, 1200);
+async function cloudSyncFileRows(){
+  if(!window.sb) return;
+  try{
+    const { data, error } = await sb.from('uploaded_files').select('file_type, file_name, rows').eq('account_id', CUR_ACCT);
+    if(error) throw error;
+    if(data && data.length){
+      const fr = {};
+      for(const r of data){ if(!fr[r.file_type]) fr[r.file_type] = {}; fr[r.file_type][r.file_name] = r.rows; }
+      STATE.fileRows = fr;
+      await IDB.set(lsKey(LS_FILEROWS), fr);
+      rebuildFromFileStore();
+      STATE.dataSource = 'live';
+      renderPage();
+    } else if(Object.keys(STATE.fileRows || {}).length){
+      cloudSaveFileRows();   // cloud empty but we have local data - bootstrap the cloud
+    }
+  }catch(e){ console.warn('cloud sync (uploaded files) pull failed:', e); }
+}
 // ---- persist the raw uploaded files so they survive a browser close/reopen (per account) ----
 // Stored in IndexedDB (large capacity), NOT localStorage (~5MB cap that big uploads blew past).
 async function persistFileRows(){
@@ -1546,9 +1593,10 @@ async function persistFileRows(){
   try{
     const fr = STATE.fileRows || {};
     store.remove(key);   // clear any legacy localStorage copy
-    if(!Object.keys(fr).length){ await IDB.remove(key); return true; }
+    if(!Object.keys(fr).length){ await IDB.remove(key); cloudSaveFileRows(); return true; }
     const ok = await IDB.set(key, fr);
     if(!ok){ showBanner('⚠ Could not save uploaded files for next session (browser storage blocked). They still work now - re-drop them next time.', 'error'); return false; }
+    cloudSaveFileRows();
     return true;
   }catch(e){ showBanner('⚠ Could not save uploaded files for next session. They still work now - re-drop them next time.', 'error'); return false; }
 }
@@ -5227,6 +5275,7 @@ function switchAccount(id){
   const acct = ACCOUNTS.find(a => a.id === id);
   (async () => {
     await restoreFileRows();
+    cloudSyncFileRows();   // background: cloud copy wins over local once it arrives
     if(Object.keys(STATE.fileRows || {}).length){
       rebuildFromFileStore();   // restore this account's previously-uploaded files
       STATE.dataSource = 'live';
@@ -5271,6 +5320,7 @@ function startApp(){
   cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory();
   (async () => {
     await restoreFileRows();
+    cloudSyncFileRows();   // background: cloud copy wins over local once it arrives
     if(Object.keys(STATE.fileRows || {}).length){
       // rebuild the live P&L from the files remembered from the last session
       rebuildFromFileStore();
