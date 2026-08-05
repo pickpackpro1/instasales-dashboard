@@ -3634,6 +3634,10 @@ async function cloudSaveStockNow(){
   setSyncBadge('saving');
   try{
     await cloudEnsureAccount();
+    // delete-then-reinsert (not upsert) so a product REMOVED locally also disappears from
+    // the cloud - upsert alone would leave deleted entries orphaned there forever.
+    const { error: delErr } = await sb.from('stock').delete().eq('account_id', CUR_ACCT);
+    if(delErr) throw delErr;
     const names = Object.keys(STOCK);
     if(names.length){
       const rows = names.map(n => ({
@@ -3642,7 +3646,7 @@ async function cloudSaveStockNow(){
         actions: STOCK[n].actions || '', alarm: STOCK[n].alarm || ''
       }));
       for(let i=0;i<rows.length;i+=500){
-        const { error } = await sb.from('stock').upsert(rows.slice(i,i+500), {onConflict:'account_id,product_name'});
+        const { error } = await sb.from('stock').insert(rows.slice(i,i+500));
         if(error) throw error;
       }
     }
