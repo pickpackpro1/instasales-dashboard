@@ -2539,10 +2539,43 @@ function restoreMaster(){
 
 // ---- SKU-map persistence (per account, like the master sheet) ----
 const LS_SKUMAP = 'mcpd_skumap';
+async function cloudSaveSkuMapNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    await cloudEnsureAccount();
+    const { error: delErr } = await sb.from('sku_map').delete().eq('account_id', CUR_ACCT);
+    if(delErr) throw delErr;
+    if(STATE.raw.sku_map.length){
+      const { error } = await sb.from('sku_map').insert([{ account_id: CUR_ACCT, data: STATE.raw.sku_map }]);
+      if(error) throw error;
+    }
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (sku_map) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveSkuMap = debounce(cloudSaveSkuMapNow, 600);
+async function cloudSyncSkuMap(){
+  if(!window.sb) return;
+  try{
+    const { data, error } = await sb.from('sku_map').select('*').eq('account_id', CUR_ACCT).order('id', {ascending:false}).limit(1);
+    if(error) throw error;
+    if(data && data.length && data[0].data && data[0].data.length){
+      STATE.raw.sku_map = data[0].data;
+      if(!STATE.fileRows) STATE.fileRows = {};
+      STATE.fileRows.sku_map = {'(saved copy)': data[0].data};
+      STATE.files.sku_map = ['(saved copy)'];
+      if(STATE.page === 'skumgt') renderSkuMgt();
+    } else if(STATE.raw.sku_map.length){
+      cloudSaveSkuMap();
+    }
+  }catch(e){ console.warn('cloud sync (sku_map) pull failed:', e); }
+}
+
 function persistSkuMap(){
   if(!STATE.raw.sku_map.length) return;
   if((STATE.files.sku_map || [])[0] === '(saved copy)') return;
   try{ store.set(lsKey(LS_SKUMAP), JSON.stringify({savedAt: todayISO(), rows: STATE.raw.sku_map})); }catch(e){}
+  cloudSaveSkuMap();
 }
 function restoreSkuMap(){
   try{
@@ -3594,7 +3627,44 @@ const LS_STOCK = 'mcpd_stock';
 let STOCK = {};   // { productName: { daily:{iso:qty}, inventory:num|null, actions:'', alarm:'' } }
 let STOCK_VIEW = 'map';   // 'map' | 'stock'
 function loadStock(){ try{ STOCK = JSON.parse(store.get(lsKey(LS_STOCK))) || {}; }catch(e){ STOCK = {}; } }
-function saveStock(){ try{ store.set(lsKey(LS_STOCK), JSON.stringify(STOCK)); }catch(e){} }
+function saveStock(){ try{ store.set(lsKey(LS_STOCK), JSON.stringify(STOCK)); }catch(e){} cloudSaveStock(); }
+
+async function cloudSaveStockNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    await cloudEnsureAccount();
+    const names = Object.keys(STOCK);
+    if(names.length){
+      const rows = names.map(n => ({
+        account_id: CUR_ACCT, product_name: n,
+        daily: STOCK[n].daily || {}, inventory: numOrNull(STOCK[n].inventory),
+        actions: STOCK[n].actions || '', alarm: STOCK[n].alarm || ''
+      }));
+      for(let i=0;i<rows.length;i+=500){
+        const { error } = await sb.from('stock').upsert(rows.slice(i,i+500), {onConflict:'account_id,product_name'});
+        if(error) throw error;
+      }
+    }
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (stock) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveStock = debounce(cloudSaveStockNow, 600);
+async function cloudSyncStock(){
+  if(!window.sb) return;
+  try{
+    const { data, error } = await sb.from('stock').select('*').eq('account_id', CUR_ACCT);
+    if(error) throw error;
+    if(data && data.length){
+      const obj = {};
+      for(const r of data) obj[r.product_name] = { daily: r.daily || {}, inventory: r.inventory, actions: r.actions || '', alarm: r.alarm || '' };
+      STOCK = obj;
+      if(STATE.page === 'skumgt'){ renderStock(); renderSkuMgt(); }
+    } else if(Object.keys(STOCK).length){
+      cloudSaveStock();
+    }
+  }catch(e){ console.warn('cloud sync (stock) pull failed:', e); }
+}
 function stockProduct(name){ if(!STOCK[name]) STOCK[name] = {daily:{}, inventory:null, actions:'', alarm:''}; return STOCK[name]; }
 
 // read one stock file (dedicated import, bypasses the main detection pipeline)
@@ -4473,13 +4543,43 @@ function renderReports(){
 }
 
 // ---- OpEx ----
+function saveOpex(){ store.set(lsKey(LS_OPEX), JSON.stringify(OPEX)); cloudSaveOpex(); }
+async function cloudSaveOpexNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    await cloudEnsureAccount();
+    const { error: delErr } = await sb.from('opex').delete().eq('account_id', CUR_ACCT);
+    if(delErr) throw delErr;
+    if(OPEX.length){
+      const rows = OPEX.map(o => ({ account_id: CUR_ACCT, name: o.name, amount: o.amt, channel: o.ch || 'all' }));
+      const { error } = await sb.from('opex').insert(rows);
+      if(error) throw error;
+    }
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (opex) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveOpex = debounce(cloudSaveOpexNow, 600);
+async function cloudSyncOpex(){
+  if(!window.sb) return;
+  try{
+    const { data, error } = await sb.from('opex').select('*').eq('account_id', CUR_ACCT);
+    if(error) throw error;
+    if(data && data.length){
+      OPEX = data.map(o => ({ id: o.id, name: o.name, amt: o.amount, ch: o.channel }));
+      renderOpex();
+    } else if(OPEX.length){
+      cloudSaveOpex();
+    }
+  }catch(e){ console.warn('cloud sync (opex) pull failed:', e); }
+}
 function renderOpex(){
   const tb = document.querySelector('#opexTable tbody');
   tb.innerHTML = OPEX.map(o => `<tr><td>${esc(o.name)}</td><td>${o.ch==='all'?'All channels':`<span class="chip ${o.ch}">${CH_NAME[o.ch]}</span>`}</td><td class="num">${fmtGBP(o.amt)}</td><td><button class="btn danger" style="padding:4px 10px;font-size:11px" data-del="${o.id}">✕</button></td></tr>`).join('') || '<tr><td colspan="4" style="color:var(--muted)">No expenses yet</td></tr>';
   document.getElementById('opexTotal').textContent = 'Total: ' + fmtGBP(OPEX.reduce((a,o)=>a+o.amt,0)) + ' / month';
   tb.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
     OPEX = OPEX.filter(o => String(o.id) !== b.dataset.del);
-    store.set(lsKey(LS_OPEX), JSON.stringify(OPEX));
+    saveOpex();
     renderOpex();
   }));
 }
@@ -4548,6 +4648,35 @@ function renderGrow(){
 }
 
 // ---- Tasks ----
+function saveTasks(){ store.set(LS_TASKS, JSON.stringify(TASKS)); cloudSaveTasks(); }
+async function cloudSaveTasksNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    const { error: delErr } = await sb.from('tasks').delete().is('account_id', null);
+    if(delErr) throw delErr;
+    if(TASKS.length){
+      const rows = TASKS.map(t => ({ account_id: null, text: t.text, done: !!t.done }));
+      const { error } = await sb.from('tasks').insert(rows);
+      if(error) throw error;
+    }
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (tasks) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveTasks = debounce(cloudSaveTasksNow, 600);
+async function cloudSyncTasks(){
+  if(!window.sb) return;
+  try{
+    const { data, error } = await sb.from('tasks').select('*').is('account_id', null);
+    if(error) throw error;
+    if(data && data.length){
+      TASKS = data.map(t => ({ id: t.id, text: t.text, done: t.done }));
+      renderTasks();
+    } else if(TASKS.length){
+      cloudSaveTasks();
+    }
+  }catch(e){ console.warn('cloud sync (tasks) pull failed:', e); }
+}
 function renderTasks(){
   const el = document.getElementById('taskList');
   el.innerHTML = TASKS.map(t => `<div class="rank-item" style="gap:12px">
@@ -4557,12 +4686,12 @@ function renderTasks(){
   el.querySelectorAll('[data-tid]').forEach(c => c.addEventListener('change', () => {
     const t = TASKS.find(x => String(x.id) === c.dataset.tid);
     if(t) t.done = c.checked;
-    store.set(LS_TASKS, JSON.stringify(TASKS));
+    saveTasks();
     renderTasks();
   }));
   el.querySelectorAll('[data-tdel]').forEach(b => b.addEventListener('click', () => {
     TASKS = TASKS.filter(x => String(x.id) !== b.dataset.tdel);
-    store.set(LS_TASKS, JSON.stringify(TASKS));
+    saveTasks();
     renderTasks();
   }));
 }
@@ -4942,7 +5071,7 @@ document.getElementById('opexAdd').addEventListener('click', () => {
   const amt = parseFloat(document.getElementById('opexAmt').value);
   if(!name || !isFinite(amt) || amt < 0) return;
   OPEX.push({id:Date.now(), name, amt, ch:document.getElementById('opexCh').value});
-  store.set(lsKey(LS_OPEX), JSON.stringify(OPEX));
+  saveOpex();
   document.getElementById('opexName').value=''; document.getElementById('opexAmt').value='';
   renderOpex();
 });
@@ -4950,7 +5079,7 @@ document.getElementById('taskAdd').addEventListener('click', () => {
   const v = document.getElementById('taskInput').value.trim();
   if(!v) return;
   TASKS.push({id:Date.now(), text:v, done:false});
-  store.set(LS_TASKS, JSON.stringify(TASKS));
+  saveTasks();
   document.getElementById('taskInput').value='';
   renderTasks();
 });
@@ -5028,7 +5157,8 @@ function switchAccount(id){
   restoreMaster();
   restoreSkuMap();
   loadStock();
-  cloudSyncMaster();   // background: cloud copy wins over local/built-in once it arrives
+  // background: cloud copy wins over local/built-in once each arrives
+  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
   if(STATE.raw.master.length) STATE.master = buildMaster();
   renderAcctSelect();
@@ -5075,7 +5205,8 @@ function startApp(){
   restoreMaster();
   restoreSkuMap();
   loadStock();
-  cloudSyncMaster();   // background: cloud copy wins over local/built-in once it arrives
+  // background: cloud copy wins over local/built-in once each arrives
+  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks();
   (async () => {
     await restoreFileRows();
     if(Object.keys(STATE.fileRows || {}).length){
