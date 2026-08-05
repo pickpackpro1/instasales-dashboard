@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
 :root{
   --side:#21aee5; --side-dark:#149bd4; --side-text:#ffffff;
@@ -250,6 +251,19 @@ input[type=range]{accent-color:var(--accent);width:150px}
 </style>
 </head>
 <body>
+<div id="accessGate" style="position:fixed;inset:0;z-index:99999;background:#0f1720;color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,Helvetica,sans-serif">
+  <div style="max-width:340px;width:100%;padding:32px;text-align:center;box-sizing:border-box">
+    <div style="font-size:22px;font-weight:800;margin-bottom:18px">🔒 InstaSales</div>
+    <div id="gateStatus" style="color:#9fb0c3;font-size:14px">Checking access…</div>
+    <form id="gateForm" style="display:none;flex-direction:column;gap:10px" autocomplete="off">
+      <input id="gatePassword" type="password" placeholder="Enter password" autocomplete="new-password"
+        style="padding:12px 14px;border-radius:8px;border:1px solid #2a3b52;background:#16212e;color:#fff;font-size:15px;outline:none;box-sizing:border-box">
+      <button id="gateSubmit" type="submit"
+        style="padding:11px;border-radius:8px;border:none;background:#21aee5;color:#fff;font-weight:700;font-size:14px;cursor:pointer">Enter</button>
+      <div id="gateError" style="display:none;color:#ff8a8a;font-size:12px;margin-top:2px"></div>
+    </form>
+  </div>
+</div>
 <div id="dragOverlay">Drop files to load</div>
 
 <div class="app">
@@ -4969,26 +4983,96 @@ document.getElementById('acctSelect').addEventListener('change', e => {
   }
 });
 
-// init - restore the saved master sheet + previously-uploaded files, open dashboard if data exists
-renderAcctSelect();
-restoreMaster();
-restoreSkuMap();
-loadStock();
-(async () => {
-  await restoreFileRows();
-  if(Object.keys(STATE.fileRows || {}).length){
-    // rebuild the live P&L from the files remembered from the last session
-    rebuildFromFileStore();
-    STATE.dataSource = 'live';
-    showPage('dashboard');
-    showBanner('Your previously-uploaded files were restored from your last session. Drop new files anytime to update - use WorkSpace → "Remove all files" to clear them.', 'success');
-  } else if(histHasData()){
-    showPage('dashboard');
-    showBanner('Showing saved history. Drop new export files anywhere (or via WorkSpace) to load fresh data - it will be added to history automatically.');
+// init - restore the saved master sheet + previously-uploaded files, open dashboard if data exists.
+// Gated behind the access-gate below: this only runs once the password check has passed.
+function startApp(){
+  renderAcctSelect();
+  restoreMaster();
+  restoreSkuMap();
+  loadStock();
+  (async () => {
+    await restoreFileRows();
+    if(Object.keys(STATE.fileRows || {}).length){
+      // rebuild the live P&L from the files remembered from the last session
+      rebuildFromFileStore();
+      STATE.dataSource = 'live';
+      showPage('dashboard');
+      showBanner('Your previously-uploaded files were restored from your last session. Drop new files anytime to update - use WorkSpace → "Remove all files" to clear them.', 'success');
+    } else if(histHasData()){
+      showPage('dashboard');
+      showBanner('Showing saved history. Drop new export files anywhere (or via WorkSpace) to load fresh data - it will be added to history automatically.');
+    } else {
+      showPage('workspace');
+    }
+  })();
+}
+
+// ---- Cloud access gate ----
+// A real Supabase session is required for Row Level Security to work at all, but this
+// app has no user accounts - "signInAnonymously" just gives the browser a session token
+// (invisible to the visitor, no extra screen). The actual gate is the shared password:
+// only once verify_access_password() succeeds does that session get marked "verified" in
+// the database, which is what every table's RLS policy actually checks. Returning visitors
+// on the same browser skip straight past the password prompt (am_i_verified() catches it).
+const SUPABASE_URL = 'https://rkeqyydekyiahlnyovvs.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJrZXF5eWRla3lpYWhsbnlvdnZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyOTUyMDUsImV4cCI6MjA5OTg3MTIwNX0.sLvdxlKaRKOeLTvhTRbEL8F2mZYu2gmc4hkn51eyyQs';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { db: { schema: 'instasales' } });
+window.sb = sb;   // reused by the sync layer (next phase)
+
+function showGate(mode, message){
+  const el = document.getElementById('accessGate');
+  const status = document.getElementById('gateStatus');
+  const form = document.getElementById('gateForm');
+  const err = document.getElementById('gateError');
+  el.style.display = 'flex';
+  if(mode === 'checking'){
+    status.style.display = 'block'; form.style.display = 'none';
+    status.textContent = message || 'Checking access…';
   } else {
-    showPage('workspace');
+    status.style.display = 'none'; form.style.display = 'flex';
+    if(message){ err.textContent = message; err.style.display = 'block'; } else { err.style.display = 'none'; }
+    document.getElementById('gatePassword').focus();
   }
-})();
+}
+function hideGate(){ document.getElementById('accessGate').style.display = 'none'; }
+
+async function initAccessGate(){
+  showGate('checking', 'Connecting…');
+  try{
+    const { data: { session } } = await sb.auth.getSession();
+    if(!session){
+      const { error } = await sb.auth.signInAnonymously();
+      if(error) throw error;
+    }
+    const { data: verified, error: vErr } = await sb.rpc('am_i_verified');
+    if(vErr) throw vErr;
+    if(verified){ hideGate(); startApp(); return; }
+    showGate('password');
+  }catch(e){
+    showGate('password', 'Connection issue - you can still try the password.');
+  }
+}
+
+document.getElementById('gateForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const pwEl = document.getElementById('gatePassword');
+  const pw = pwEl.value;
+  if(!pw) return;
+  const btn = document.getElementById('gateSubmit');
+  btn.disabled = true; btn.textContent = 'Checking…';
+  try{
+    const { data: ok, error } = await sb.rpc('verify_access_password', { attempt: pw });
+    if(error) throw error;
+    if(ok){ hideGate(); startApp(); }
+    else { showGate('password', 'Incorrect password - try again.'); pwEl.value = ''; }
+  }catch(e){
+    showGate('password', 'Something went wrong - try again.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Enter';
+  }
+});
+
+initAccessGate();
 </script>
 </body>
 </html>
