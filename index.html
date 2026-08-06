@@ -2489,6 +2489,68 @@ async function cloudEnsureAccount(){
   }catch(e){ /* non-fatal - table writes below will just fail loudly if this never worked */ }
 }
 
+// ---- cloud sync: the account list itself ----
+// Upsert-only (no stale-row cleanup) is correct here: the UI can ADD an account but has no
+// delete-account path, so a cloud row can never be "left behind" by a local deletion.
+async function cloudSaveAccountsNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    const { error } = await sb.from('accounts').upsert(ACCOUNTS.map(a => ({ id: a.id, name: a.name })));
+    if(error) throw error;
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (accounts) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveAccounts = debounce(cloudSaveAccountsNow, 600);
+function saveAccounts(){ store.set('mcpd_accounts', JSON.stringify(ACCOUNTS)); cloudSaveAccounts(); }
+async function cloudSyncAccounts(){
+  if(!window.sb) return;
+  try{
+    const { data, error } = await sb.from('accounts').select('id, name');
+    if(error) throw error;
+    if(!data || !data.length){ cloudSaveAccounts(); return; }   // cloud empty -> bootstrap from local
+    let changed = false;
+    for(const r of data){
+      if(r.id === GLOBAL_SETTINGS_ID) continue;   // internal row, not a real account
+      const existing = ACCOUNTS.find(a => a.id === r.id);
+      if(!existing){ ACCOUNTS.push({ id: r.id, name: r.name }); changed = true; }
+      else if(existing.name !== r.name){ existing.name = r.name; changed = true; }
+    }
+    if(changed){ store.set('mcpd_accounts', JSON.stringify(ACCOUNTS)); renderAcctSelect(); }
+  }catch(e){ console.warn('cloud sync (accounts) pull failed:', e); }
+}
+
+// ---- cloud sync: global (not per-account) settings ----
+// instasales.settings is keyed by account_id, so global prefs live under a reserved
+// account row rather than needing a schema change.
+const GLOBAL_SETTINGS_ID = '__global';
+async function cloudSaveGlobalSettingsNow(){
+  if(!window.sb) return;
+  setSyncBadge('saving');
+  try{
+    await sb.from('accounts').upsert({ id: GLOBAL_SETTINGS_ID, name: 'Global settings' });
+    const data = { dash_kpis: getEnabledKpis() };
+    const { error } = await sb.from('settings').upsert({ account_id: GLOBAL_SETTINGS_ID, data, updated_at: new Date().toISOString() });
+    if(error) throw error;
+    setSyncBadge('idle');
+  }catch(e){ console.warn('cloud sync (settings) failed:', e); setSyncBadge('error'); }
+}
+const cloudSaveGlobalSettings = debounce(cloudSaveGlobalSettingsNow, 600);
+async function cloudSyncGlobalSettings(){
+  if(!window.sb) return;
+  try{
+    const { data, error } = await sb.from('settings').select('data').eq('account_id', GLOBAL_SETTINGS_ID).maybeSingle();
+    if(error) throw error;
+    const d = data && data.data;
+    if(d && Array.isArray(d.dash_kpis) && d.dash_kpis.length){
+      store.set('mcpd_dash_kpis', JSON.stringify(d.dash_kpis));
+      if(STATE.page === 'dashboard') renderPage();
+    } else {
+      cloudSaveGlobalSettings();   // nothing in the cloud yet -> bootstrap from local
+    }
+  }catch(e){ console.warn('cloud sync (settings) pull failed:', e); }
+}
+
 async function cloudSaveMasterNow(){
   if(!window.sb) return;
   setSyncBadge('saving');
@@ -3167,7 +3229,7 @@ const KPI_DEFS = {
 const KPI_ORDER = ['sales','refunds','cogs','referral','shipping','operational','affiliate','shopads','ads','acos','tacos','vat','grossprofit','profit','margin','payouts','units','orders','opex'];
 const KPI_DEFAULT = ['sales','refunds','cogs','referral','ads','acos','tacos','vat','profit','margin'];
 function getEnabledKpis(){ const s = loadLS('mcpd_dash_kpis'); return (Array.isArray(s) && s.length) ? s.filter(k=>KPI_DEFS[k]) : KPI_DEFAULT.slice(); }
-function setEnabledKpis(arr){ try{ store.set('mcpd_dash_kpis', JSON.stringify(arr)); }catch(e){} }
+function setEnabledKpis(arr){ try{ store.set('mcpd_dash_kpis', JSON.stringify(arr)); }catch(e){} cloudSaveGlobalSettings(); }
 function renderDashboard(){
   const useHist = STATE.dataSource === 'history';
   const chans = filteredChannels();
@@ -4864,6 +4926,8 @@ function clearMasterProducts(){
   STATE.master = null;
   // persist a "cleared" marker so the built-in sheet does NOT come back on reload
   store.set(lsKey(LS_MASTER), JSON.stringify({cleared:true, savedAt: todayISO(), rows:[]}));
+  // ...and clear the cloud copy too, or the next load would pull it all straight back
+  if(window.sb) sb.from('master_products').delete().eq('account_id', CUR_ACCT).then(null, e => console.warn('cloud clear (master products) failed:', e));
   const el = document.querySelector('.fs-item[data-t="master"]');
   if(el){ el.classList.remove('ok'); el.querySelector('.check').textContent = '○'; el.querySelector('.cnt').textContent = '-'; }
   if(STATE.raw.tt_orders.length || STATE.raw.amz_biz.length || STATE.raw.ebay_list.length || STATE.raw.shop_orders.length){
@@ -5268,7 +5332,7 @@ function switchAccount(id){
   restoreSkuMap();
   loadStock();
   // background: cloud copy wins over local/built-in once each arrives
-  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory();
+  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncGlobalSettings();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
   if(STATE.raw.master.length) STATE.master = buildMaster();
   renderAcctSelect();
@@ -5301,7 +5365,7 @@ document.getElementById('acctSelect').addEventListener('change', e => {
     const id = name.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'') || ('acct_' + Date.now());
     if(!ACCOUNTS.some(a => a.id === id)){
       ACCOUNTS.push({id, name: name.trim()});
-      store.set('mcpd_accounts', JSON.stringify(ACCOUNTS));
+      saveAccounts();
     }
     switchAccount(id);
   } else {
@@ -5317,7 +5381,8 @@ function startApp(){
   restoreSkuMap();
   loadStock();
   // background: cloud copy wins over local/built-in once each arrives
-  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory();
+  cloudSyncAccounts();   // account list is global - only pulled here, not on every switch
+  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncGlobalSettings();
   (async () => {
     await restoreFileRows();
     cloudSyncFileRows();   // background: cloud copy wins over local once it arrives
