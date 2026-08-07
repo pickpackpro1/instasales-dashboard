@@ -1650,7 +1650,7 @@ async function restoreFileRows(){
 
 // ================= master (verified) =================
 function buildMaster(){
-  const M = {tiktok:{bySku:{}, byPid:{}}, amazon:{byAsin:{}, bySku:{}}, ebay:{byItem:{}}, shopify:{bySku:{}}};
+  const M = {tiktok:{bySku:{}, byPid:{}}, amazon:{byAsin:{}, bySku:{}}, ebay:{byItem:{}, bySku:{}}, shopify:{bySku:{}}};
   let n = 0;
   const all = [];
   for(const r of STATE.raw.master){
@@ -1677,7 +1677,7 @@ function buildMaster(){
     // the two accounts). Accept any amazon/amz/vemart/vefive/amazon2 platform label so Vefive's
     // costs & referral in the master are found by the Amazon 2 channel too.
     if(plat.includes('amazon') || plat.includes('amz') || plat.includes('vemart') || plat.includes('vefive')){ put(M.amazon.byAsin, asin || pid); if(sku) put(M.amazon.bySku, sku); }
-    else if(plat.includes('ebay')){ put(M.ebay.byItem, pid); }
+    else if(plat.includes('ebay')){ put(M.ebay.byItem, pid); if(sku) put(M.ebay.bySku, sku); }
     else if(plat.includes('shopif')){ put(M.shopify.bySku, sku); }
     else { put(M.tiktok.bySku, sku); if(pid){ if(!M.tiktok.byPid[pid]) M.tiktok.byPid[pid] = []; if(!M.tiktok.byPid[pid].includes(sku)) M.tiktok.byPid[pid].push(sku); } }
     n++;
@@ -2239,6 +2239,30 @@ function computeEbay(){
   const M = STATE.master;
   const ebayCostFor = makeEbayResolver(M);
   const canonItem = makeItemCanonicalizer(R.ebay_txn);
+  // Buying cost for an eBay row. When the transaction report told us which VARIATIONS sold
+  // (Custom label -> master SKU), cost each variation at its own price and sum - that is the
+  // real COGS. Only fall back to units x the item-level cost when no variation detail exists,
+  // which is where the "same Item ID, four different costs" ambiguity used to bite.
+  const ebaySkuIdx = (M.ebay && M.ebay.bySku) || {};
+  const skuLookup = {};
+  for(const k of Object.keys(ebaySkuIdx)) skuLookup[String(k).trim().toLowerCase()] = ebaySkuIdx[k];
+  const ebayBuyingFor = (item, row, e) => {
+    const vu = varUnits[item];
+    if(vu){
+      let cost = 0, covered = 0;
+      for(const [lbl, u] of Object.entries(vu)){
+        const ve = skuLookup[String(lbl).trim().toLowerCase()];
+        if(!ve) continue;
+        cost += u * (ve.buying || 0);
+        covered += u;
+      }
+      if(covered > 0){
+        const rest = Math.max((row.units || 0) - covered, 0);   // any units the labels didn't explain
+        return cost + rest * ((e && e.buying) || 0);
+      }
+    }
+    return (row.units || 0) * ((e && e.buying) || 0);
+  };
   const df = STATE.dateFrom, dt = STATE.dateTo;
   const fActive = !!(df || dt);
   const inR = d => { if(!fActive) return true; if(!d) return false; if(df && d < df) return false; if(dt && d > dt) return false; return true; };
@@ -2248,6 +2272,7 @@ function computeEbay(){
   const useDatedListings = !R.ebay_txn.length && datedListings.length > 0;
   if(fActive && !R.ebay_txn.length && !datedListings.length) return null;
   const refundByItem = {}; let refundOther = 0; const daily = {};
+  const varUnits = {};   // item -> { "Custom label": units } for per-variation costing
   const txnOrders = []; const refundsList = [];
   const rangeByItem = {};   // per-item units/revenue/orders from dated transactions
   const txnSeen = new Set();
@@ -2276,6 +2301,16 @@ function computeEbay(){
       const qty = cleanInt(String(r['Quantity']||'').replace(/^--$/,'0'));
       const gross = cleanMoney(r['Gross transaction amount']);
       const item = fixText(r['Item ID']).replace(/^--$/,'');
+      // eBay gives EVERY variation of a listing the same Item ID, but each variation has its
+      // own cost in the master (keyed by its SKU). Keying cost on the Item ID alone therefore
+      // picks one variation's cost at random - e.g. a 10/20/30/50-pack listing has four costs.
+      // The transaction report names the exact variation sold in "Custom label", so record
+      // units per variation and cost them individually further down.
+      { const lbl = fixText(r['Custom label']).replace(/^--$/,'');
+        if(item && lbl && qty > 0){
+          if(!varUnits[item]) varUnits[item] = {};
+          varUnits[item][lbl] = (varUnits[item][lbl] || 0) + qty;
+        } }
       if(date){
         if(!daily[date]) daily[date] = {rev:0, units:0, refunds:0, orders:0};
         daily[date].rev += gross; daily[date].units += qty; daily[date].orders += 1;
@@ -2392,7 +2427,7 @@ function computeEbay(){
     const e = ebayCostFor(item, row.name);
     row.no_cost = !e;
     if(e){
-      row.buying = row.units * e.buying;   // COGS is genuinely per unit
+      row.buying = ebayBuyingFor(item, row, e);   // per variation where known, else per unit
       row.shipping = parcelsOf(row) * e.shipping;   // one parcel per order, not per unit
       row.oper = parcelsOf(row) * e.oper;
     }
@@ -2418,7 +2453,7 @@ function computeEbay(){
     const e = ebayCostFor(item, row.name);
     row.no_cost = !e;
     if(e){
-      row.buying = row.units * e.buying;   // COGS is genuinely per unit
+      row.buying = ebayBuyingFor(item, row, e);   // per variation where known, else per unit
       row.shipping = parcelsOf(row) * e.shipping;   // one parcel per order, not per unit
       row.oper = parcelsOf(row) * e.oper;
       // no Listings-report fee breakdown exists for this item - estimate the marketplace fee
@@ -2979,22 +3014,33 @@ function diagnostics(){
   // The master sheet can hold SEVERAL rows for the same product on the same platform with
   // DIFFERENT costs. buildMaster() keeps whichever was read last, so the P&L silently uses
   // one of them - the figures look fine but aren't reproducible. Surface the clashes.
+  // Group by the SAME key buildMaster() joins on (ASIN/item ID/SKU per platform family) -
+  // NOT by product name. Pack-size variants legitimately share a name while carrying
+  // different costs; only a repeated JOIN KEY can make the P&L silently pick one at random.
   {
-    const norm = s => String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g,' ');
+    const norm = s => String(s == null ? '' : s).trim().toLowerCase();
     const groups = {};
     for(const r of (STATE.raw.master || [])){
-      const nm = norm(r.Name); if(!nm) continue;
-      const k = nm + '||' + norm(r.platform);
-      (groups[k] = groups[k] || []).push(`${+r.buying_cost_per_unit||0}|${+r.shipping_cost_per_unit||0}|${+r.operational_cost_per_unit||0}`);
+      const p = norm(r.platform);
+      const fam = (p.includes('amazon') || p.includes('amz') || p.includes('vemart') || p.includes('vefive')) ? 'amazon'
+                : p.includes('ebay') ? 'ebay' : p.includes('shopif') ? 'shopify' : 'tiktok';
+      // Include the SKU for eBay: one listing (one Item ID) legitimately holds several
+      // variations with different costs, and those are now costed individually from the
+      // transaction report's Custom label. Only a repeated Item ID + SKU is a true duplicate.
+      let key = fam === 'amazon' ? norm(r.asin || r.productid) : fam === 'ebay' ? norm(r.productid) : norm(r.sku);
+      if(fam === 'ebay' && norm(r.sku)) key += '|' + norm(r.sku);
+      if(!key) continue;
+      const g = (groups[fam + '::' + key] = groups[fam + '::' + key] || {list:[], name: fixText(r.Name)});
+      g.list.push(`${+r.buying_cost_per_unit||0}|${+r.shipping_cost_per_unit||0}|${+r.operational_cost_per_unit||0}`);
     }
     const clashes = [];
-    for(const [k, v] of Object.entries(groups)){
-      if(v.length > 1 && new Set(v).size > 1) clashes.push({name: k.split('||')[0], plat: k.split('||')[1], values: [...new Set(v)]});
+    for(const [k, g] of Object.entries(groups)){
+      if(g.list.length > 1 && new Set(g.list).size > 1) clashes.push({key: k, name: g.name, values: [...new Set(g.list)]});
     }
     if(clashes.length){
-      L.push(`  ⚠ ${clashes.length} product(s) appear MORE THAN ONCE on the same platform with DIFFERENT costs (buying|shipping|operational). The last row read wins, so these costs are effectively arbitrary - de-duplicate them in the master sheet:`);
-      for(const c of clashes.slice(0,8)) L.push(`      "${c.name.slice(0,44)}" [${c.plat}] -> ${c.values.join('  vs  ')}`);
-      if(clashes.length > 8) L.push(`      ...and ${clashes.length - 8} more.`);
+      L.push(`  ⚠ ${clashes.length} SKU/ASIN/item ID(s) appear MORE THAN ONCE with DIFFERENT costs (buying|shipping|operational). The last row read wins, so which cost is used is effectively arbitrary - de-duplicate these in the master sheet:`);
+      for(const c of clashes.slice(0,10)) L.push(`      ${c.key}${c.name ? ' ("'+c.name.slice(0,34)+'")' : ''} -> ${c.values.join('  vs  ')}`);
+      if(clashes.length > 10) L.push(`      ...and ${clashes.length - 10} more.`);
     }
   }
   for(const ch of ALL_CH){
