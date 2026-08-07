@@ -2976,6 +2976,27 @@ function computeAmazonTxn(B){
 function diagnostics(){
   const L = ['PARSE & JOIN DIAGNOSTIC'];
   L.push(`Master cost sheet: ${STATE.master.count} product rows (tiktok ${Object.keys(STATE.master.tiktok.bySku).length} / amazon ${Object.keys(STATE.master.amazon.byAsin).length} / ebay ${Object.keys(STATE.master.ebay.byItem).length} / shopify ${Object.keys(STATE.master.shopify.bySku).length})`);
+  // The master sheet can hold SEVERAL rows for the same product on the same platform with
+  // DIFFERENT costs. buildMaster() keeps whichever was read last, so the P&L silently uses
+  // one of them - the figures look fine but aren't reproducible. Surface the clashes.
+  {
+    const norm = s => String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g,' ');
+    const groups = {};
+    for(const r of (STATE.raw.master || [])){
+      const nm = norm(r.Name); if(!nm) continue;
+      const k = nm + '||' + norm(r.platform);
+      (groups[k] = groups[k] || []).push(`${+r.buying_cost_per_unit||0}|${+r.shipping_cost_per_unit||0}|${+r.operational_cost_per_unit||0}`);
+    }
+    const clashes = [];
+    for(const [k, v] of Object.entries(groups)){
+      if(v.length > 1 && new Set(v).size > 1) clashes.push({name: k.split('||')[0], plat: k.split('||')[1], values: [...new Set(v)]});
+    }
+    if(clashes.length){
+      L.push(`  ⚠ ${clashes.length} product(s) appear MORE THAN ONCE on the same platform with DIFFERENT costs (buying|shipping|operational). The last row read wins, so these costs are effectively arbitrary - de-duplicate them in the master sheet:`);
+      for(const c of clashes.slice(0,8)) L.push(`      "${c.name.slice(0,44)}" [${c.plat}] -> ${c.values.join('  vs  ')}`);
+      if(clashes.length > 8) L.push(`      ...and ${clashes.length - 8} more.`);
+    }
+  }
   for(const ch of ALL_CH){
     const rows = STATE.channels[ch];
     if(!rows){ L.push(`${CH_NAME[ch]}: no data loaded`); continue; }
