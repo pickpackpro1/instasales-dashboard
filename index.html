@@ -1736,6 +1736,10 @@ function newRow(channel, key, name, id){
     mkt_fee:0, affiliate:0, shop_ads:0, buying:0, shipping:0, oper:0, ads:0,
     ad_sales:0, clicks:0, impressions:0, no_cost:false};
 }
+// Shipping and operational cost are charged ONCE PER ORDER (one order = one parcel), not
+// per unit - a 3-unit order still ships once. Falls back to units when a report carries no
+// order count at all, so a missing column can never silently book zero shipping.
+const parcelsOf = row => (row.orders_count > 0 ? row.orders_count : row.units);
 function finalizeRows(rows){
   const V = STATE.vat, vDiv = 1 + V.rate;
   const vatOf = g => g - g/vDiv;
@@ -2127,12 +2131,13 @@ function computeAmazon(A){
     const e = M.amazon.byAsin[asin];
     row.no_cost = !e;
     if(e){
-      // costs are per-UNIT in the master (buying_/shipping_/operational_cost_per_unit), so
-      // multiply every one by units (was multiplying shipping/oper by orders -> undercounted
-      // whenever an order had >1 unit).
-      row.buying = row.units * e.buying;
-      row.shipping = row.units * e.shipping;
-      row.oper = row.units * e.oper;
+      row.buying = row.units * e.buying;   // COGS is genuinely per unit
+      // Shipping/operational are ONE charge per ORDER - a multi-unit order still ships as a
+      // single parcel - matching the TikTok engine so channels compare like for like.
+      // Amazon's Business Report has no order IDs, so a multi-ASIN order books one parcel
+      // per ASIN; orders_count ('Total order items') is the closest available basis.
+      row.shipping = parcelsOf(row) * e.shipping;
+      row.oper = parcelsOf(row) * e.oper;
     }
     const rate = (e && e.referral != null) ? e.referral : STATE.amzRef;
     row.mkt_fee = (row.revenue_gross - row.refunds) * rate;
@@ -2197,6 +2202,28 @@ function makeEbayResolver(M){
     return null;
   };
 }
+// The Listings sheet often carries Excel-mangled item IDs ("3.58198E+11") while the
+// transaction report has the same IDs intact. Without this, a mangled listing joins to
+// NOTHING - no orders, no refunds, no costs - so it reports 0 orders and ~100% margin.
+// Rebuild the true ID from the surviving significant digits, accepting only an unambiguous
+// match against the IDs the transaction report actually contains.
+function makeItemCanonicalizer(txnRows){
+  const real = [], seen = new Set();
+  for(const r of (txnRows || [])){
+    const i = fixText(r['Item ID']).replace(/^--$/,'');
+    if(i && /^\d+$/.test(i) && !seen.has(i)){ seen.add(i); real.push(i); }
+  }
+  return raw => {
+    const s = String(raw == null ? '' : raw).trim();
+    if(!s || !/^-?\d(\.\d+)?E[+-]?\d+$/i.test(s)) return s;
+    const n = Number(s);
+    if(!isFinite(n) || n <= 0) return s;
+    const mant = s.split(/[eE]/)[0].replace(/[^0-9]/g, '');
+    const len = String(Math.round(n)).length;
+    const hits = real.filter(k => k.length === len && k.startsWith(mant));
+    return hits.length === 1 ? hits[0] : s;
+  };
+}
 function computeEbay(){
   const R = STATE.raw;
   // Listings Sales Report is no longer mandatory: if the user only has the transaction
@@ -2204,6 +2231,7 @@ function computeEbay(){
   if(!R.ebay_list.length && !R.ebay_txn.length) return null;
   const M = STATE.master;
   const ebayCostFor = makeEbayResolver(M);
+  const canonItem = makeItemCanonicalizer(R.ebay_txn);
   const df = STATE.dateFrom, dt = STATE.dateTo;
   const fActive = !!(df || dt);
   const inR = d => { if(!fActive) return true; if(!d) return false; if(df && d < df) return false; if(dt && d > dt) return false; return true; };
@@ -2257,7 +2285,7 @@ function computeEbay(){
   const dayRows = [];
   if(useDatedListings){
     for(const r of datedListings){
-      const item = fixText(r['eBay item ID']); if(!item) continue;
+      const item = canonItem(fixText(r['eBay item ID'])); if(!item) continue;
       const day = r.__day;
       if(!fullMin || day < fullMin) fullMin = day;
       if(!fullMax || day > fullMax) fullMax = day;
@@ -2311,9 +2339,17 @@ function computeEbay(){
     ['Promoted Offsite','Promoted Offsite - Fees'],
   ];
   const aggL = {};
+  let unjoinableListings = 0;
   for(const r of R.ebay_list){
-    const item = fixText(r['eBay item ID']);
+    const item = canonItem(fixText(r['eBay item ID']));
     if(!item) continue;
+    // An item ID Excel destroyed that we could NOT rebuild joins to nothing - no orders, no
+    // refunds, no costs. Worse, aggL and the txnOnly pass below are meant to be mutually
+    // exclusive (keyed on the same ID), so an unjoinable key makes the SAME sale count twice:
+    // once here and again as a "transaction-only" row. When the transaction report is loaded
+    // it already carries these sales authoritatively, so drop the broken listing row and
+    // surface the count rather than silently inflating revenue.
+    if(/^-?\d(\.\d+)?E[+-]?\d+$/i.test(item) && R.ebay_txn.length){ unjoinableListings++; continue; }
     if(!aggL[item]) aggL[item] = {title: fixText(r['Listing title']), units:0, gross:0, sellCosts:0, adFees:0, fees:{}, adsD:{}};
     const a = aggL[item];
     a.units += cleanInt(r['Quantity sold']);
@@ -2349,9 +2385,9 @@ function computeEbay(){
     const e = ebayCostFor(item, row.name);
     row.no_cost = !e;
     if(e){
-      row.buying = row.units * e.buying;
-      row.shipping = row.units * e.shipping;
-      row.oper = row.units * e.oper;
+      row.buying = row.units * e.buying;   // COGS is genuinely per unit
+      row.shipping = parcelsOf(row) * e.shipping;   // one parcel per order, not per unit
+      row.oper = parcelsOf(row) * e.oper;
     }
     const p = pl[item];
     if(p){ row.ad_sales = p.sales*scale; row.clicks = Math.round(p.clicks*scale); row.impressions = Math.round(p.impressions*scale); }
@@ -2375,9 +2411,9 @@ function computeEbay(){
     const e = ebayCostFor(item, row.name);
     row.no_cost = !e;
     if(e){
-      row.buying = row.units * e.buying;
-      row.shipping = row.units * e.shipping;
-      row.oper = row.units * e.oper;
+      row.buying = row.units * e.buying;   // COGS is genuinely per unit
+      row.shipping = parcelsOf(row) * e.shipping;   // one parcel per order, not per unit
+      row.oper = parcelsOf(row) * e.oper;
       // no Listings-report fee breakdown exists for this item - estimate the marketplace fee
       // the same way Product Economics does (regulatory % of revenue + fixed fee per unit)
       row.mkt_fee = row.revenue_gross * (e.reg != null ? e.reg : 0.0035) + (e.fixedu != null ? e.fixedu : 0.30) * row.units;
@@ -2450,7 +2486,7 @@ function computeEbay(){
   }
 
   const finalized = finalizeRows(rows);
-  return {rows: finalized, extras:{daily, refundOther, txnOrders, refundsList, dayRows, pl, useDatedListings, ppc:ppcExtras, fullSpan:{min:fullMin, max:fullMax}}};
+  return {rows: finalized, extras:{daily, refundOther, txnOrders, refundsList, dayRows, pl, useDatedListings, ppc:ppcExtras, unjoinableListings, fullSpan:{min:fullMin, max:fullMax}}};
 }
 
 // ================= Shopify =================
@@ -2525,14 +2561,14 @@ function computeShopify(){
   }
   for(const s of Object.values(map)){
     const e = s._e;
+    s.orders_count = s._oids.size;   // must precede parcelsOf() below
     if(e){
-      s.buying = s.units * e.buying;
-      s.shipping = s.units * e.shipping;
-      s.oper = s.units * e.oper;
+      s.buying = s.units * e.buying;   // COGS is genuinely per unit
+      s.shipping = parcelsOf(s) * e.shipping;   // one parcel per order, not per unit
+      s.oper = parcelsOf(s) * e.oper;
     }
     const rate = (e && e.referral != null) ? e.referral : STATE.shopFee;
     s.mkt_fee = (s.revenue_gross - s.refunds) * rate;
-    s.orders_count = s._oids.size;
     delete s._oids; delete s._e;
   }
   for(const d of Object.keys(daily)) daily[d].orders = daily[d].orders.size;
@@ -2871,8 +2907,10 @@ function computeAmazonTxn(B){
     const row = newRow('amazon', sku, name, order);
     row.units = qty; row.orders_count = 1; row.revenue_gross = grossInc; row.refunds = 0;
     row.mkt_fee = sellingFees + otherFees;
-    row.shipping = fbaFees > 0 ? fbaFees : (e ? (e.shipping||0)*qty : 0);   // FBA fee, else seller's own shipping cost
-    if(e){ row.buying = (e.buying||0)*qty; row.oper = (e.oper||0)*qty; }
+    // real FBA fee when present; otherwise the seller's own shipping - charged ONCE for this
+    // order (a single parcel), not per unit, matching every other engine
+    row.shipping = fbaFees > 0 ? fbaFees : (e ? (e.shipping||0) : 0);
+    if(e){ row.buying = (e.buying||0)*qty; row.oper = (e.oper||0); }
     row.no_cost = !e;
     finalizeRows([row]);
     const oecon = {orderTotal:row.revenue_gross, revEx:row.revenue_ex, platform:row.mkt_fee, ads:0, shipping:row.shipping,
@@ -2974,6 +3012,7 @@ function diagnostics(){
     L.push(`eBay Ads: spend ${fmtGBP(p.ppcSpend)} / ad sales ${fmtGBP(p.ppcSales)} combined from the Priority Campaigns Report (${STATE.raw.ebay_ppc.length} rows) + General Campaigns Report (${STATE.raw.ebay_pl.length} rows) - this is the authoritative ad-spend source, distributed across SKUs by promoted-fee share.`);
   }
   if(STATE.extras.ebay && STATE.extras.ebay.refundOther > 0) L.push(`eBay: ${fmtGBP(STATE.extras.ebay.refundOther)} refunds not matched to a listing in this report (older orders) - counted in refund KPIs.`);
+  if(STATE.extras.ebay && STATE.extras.ebay.unjoinableListings > 0) L.push(`eBay: ${STATE.extras.ebay.unjoinableListings} Listings rows had an item ID Excel had converted to scientific notation (e.g. "3.56887E+11") that could not be rebuilt, so they were dropped in favour of the transaction report (which carries the same sales with intact IDs). Re-export the Sale sheet as .xlsx - or format the item ID column as Text - to use it fully.`);
   if(STATE.dateFrom || STATE.dateTo){
     const az = STATE.extras.amazon;
     const azNote = !STATE.channels.amazon ? 'Amazon excluded' :
