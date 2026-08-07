@@ -1130,6 +1130,13 @@ const histHasData = () => HIST.snapshots.length > 0 || Object.keys(HIST.daily).l
 
 // ================= colors =================
 const COST_KEYS  = ['mkt_fee','affiliate','buying','shipping','oper','ads','shop_ads'];
+// eBay's standard charges, applied whenever the master sheet doesn't override them per
+// product (regulatory_pct / fixed_fee_per_unit). The fixed fee is charged ONCE PER ORDER,
+// not per unit. Note these are only ESTIMATES used when no Listings Sales Report row exists
+// for an item - that report states the real fees (final value + regulatory + the fixed fee)
+// and is always preferred, so these are never added on top of it.
+const EBAY_REG_PCT = 0.0035;          // 0.35% regulatory operating fee
+const EBAY_FIXED_PER_ORDER = 0.30;    // £0.30 fixed fee per order
 const COST_LBL   = {mkt_fee:'Marketplace Fee', affiliate:'Affiliate Com.', buying:'Buying (COGS)', shipping:'Shipping', oper:'Operational', ads:'Ads Spend', shop_ads:'Shop Ads Com.'};
 const COST_COL   = {mkt_fee:'#2a78d6', affiliate:'#1baf7a', buying:'#eda100', shipping:'#008300', oper:'#4a3aa7', ads:'#e34948', shop_ads:'#e87ba4'};
 const CH_COL     = {tiktok:'#e87ba4', amazon:'#eb6834', amazon2:'#f5a623', ebay:'#2a78d6', shopify:'#1baf7a'};
@@ -2415,8 +2422,9 @@ function computeEbay(){
       row.shipping = parcelsOf(row) * e.shipping;   // one parcel per order, not per unit
       row.oper = parcelsOf(row) * e.oper;
       // no Listings-report fee breakdown exists for this item - estimate the marketplace fee
-      // the same way Product Economics does (regulatory % of revenue + fixed fee per unit)
-      row.mkt_fee = row.revenue_gross * (e.reg != null ? e.reg : 0.0035) + (e.fixedu != null ? e.fixedu : 0.30) * row.units;
+      // from eBay's standard charges: regulatory % of revenue + the fixed fee ONCE PER ORDER
+      row.mkt_fee = row.revenue_gross * (e.reg != null ? e.reg : EBAY_REG_PCT)
+                  + (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER) * parcelsOf(row);
     }
     const p2 = pl[item];
     if(p2){ row.ad_sales = p2.sales; row.clicks = Math.round(p2.clicks); row.impressions = Math.round(p2.impressions); }
@@ -4310,7 +4318,7 @@ function renderProducts(){
     const rate = e.referral != null ? e.referral : FB[ck];
     let fee = P * rate;
     if(ck === 'tiktok') fee += P * ((e.aff != null ? e.aff : 0.15) + (e.shopads != null ? e.shopads : 0.02));
-    if(ck === 'ebay')   fee += P * (e.reg != null ? e.reg : 0.0035) + (e.fixedu != null ? e.fixedu : 0.30);
+    if(ck === 'ebay')   fee += P * (e.reg != null ? e.reg : EBAY_REG_PCT) + (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER);
     fee *= (V.costsWithVAT.mkt_fee ? 1/vDiv : 1);
     const cEx = (v, k) => V.costsWithVAT[k] ? v/vDiv : v;
     const buyEx = cEx(e.buying, 'buying');
@@ -4335,8 +4343,8 @@ function renderProducts(){
     <td class="num">${numIn(i,'ref', e.referral != null ? e.referral*100 : '', '0.1')}</td>
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'aff', (e.aff != null ? e.aff : 0.15)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'sads', (e.shopads != null ? e.shopads : 0.02)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
-    <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'reg', (e.reg != null ? e.reg : 0.0035)*100, '0.05') : '<span style="color:var(--muted)">–</span>'}</td>
-    <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'fixed', e.fixedu != null ? e.fixedu : 0.30, '0.01') : '<span style="color:var(--muted)">–</span>'}</td>
+    <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'reg', (e.reg != null ? e.reg : EBAY_REG_PCT)*100, '0.05') : '<span style="color:var(--muted)">–</span>'}</td>
+    <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'fixed', e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER, '0.01') : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num" style="background:#f4fbf7">${ec ? pill(ec.profit, fmtGBP) : '<span class="pill zero">no price</span>'}</td>
     <td class="num" style="background:#f4fbf7">${ec && ec.roi != null ? pill(ec.roi, fmtPct) : '-'}</td>
     <td class="num" style="background:#f4fbf7">${ec && ec.margin != null ? pill(ec.margin, fmtPct) : '-'}</td>
