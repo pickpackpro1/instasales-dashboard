@@ -1247,6 +1247,21 @@ function readFile(file){
           const det = detectSheet(sh);
           if(!det) continue;
           let rows = XLSX.utils.sheet_to_json(sh, {range:det.headerRow, defval:null, raw:false});
+          // raw:false gives Excel's DISPLAY text, which is what we want for dates/money - but
+          // a long numeric ID that Excel shows in scientific notation ("3.56887E+11") arrives
+          // with its trailing digits destroyed, so it can never match the master sheet. The
+          // true value is still in the cell, so re-read raw and restore just those fields.
+          try{
+            const rawRows = XLSX.utils.sheet_to_json(sh, {range:det.headerRow, defval:null, raw:true});
+            for(let i = 0; i < rows.length; i++){
+              const fr = rows[i], rr = rawRows[i];
+              if(!fr || !rr) continue;
+              for(const k of Object.keys(fr)){
+                if(typeof fr[k] === 'string' && /^-?\d(\.\d+)?E[+-]?\d+$/i.test(fr[k].trim())
+                   && typeof rr[k] === 'number' && Number.isInteger(rr[k])) fr[k] = String(rr[k]);
+              }
+            }
+          }catch(e){ /* raw pass is best-effort - never block the normal parse */ }
           rows = normKeys(rows);
           if(det.type==='tt_orders' && rows.length){
             const fv = Object.values(rows[0]).map(v => String(v||'').toLowerCase());
@@ -2139,12 +2154,56 @@ function computeAmazon(A){
 }
 
 // ================= eBay (verified engine + txn lists) =================
+// Excel can store a 12-digit eBay Item ID as a float and hand us only its display text
+// ("3.56887E+11"), permanently destroying the trailing digits - the exact master lookup then
+// fails and the item silently books ZERO buying/shipping/operational cost, showing ~100%
+// margin. readFile() now recovers the true value for .xlsx uploads; this covers IDs that were
+// already destroyed before the file reached us (e.g. a CSV re-saved out of Excel).
+// Matches on the surviving significant digits, then on title, and ONLY accepts an unambiguous
+// single candidate - a wrong cost is worse than a flagged missing one.
+function makeEbayResolver(M){
+  const byItem = M.ebay.byItem;
+  let keys = null, byName = null;
+  return (item, name) => {
+    const direct = byItem[item];
+    if(direct) return direct;
+    const s = String(item == null ? '' : item).trim();
+    if(/^-?\d(\.\d+)?E[+-]?\d+$/i.test(s)){
+      const n = Number(s);
+      if(isFinite(n) && n > 0){
+        const mant = s.split(/[eE]/)[0].replace(/[^0-9]/g, '');
+        const len = String(Math.round(n)).length;
+        if(mant){
+          if(!keys) keys = Object.keys(byItem);
+          const hits = keys.filter(k => k.length === len && k.startsWith(mant));
+          if(hits.length === 1) return byItem[hits[0]];
+        }
+      }
+    }
+    const nm = String(name == null ? '' : name).trim().toLowerCase();
+    if(nm){
+      if(!byName){
+        byName = {};
+        for(const k of Object.keys(byItem)){
+          const e = byItem[k];
+          const key = String(e && e.name || '').trim().toLowerCase();
+          if(!key) continue;
+          byName[key] = (key in byName) ? null : e;   // null marks an ambiguous title
+        }
+      }
+      const hit = byName[nm];
+      if(hit) return hit;
+    }
+    return null;
+  };
+}
 function computeEbay(){
   const R = STATE.raw;
   // Listings Sales Report is no longer mandatory: if the user only has the transaction
   // report loaded (their daily workflow), items can still be built from it directly below.
   if(!R.ebay_list.length && !R.ebay_txn.length) return null;
   const M = STATE.master;
+  const ebayCostFor = makeEbayResolver(M);
   const df = STATE.dateFrom, dt = STATE.dateTo;
   const fActive = !!(df || dt);
   const inR = d => { if(!fActive) return true; if(!d) return false; if(df && d < df) return false; if(dt && d > dt) return false; return true; };
@@ -2287,7 +2346,7 @@ function computeEbay(){
     row.mkt_fee = Math.max(a.sellCosts - a.adFees, 0) * scale;
     row.fee_detail = Object.entries(a.fees).filter(([,v]) => Math.abs(v) > 0.004).map(([l,v]) => [l, v*scale]);
     row.ad_detail = Object.entries(a.adsD).filter(([,v]) => Math.abs(v) > 0.004).map(([l,v]) => [l, v*scale]);
-    const e = M.ebay.byItem[item];
+    const e = ebayCostFor(item, row.name);
     row.no_cost = !e;
     if(e){
       row.buying = row.units * e.buying;
@@ -2313,7 +2372,7 @@ function computeEbay(){
     const row = newRow('ebay', item, (src && src.name) || item, item);
     row.units = units; row.revenue_gross = rev; row.orders_count = orders; row.refunds = refund;
     if(refund) consumedRefunds.add(item);
-    const e = M.ebay.byItem[item];
+    const e = ebayCostFor(item, row.name);
     row.no_cost = !e;
     if(e){
       row.buying = row.units * e.buying;
