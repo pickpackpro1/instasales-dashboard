@@ -3041,7 +3041,21 @@ async function cloudSyncHistory(){
       const daily = {};
       for(const r of (dailyData||[])) daily[r.channel+'|'+r.date] = { rev: r.revenue, units: r.units, refunds: r.refunds, orders: r.orders };
       const snapshots = (snapData||[]).map(s => ({ id: s.id, savedAt: s.saved_at, from: s.from_date, to: s.to_date, channels: s.channels, skus: s.skus }));
-      HIST = { daily, snapshots };
+      // MERGE rather than replace. Both copies are valid recordings, and a straight replace
+      // made the saved-history count depend on whether the local recompute or this pull
+      // landed last - which is why two browsers reported different "channel-days".
+      // Local wins on a key collision (it was just recomputed from the current files).
+      const mergedDaily = Object.assign({}, daily, HIST.daily);
+      const byId = {};
+      for(const s of snapshots) byId[s.id] = s;
+      for(const s of (HIST.snapshots || [])) byId[s.id] = s;
+      let mergedSnaps = Object.values(byId).sort((a,b) => a.id - b.id);
+      if(mergedSnaps.length > 36) mergedSnaps = mergedSnaps.slice(-36);
+      const addedLocally = Object.keys(HIST.daily).some(k => !(k in daily))
+        || mergedSnaps.length !== snapshots.length;
+      HIST = { daily: mergedDaily, snapshots: mergedSnaps };
+      store.set(lsKey(LS_HIST), JSON.stringify(HIST));
+      if(addedLocally) cloudSaveHistory();   // push whatever the cloud was missing
       if(STATE.page === 'reports') renderReports();
     } else if(Object.keys(HIST.daily).length || HIST.snapshots.length){
       cloudSaveHistory();
