@@ -1511,6 +1511,14 @@ function removeFile(type, name){
   showBanner(`Removed "${name}" - its data is out of every page.`, 'success');
 }
 function rebuildFromFileStore(){
+  // A master pulled from the cloud lives ONLY in STATE.raw.master - it is not one of the
+  // uploaded files - so carry it across this reset. Without this, the reset below wipes it
+  // and restoreMaster() silently falls back to the stale localStorage/built-in sheet, so the
+  // whole P&L recomputes on the wrong costs. Which copy won used to depend purely on whether
+  // cloudSyncMaster() or cloudSyncFileRows() resolved first, so two browsers showed
+  // different Referral/Shipping/Profit for identical filters.
+  const carriedMaster = (STATE.fileRows && STATE.fileRows.master) ? null : (STATE.raw.master || []);
+  const carriedMasterFiles = STATE.files.master;
   STATE.raw = EMPTY_RAW();
   STATE.files = {};
   document.querySelectorAll('.fs-item').forEach(el => {
@@ -1523,7 +1531,13 @@ function rebuildFromFileStore(){
     STATE.files[t] = Object.keys(fs);
     updateFileStatus(t);
   }
-  if(!STATE.raw.master.length) restoreMaster();
+  if(!STATE.raw.master.length){
+    if(carriedMaster && carriedMaster.length){
+      STATE.raw.master = carriedMaster;
+      STATE.files.master = carriedMasterFiles || ['(saved copy)'];
+      updateFileStatus('master');
+    } else restoreMaster();
+  }
   renderLoadedReports();
   const R = STATE.raw;
   const hasSales = R.tt_orders.length || R.amz_biz.length || R.amz2_biz.length || R.ebay_list.length || R.shop_orders.length
@@ -2536,6 +2550,16 @@ async function cloudSaveGlobalSettingsNow(){
   }catch(e){ console.warn('cloud sync (settings) failed:', e); setSyncBadge('error'); }
 }
 const cloudSaveGlobalSettings = debounce(cloudSaveGlobalSettingsNow, 600);
+// Orders the background cloud pulls. The master sheet supplies every per-unit cost and
+// referral %, so it MUST be in place before the uploaded order files trigger a recompute -
+// otherwise the P&L is computed against whichever master happened to arrive first, and two
+// browsers with identical filters disagree on Referral/Shipping/Profit.
+async function cloudSyncAll(){
+  try{ await Promise.all([cloudSyncMaster(), cloudSyncSkuMap()]); }catch(e){ console.warn('cloud sync (cost data) failed:', e); }
+  try{ await cloudSyncFileRows(); }catch(e){ console.warn('cloud sync (files) failed:', e); }
+  cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncGlobalSettings();
+}
+
 async function cloudSyncGlobalSettings(){
   if(!window.sb) return;
   try{
@@ -5331,15 +5355,12 @@ function switchAccount(id){
   restoreMaster();
   restoreSkuMap();
   loadStock();
-  // background: cloud copy wins over local/built-in once each arrives
-  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncGlobalSettings();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
   if(STATE.raw.master.length) STATE.master = buildMaster();
   renderAcctSelect();
   const acct = ACCOUNTS.find(a => a.id === id);
   (async () => {
     await restoreFileRows();
-    cloudSyncFileRows();   // background: cloud copy wins over local once it arrives
     if(Object.keys(STATE.fileRows || {}).length){
       rebuildFromFileStore();   // restore this account's previously-uploaded files
       STATE.dataSource = 'live';
@@ -5355,6 +5376,7 @@ function switchAccount(id){
       showPage('workspace');
       showBanner(`Switched to ${acct.name} - no data saved yet for this account. Drop its files below.`);
     }
+    cloudSyncAll();   // ordered background refresh: costs first, then files, then the rest
   })();
 }
 document.getElementById('acctSelect').addEventListener('change', e => {
@@ -5382,10 +5404,8 @@ function startApp(){
   loadStock();
   // background: cloud copy wins over local/built-in once each arrives
   cloudSyncAccounts();   // account list is global - only pulled here, not on every switch
-  cloudSyncMaster(); cloudSyncSkuMap(); cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncGlobalSettings();
   (async () => {
     await restoreFileRows();
-    cloudSyncFileRows();   // background: cloud copy wins over local once it arrives
     if(Object.keys(STATE.fileRows || {}).length){
       // rebuild the live P&L from the files remembered from the last session
       rebuildFromFileStore();
@@ -5398,6 +5418,7 @@ function startApp(){
     } else {
       showPage('workspace');
     }
+    cloudSyncAll();   // ordered background refresh: costs first, then files, then the rest
   })();
 }
 
