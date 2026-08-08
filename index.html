@@ -1137,6 +1137,7 @@ const COST_KEYS  = ['mkt_fee','affiliate','buying','shipping','oper','ads','shop
 // and is always preferred, so these are never added on top of it.
 const EBAY_REG_PCT = 0.0035;          // 0.35% regulatory operating fee
 const EBAY_FIXED_PER_ORDER = 0.30;    // £0.30 fixed fee per order
+const EBAY_FVF_PCT = 0.13;            // final value fee, only when the master has no referral %
 const COST_LBL   = {mkt_fee:'Marketplace Fee', affiliate:'Affiliate Com.', buying:'Buying (COGS)', shipping:'Shipping', oper:'Operational', ads:'Ads Spend', shop_ads:'Shop Ads Com.'};
 const COST_COL   = {mkt_fee:'#2a78d6', affiliate:'#1baf7a', buying:'#eda100', shipping:'#008300', oper:'#4a3aa7', ads:'#e34948', shop_ads:'#e87ba4'};
 const CH_COL     = {tiktok:'#e87ba4', amazon:'#eb6834', amazon2:'#f5a623', ebay:'#2a78d6', shopify:'#1baf7a'};
@@ -2456,9 +2457,13 @@ function computeEbay(){
       row.buying = ebayBuyingFor(item, row, e);   // per variation where known, else per unit
       row.shipping = parcelsOf(row) * e.shipping;   // one parcel per order, not per unit
       row.oper = parcelsOf(row) * e.oper;
-      // no Listings-report fee breakdown exists for this item - estimate the marketplace fee
-      // from eBay's standard charges: regulatory % of revenue + the fixed fee ONCE PER ORDER
-      row.mkt_fee = row.revenue_gross * (e.reg != null ? e.reg : EBAY_REG_PCT)
+      // No Listings-report fee breakdown for this item, so estimate eBay's charges:
+      // final value fee (the master's referral %) + regulatory % of revenue + the fixed fee
+      // once per ORDER. The final value fee is the big one - leaving it out charged ~0.65%
+      // on a sale that really costs ~13%, so these rows looked far more profitable than they are.
+      const evRate = (e.referral != null) ? e.referral : EBAY_FVF_PCT;
+      row.mkt_fee = (row.revenue_gross - row.refunds) * (evRate || 0)
+                  + row.revenue_gross * (e.reg != null ? e.reg : EBAY_REG_PCT)
                   + (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER) * parcelsOf(row);
     }
     const p2 = pl[item];
@@ -4381,7 +4386,7 @@ function renderProducts(){
     const V = STATE.vat, vDiv = 1 + V.rate;
     const ck = chOf(e.plat);
     const revEx = V.revIncVAT ? P/vDiv : P;
-    const FB = {tiktok:STATE.ttRate, amazon:STATE.amzRef, ebay:0.13, shopify:STATE.shopFee};
+    const FB = {tiktok:STATE.ttRate, amazon:STATE.amzRef, ebay:EBAY_FVF_PCT, shopify:STATE.shopFee};
     const rate = e.referral != null ? e.referral : FB[ck];
     let fee = P * rate;
     if(ck === 'tiktok') fee += P * ((e.aff != null ? e.aff : 0.15) + (e.shopads != null ? e.shopads : 0.02));
