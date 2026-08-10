@@ -216,6 +216,15 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .sku-row:hover{background:#f8fbfe}
 .sku-group-head{padding:9px 14px;background:#eaf4fb;border:1px solid var(--border);border-top:none;font-weight:800;font-size:12.5px}
 /* variation-family roll-up: the parent row carries the combined figures, children nest inside */
+/* a SKU that sold but has no row in the master sheet - every cost booked as £0 */
+.sku-row.no-cost-row{background:#fff5f5;border-left:3px solid var(--red)}
+.sku-children .sku-row.no-cost-row{background:#fff5f5}
+.missing-bar{margin-top:8px;padding:9px 13px;border:1px solid #e8b4b4;border-radius:8px;
+  background:#fdecec;color:#a12a1e;font-size:12.5px;font-weight:700;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.missing-bar button{font:inherit;font-size:12px;font-weight:700;cursor:pointer;padding:4px 11px;
+  border-radius:6px;border:1px solid #a12a1e;background:#fff;color:#a12a1e}
+.missing-bar button:hover{background:#a12a1e;color:#fff}
 .sku-row.parent-row{background:#f7f4ff;border-left:3px solid #7c4dcc}
 .sku-children{background:#faf9ff;border-left:3px solid #cbb8ee}
 .sku-children .sku-row{background:#fff}
@@ -608,6 +617,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <select class="fsel" id="spField"><option value="sku">Channel SKU</option><option value="name">Product Name</option></select>
         <input type="search" id="spSearch" placeholder="Type to search..." style="min-width:180px">
       </div>
+      <div id="spMissingBar" class="missing-bar hidden"></div>
     </div>
     <div style="overflow-x:auto">
       <div style="min-width:1280px">
@@ -4554,13 +4564,17 @@ function breakevenPrice(r){
   const denom = (V.revIncVAT ? 1/vDiv : 1) - feeRate;
   return denom > 0 ? otherCostEx/denom : null;
 }
+// A SKU that traded - sold units, took revenue, or spent on ads - but has NO row in the master
+// sheet, so its COGS, shipping and operational all book as £0 and its profit is fiction.
+// One definition, used by the row flag, the alert, the parent badge and the warning bar.
+const isMissingFromMaster = r => !!r.no_cost && ((r.units||0) > 0 || (r.revenue_gross||0) > 0 || (r.ads||0) > 0);
 function skuAlerts(r, stock, runRate){
   const out = [];
+  if(isMissingFromMaster(r)) out.push(['red','⚠ SKU MISSING from master - all costs £0']);
   if(r.net_profit_ex < -0.005) out.push(['red','Loss making']);
   const be = breakevenPrice(r);
   const price = r.units ? r.revenue_gross/r.units : null;
   if(be != null && price != null && price < be) out.push(['red',`Below break-even (${fmtGBP(be)})`]);
-  if(r.no_cost && (r.units>0||r.revenue_gross>0)) out.push(['amber','No cost data in master']);
   if(r.acos != null && r.acos > 35) out.push(['amber',`High ACOS ${fmtPct(r.acos)}`]);
   if(r.ads > 0 && r.revenue_gross === 0) out.push(['red','Ad spend, zero sales']);
   if(stock != null && runRate > 0 && stock/runRate < 14) out.push(['amber',`Stock ~${Math.round(stock/runRate)} days`]);
@@ -4574,7 +4588,7 @@ function spFiltered(){
   if(rep==='loss') rows = rows.filter(r=>r.net_profit_ex<0);
   else if(rep==='profit') rows = rows.filter(r=>r.net_profit_ex>0);
   else if(rep==='ads') rows = rows.filter(r=>r.ads>0);
-  else if(rep==='nocost') rows = rows.filter(r=>r.no_cost);
+  else if(rep==='nocost') rows = rows.filter(isMissingFromMaster);   // same test the red flag uses
   const q = STATE.sp.q.toLowerCase();
   if(q) rows = rows.filter(r => STATE.sp.field==='sku' ? (r.key||'').toLowerCase().includes(q) : (r.name||'').toLowerCase().includes(q));
   const k = STATE.sp.sort, dir = STATE.sp.dir==='asc'?1:-1;
@@ -4722,7 +4736,8 @@ function skuRowHTML(r, i, opt){
     ppcStatus = `<div class="statusbar" style="background:#eef2f7;color:var(--muted);border:1px solid var(--border)">No ads this period.</div>`;
   }
   const il = (l,v,cls) => `<div class="info-line"><span class="l">${l}</span><span class="v" ${cls?`style="color:${cls}"`:''}>${v}</span></div>`;
-  return `<div class="sku-row${isParent?' parent-row':''}">
+  const missingFromMaster = !isParent && isMissingFromMaster(r);
+  return `<div class="sku-row${isParent?' parent-row':''}${missingFromMaster?' no-cost-row':''}">
     <div class="prod-cell">
       ${isParent
         ? `<button class="fam-toggle" data-fam="${opt.famIdx}" aria-expanded="false" title="Show the child ASINs"><span class="caret">▸</span>${opt.childCount}</button>`
@@ -4732,7 +4747,9 @@ function skuRowHTML(r, i, opt){
         <div>
           ${isParent
             ? `<span class="badge purple">PARENT · ${opt.childCount} child ASIN${opt.childCount>1?'s':''}</span>`
+              + (opt.missingKids ? `<span class="badge red">⚠ ${opt.missingKids} child SKU${opt.missingKids>1?'s':''} missing from master</span>` : '')
             : `<span class="badge blue">${CH_NAME[r.channel]} Listing</span>`}
+          ${missingFromMaster ? `<span class="badge red">⚠ NOT IN MASTER SHEET</span>` : ''}
           ${stock != null ? `<span class="badge green">Stock: ${fmtNum(stock)}</span>` : ''}
           ${stockDays != null ? `<span class="badge ${stockDays<14?'red':'grey'}">Stock ending in ${stockDays>99?'99+':stockDays.toFixed(1)} days</span>` : ''}
         </div>
@@ -4795,6 +4812,32 @@ function renderSkuPerf(){
   document.getElementById('spDate').textContent = (STATE.dateFrom || STATE.dateTo)
     ? `📅 FILTERED: ${STATE.dateFrom||'...'} → ${STATE.dateTo||'...'} (Amazon ${STATE.channels.amazon ? 'day-prorated Est' : 'excluded'})`
     : (dk.length ? `📅 ${dk[0]} - ${dk[dk.length-1]} (report period)` : '📅 period = your export range');
+  // Missing-SKU warning: count across every loaded channel, not just the current filter, so
+  // narrowing to one platform can never hide a gap on another.
+  {
+    const bar = document.getElementById('spMissingBar');
+    const gaps = loadedChannels().flatMap(ch => STATE.channels[ch]).filter(isMissingFromMaster);
+    if(!gaps.length){ bar.classList.add('hidden'); bar.innerHTML = ''; }
+    else {
+      const lost = gaps.reduce((a,r) => a + (r.revenue_gross||0), 0);
+      const adOnly = gaps.filter(r => (r.revenue_gross||0) <= 0 && (r.ads||0) > 0);
+      const adSpend = adOnly.reduce((a,r) => a + (r.ads||0), 0);
+      const byCh = {};
+      for(const r of gaps) byCh[r.channel] = (byCh[r.channel]||0) + 1;
+      const where = Object.entries(byCh).map(([c,n]) => `${CH_NAME[c]} ${n}`).join(' · ');
+      bar.classList.remove('hidden');
+      bar.innerHTML = `<span>⚠ ${gaps.length} SKU${gaps.length>1?'s are':' is'} MISSING from the master sheet (${where}).`
+        + (lost > 0 ? ` ${fmtGBP(lost)} of sales carrying £0 cost, so that profit is overstated.` : '')
+        + (adOnly.length ? ` ${adOnly.length} of them made no sales but spent ${fmtGBP(adSpend)} on ads.` : '')
+        + `</span><button id="spShowMissing" type="button">Show only these</button>`;
+      bar.querySelector('#spShowMissing').addEventListener('click', () => {
+        STATE.sp.report = 'nocost'; STATE.sp.platform = 'all'; STATE.sp.page = 0;
+        document.getElementById('spReport').value = 'nocost';
+        document.getElementById('spPlatform').value = 'all';
+        renderSkuPerf();
+      });
+    }
+  }
   const rows = spFiltered();
   const show = STATE.sp.show;
   // Grouping by parent paginates over FAMILIES, not rows - a family always renders whole, so
@@ -4846,7 +4889,8 @@ function renderSkuPerf(){
       p.no_cost = all.every(k => k.no_cost);
       p.fee_detail = []; p.ad_detail = [];
       const idx = famIdx++;
-      html += skuRowHTML(p, -1, {parent:true, famIdx:idx, childCount:all.length});
+      const missingKids = all.filter(isMissingFromMaster).length;
+      html += skuRowHTML(p, -1, {parent:true, famIdx:idx, childCount:all.length, missingKids});
       html += `<div class="sku-children hidden" id="sp-fam-${idx}">` + all.map(rowHtml).join('') + `</div>`;
     }
   } else {
