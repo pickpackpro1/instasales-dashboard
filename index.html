@@ -380,12 +380,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       </div>
     </div>
     <div class="kpi-strip" id="dashKpis"></div>
-    <div class="grid g2" style="margin-bottom:14px">
-      <div class="card">
-        <h3><span class="dot" style="background:var(--green)"></span>Sales by Time of Day</h3>
-        <div class="sub-title" id="hourlySub">Order sales bucketed by hour of the day</div>
-        <div class="chart-box"><canvas id="dashHourly"></canvas></div>
-      </div>
+    <div style="margin-bottom:14px">
       <div class="card">
         <h3><span class="dot" style="background:var(--red)"></span>Action Items: Potential Opportunity &amp; Loss</h3>
         <div class="sub-title">Ad-spend waste, stockouts, declining &amp; non-moving SKUs for this account</div>
@@ -3636,13 +3631,13 @@ function renderDashboard(){
       plugins:{legend:{position:'right', labels:{boxWidth:12, font:{size:11}}},
       tooltip:{callbacks:{label:c=>{const tot=c.dataset.data.reduce((a,b)=>a+b,0); return ` ${c.label}: ${fmtGBP(c.parsed)} (${tot?(c.parsed/tot*100).toFixed(1):0}%)`;}}}}}
   });
-  renderHourly();
   renderActionItems();
 }
 
 // Pull an hour-of-day (0-23) out of a raw timestamp cell. Order exports carry a full
 // "Created Time"/"Created at" (date + time); parseDate keeps only the date, so this reads
-// the time part separately. Returns null when the cell is date-only (no hourly view possible).
+// the time part separately. Returns null when the cell is date-only. Stamped onto Amazon
+// transaction order rows as `hour`.
 function parseHour(v){
   if(v == null || v === '') return null;
   if(v instanceof Date){ const h = v.getUTCHours(); return isNaN(h) ? null : h; }
@@ -3650,75 +3645,6 @@ function parseHour(v){
   const m = String(v).match(/[ T](\d{1,2}):(\d{2})/);
   if(m){ const h = parseInt(m[1],10); return (h>=0 && h<=23) ? h : null; }
   return null;
-}
-// "Sales by Time of Day" - buckets order-level sales into 24 hours using the order
-// timestamps (TikTok + Shopify + eBay where present). Amazon is daily-aggregated so it
-// has no per-order time and can't contribute. Aggregated across every loaded day.
-function renderHourly(){
-  const chans = filteredChannels();
-  const df = STATE.dateFrom, dt = STATE.dateTo;
-  const inR = d => { if(!df && !dt) return true; if(!d) return false; if(df && d < df) return false; if(dt && d > dt) return false; return true; };
-  const R = STATE.raw;
-  const sales = new Array(24).fill(0);
-  const ordSets = Array.from({length:24}, () => new Set());
-  let timedOrders = 0, datedOrders = 0, seq = 0;
-  const bucket = (raw, val, id) => {
-    const d = parseDate(raw); if(!inR(d)) return;
-    datedOrders++;
-    const h = parseHour(raw); if(h == null) return;
-    timedOrders++; sales[h] += val; ordSets[h].add(id);
-  };
-  if(chans.includes('tiktok') && R.tt_orders) for(const r of R.tt_orders){
-    const oid = String(r['Order ID']||'').trim(); if(!oid) continue;
-    if(fixText(r['Order Status']).toLowerCase() === 'cancelled') continue;
-    bucket(r['Created Time'] || r['Paid Time'], cleanMoney(r['SKU Subtotal After Discount']), oid);
-  }
-  if(chans.includes('shopify') && R.shop_orders) for(const r of R.shop_orders){
-    const name = fixText(r['Name']); if(!name) continue;
-    if(r['Cancelled at'] != null && String(r['Cancelled at']).trim() !== '') continue;
-    bucket(r['Created at'] || r['Paid at'], cleanMoney(r['Lineitem price'])*cleanInt(r['Lineitem quantity']), name);
-  }
-  if(chans.includes('ebay') && R.ebay_txn) for(const r of R.ebay_txn){
-    if(fixText(r['Type']) !== 'Order') continue;
-    bucket(r['Transaction creation date'], cleanMoney(r['Gross transaction amount']), fixText(r['Order number']) || ('e'+(seq++)));
-  }
-  const amzHourly = (chn, bucketName) => { if(!(chOn(chn) && R[bucketName])) return;
-    for(const r of R[bucketName]){ if(fixText(r['type']).toLowerCase() !== 'order') continue;
-      bucket(r['date/time'], cleanMoney(r['product sales']) + cleanMoney(r['product sales tax']), fixText(r['order id']) || ('a'+(seq++))); } };
-  amzHourly('amazon', 'amz_txn');
-  amzHourly('amazon2', 'amz2_txn');
-  const orders = ordSets.map(s => s.size);
-  const sub = document.getElementById('hourlySub');
-  destroy('dashHourly');
-  const canvas = document.getElementById('dashHourly');
-  if(!canvas) return;
-  if(!timedOrders){
-    if(sub) sub.textContent = datedOrders
-      ? 'Your order files have no per-order time (dates only), so hourly sales can’t be shown for this selection.'
-      : 'Load TikTok or Shopify order files to see sales by hour (Amazon Business Reports have no per-order time).';
-    canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);
-    return;
-  }
-  if(sub) sub.textContent = `${fmtNum(timedOrders)} timed order${timedOrders===1?'':'s'} across all loaded days · Est Profit/Expense scaled from blended margins`;
-  const t = totalsOf(filteredRows()); const g = t.revenue_gross || 0;
-  const netR = g > 0 ? t.net_profit_ex / g : 0;
-  const expR = g > 0 ? t.total_cost / g : 0;
-  const hourLabel = h => h===0 ? '12 AM' : h<12 ? h+' AM' : h===12 ? '12 PM' : (h-12)+' PM';
-  const labels = Array.from({length:24}, (_,h) => h%2===0 ? hourLabel(h) : '');
-  CH.dashHourly = new Chart(canvas, {
-    data:{ labels, datasets:[
-      {type:'bar', label:'Orders', data:orders, backgroundColor:'#bfe3f5', borderRadius:3, yAxisID:'y1', order:5},
-      {type:'line', label:'Sales', data:sales.map(v=>+v.toFixed(2)), borderColor:'#20c063', backgroundColor:'#20c063', borderWidth:2, pointRadius:0, pointHoverRadius:4, tension:.4, yAxisID:'y', order:1},
-      {type:'line', label:'Est Profit', data:sales.map(v=>+(v*netR).toFixed(2)), borderColor:'#7c5cff', backgroundColor:'#7c5cff', borderWidth:2, pointRadius:0, pointHoverRadius:4, tension:.4, yAxisID:'y', order:2},
-      {type:'line', label:'Est Expense', data:sales.map(v=>+(v*expR).toFixed(2)), borderColor:'#e8467c', backgroundColor:'#e8467c', borderWidth:2, pointRadius:0, pointHoverRadius:4, tension:.4, yAxisID:'y', order:3}
-    ]},
-    options:{ responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false},
-      plugins:{legend:{position:'top', labels:{boxWidth:12}}, tooltip:{callbacks:{label:c=> c.dataset.label==='Orders' ? ` Orders: ${fmtNum(c.parsed.y)}` : ` ${c.dataset.label}: ${fmtGBP(c.parsed.y)}`}}},
-      scales:{
-        y:{position:'left', grid:{color:GRID}, ticks:{callback:v=>CUR+v.toLocaleString()}},
-        y1:{position:'right', grid:{display:false}, ticks:{precision:0}, title:{display:true, text:'orders', font:{size:10}}},
-        x:{grid:{display:false}, ticks:{maxRotation:0, autoSkip:false}}}}
-  });
 }
 // "Action Items: Potential Opportunity & Loss" - four data-driven tiles.
 function renderActionItems(){
