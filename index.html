@@ -570,7 +570,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       </div>
       <div class="fbar" style="margin-top:8px">
         <span class="flabel">Group By:</span>
-        <select class="fsel" id="spGroup"><option value="none">None</option><option value="channel">Channel</option></select>
+        <select class="fsel" id="spGroup"><option value="none">None</option><option value="channel">Channel</option><option value="parent">Parent ASIN</option></select>
         <span class="flabel">Sort By:</span>
         <select class="fsel" id="spSort">
           <option value="orders_count">Orders</option>
@@ -2068,7 +2068,9 @@ function computeAmazon(A){
   const addAgg = (r, f) => {
     const asin = fixText(r['(Child) ASIN']);
     if(!asin || f <= 0) return null;
-    if(!agg[asin]) agg[asin] = {title: fixText(r['Title']), units:0, orders:0, gross:0};
+    if(!agg[asin]) agg[asin] = {title: fixText(r['Title']), units:0, orders:0, gross:0,
+      parent: fixText(r['(Parent) ASIN'])};   // variation family, for Group By > Parent ASIN
+    if(!agg[asin].parent) agg[asin].parent = fixText(r['(Parent) ASIN']);
     // Two Business Report shapes:
     //  - standard Amazon CSV: 'Ordered Product Sales' IS the total (B2B column is a subset)
     //  - user-built daily workbooks: base columns EXCLUDE B2B and carry explicit
@@ -2132,6 +2134,7 @@ function computeAmazon(A){
   }
   for(const [asin, a] of Object.entries(agg)){
     const row = newRow(A.chName, asin, a.title, asin);
+    row.parent = a.parent || '';
     row.units = a.units;
     row.orders_count = a.orders;
     row.revenue_gross = a.gross;
@@ -4535,13 +4538,32 @@ function spFiltered(){
   const q = STATE.sp.q.toLowerCase();
   if(q) rows = rows.filter(r => STATE.sp.field==='sku' ? (r.key||'').toLowerCase().includes(q) : (r.name||'').toLowerCase().includes(q));
   const k = STATE.sp.sort, dir = STATE.sp.dir==='asc'?1:-1;
-  rows.sort((a,b) => {
+  const cmp = (a,b) => {
     let va=a[k], vb=b[k];
     if(va==null) va = -Infinity; if(vb==null) vb = -Infinity;
     return (va<vb?-1:va>vb?1:0)*dir;
-  });
+  };
+  if(STATE.sp.group === 'parent'){
+    // Keep a variation family together so it is never split across two pages. Families are
+    // ordered by their strongest member on the chosen sort, and children keep that sort inside.
+    const best = {};
+    for(const r of rows){
+      const f = spFamilyKey(r);
+      if(!(f in best) || cmp(r, best[f]) < 0) best[f] = r;
+    }
+    rows.sort((a,b) => {
+      const fa = spFamilyKey(a), fb = spFamilyKey(b);
+      if(fa !== fb) return cmp(best[fa], best[fb]) || (fa < fb ? -1 : 1);
+      return cmp(a,b);
+    });
+  } else {
+    rows.sort(cmp);
+  }
   return rows;
 }
+// A product's variation family: the Amazon parent ASIN when there is one, otherwise the
+// product stands alone under its own key (TikTok, eBay and Shopify have no parent concept).
+function spFamilyKey(r){ return (r.parent && r.parent !== r.key) ? r.parent : (r.channel + '|' + r.key); }
 function skuTrendData(r){
   let lines = [], refundLines = [];
   if(r.channel==='tiktok' && STATE.extras.tiktok){
@@ -4741,6 +4763,42 @@ function renderSkuPerf(){
       if(!byCh[ch]) continue;
       html += `<div class="sku-group-head"><span class="chip ${ch}">${CH_NAME[ch]}</span> ${byCh[ch].length} products on this page</div>`;
       html += byCh[ch].map(rowHtml).join('');
+    }
+  } else if(STATE.sp.group === 'parent'){
+    // Family totals come from the WHOLE filtered set, not just this page, so the header is
+    // the real combined figure for the parent even when a child sits on another page.
+    const fam = {};
+    for(const r of rows){
+      const f = spFamilyKey(r);
+      const t = fam[f] || (fam[f] = {n:0, units:0, rev:0, profit:0, ads:0, name:'', ch:r.channel});
+      t.n++; t.units += r.units||0; t.rev += r.revenue_gross||0;
+      t.profit += r.net_profit_ex||0; t.ads += r.ads||0;
+      if(!t.name) t.name = r.name || r.key;
+    }
+    const order = [], byFam = new Map();
+    for(const r of slice){
+      const f = spFamilyKey(r);
+      if(!byFam.has(f)){ byFam.set(f, []); order.push(f); }
+      byFam.get(f).push(r);
+    }
+    for(const f of order){
+      const kids = byFam.get(f), t = fam[f];
+      // spFamilyKey returns a bare parent ASIN for a real family, or "channel|key" otherwise
+      const isRealParent = f.indexOf('|') < 0;
+      const onPage = kids.length < t.n ? ` <span style="color:var(--muted)">(${kids.length} of ${t.n} on this page)</span>` : '';
+      const margin = t.rev ? (t.profit / t.rev * 100) : null;
+      html += `<div class="sku-group-head">`
+        + (isRealParent
+            ? `<span class="chip ${t.ch}">${CH_NAME[t.ch]}</span> <b>Parent ${esc(f)}</b> &middot; `
+              + (t.n > 1 ? `${t.n} child ASINs${onPage}`
+                         : `<span style="color:var(--muted)">1 child with sales</span>`)
+            : `<span class="chip ${t.ch}">${CH_NAME[t.ch]}</span> ${esc(t.name).substr(0,60)} <span style="color:var(--muted)">&middot; no parent</span>`)
+        + ` <span style="float:right;font-weight:700">${fmtNum(t.units)} units &middot; ${fmtGBP(t.rev)} &middot; `
+        + `<span style="color:${t.profit>=0?'var(--green)':'var(--red)'}">${fmtGBP(t.profit)}</span>`
+        + (margin!=null ? ` &middot; ${fmtPct(margin)}` : '')
+        + (t.ads>0 ? ` &middot; ads ${fmtGBP(t.ads)}` : '')
+        + `</span></div>`;
+      html += kids.map(rowHtml).join('');
     }
   } else {
     html = slice.map(rowHtml).join('');
