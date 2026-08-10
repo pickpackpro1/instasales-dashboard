@@ -215,6 +215,16 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .sku-row:last-child{border-radius:0 0 10px 10px}
 .sku-row:hover{background:#f8fbfe}
 .sku-group-head{padding:9px 14px;background:#eaf4fb;border:1px solid var(--border);border-top:none;font-weight:800;font-size:12.5px}
+/* variation-family roll-up: the parent row carries the combined figures, children nest inside */
+.sku-row.parent-row{background:#f7f4ff;border-left:3px solid #7c4dcc}
+.sku-children{background:#faf9ff;border-left:3px solid #cbb8ee}
+.sku-children .sku-row{background:#fff}
+.fam-toggle{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+  width:46px;height:46px;flex:none;border:1px solid #7c4dcc;background:#fff;color:#7c4dcc;
+  border-radius:8px;cursor:pointer;font-family:inherit;font-weight:800;font-size:12px;line-height:1}
+.fam-toggle:hover{background:#7c4dcc;color:#fff}
+.fam-toggle:focus-visible{outline:2px solid #7c4dcc;outline-offset:2px}
+.fam-toggle .caret{font-size:13px}
 .avatar{width:52px;height:52px;border-radius:10px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;flex-shrink:0}
 .prod-cell{display:flex;gap:10px;min-width:0}
 .ptitle2{font-weight:700;font-size:12.5px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -222,6 +232,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .kv b{color:var(--text)}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:800;margin:3px 4px 0 0}
 .badge.blue{background:#e3f2fc;color:#1a7fc4}
+.badge.purple{background:#efe7fd;color:#6a3cb5}
 .badge.green{background:#e3f7ee;color:var(--green)}
 .badge.red{background:#fde7ec;color:var(--red)}
 .badge.amber{background:#fdf3df;color:#b57b00}
@@ -4624,14 +4635,18 @@ function buildSkuTrend(i, metric){
   });
 }
 let SP_VIEW = [];
-function skuRowHTML(r, i){
-  const stockInfo = r.channel==='ebay' && STATE.extras.ebay && STATE.extras.ebay.pl[r.key];
+// opt.parent renders the row as a variation-family roll-up: same card, same P&L lines, but
+// the figures are the whole family's and it expands to reveal the child ASINs beneath.
+function skuRowHTML(r, i, opt){
+  opt = opt || {};
+  const isParent = !!opt.parent;
+  const stockInfo = !isParent && r.channel==='ebay' && STATE.extras.ebay && STATE.extras.ebay.pl[r.key];
   const stock = stockInfo && stockInfo.qtyAvail != null ? stockInfo.qtyAvail : null;
   const span = channelDaySpan(r.channel);
   const runRate = span > 0 ? r.units/span : 0;
   const price = r.units ? r.revenue_gross/r.units : null;
   const unitCogs = r.units ? r.buying/r.units : null;
-  const alerts = skuAlerts(r, stock, runRate);
+  const alerts = isParent ? [] : skuAlerts(r, stock, runRate);
   const initials = (r.key||'?').replace(/[^A-Za-z0-9]/g,'').substr(0,2).toUpperCase() || '?';
   const charges = r.mkt_fee + r.affiliate + r.shop_ads;
   const cogsTot = r.buying + r.oper;
@@ -4642,12 +4657,12 @@ function skuRowHTML(r, i){
   const feeRatePct = (r.revenue_gross - r.refunds) > 0 ? r.mkt_fee/(r.revenue_gross - r.refunds)*100 : 0;
   let chargesDetail;
   if(r.channel==='tiktok') chargesDetail = nz([[`Platform / referral fee (${feeRatePct.toFixed(1)}%)`, -r.mkt_fee], ['Affiliate commission', -r.affiliate], ['Shop Ads commission', -r.shop_ads]]);
-  else if(r.channel==='amazon') chargesDetail = nz([[`Referral fee (${feeRatePct.toFixed(1)}%)`, -r.mkt_fee]]);
+  else if(r.channel==='amazon' || r.channel==='amazon2') chargesDetail = nz([[`Referral fee (${feeRatePct.toFixed(1)}%)`, -r.mkt_fee]]);
   else if(r.channel==='shopify') chargesDetail = nz([[`Payment / platform fee (${feeRatePct.toFixed(1)}%)`, -r.mkt_fee]]);
   else chargesDetail = nz(r.fee_detail || []);
   let adDetail;
   if(r.channel==='ebay') adDetail = nz(r.ad_detail || []);
-  else if(r.channel==='amazon') adDetail = nz([['Amazon Sponsored Products', -r.ads]]);
+  else if(r.channel==='amazon' || r.channel==='amazon2') adDetail = nz([['Amazon Sponsored Products', -r.ads]]);
   else if(r.channel==='shopify') adDetail = [];
   else adDetail = nz([[`TikTok Ads (${(STATE.extras.tiktok&&STATE.extras.tiktok.adsMode)||'product'} mode)`, -r.ads]]);
   const cogsDetail = nz([
@@ -4678,19 +4693,23 @@ function skuRowHTML(r, i){
     ppcStatus = `<div class="statusbar" style="background:#eef2f7;color:var(--muted);border:1px solid var(--border)">No ads this period.</div>`;
   }
   const il = (l,v,cls) => `<div class="info-line"><span class="l">${l}</span><span class="v" ${cls?`style="color:${cls}"`:''}>${v}</span></div>`;
-  return `<div class="sku-row">
+  return `<div class="sku-row${isParent?' parent-row':''}">
     <div class="prod-cell">
-      <div class="avatar" style="background:${CH_COL[r.channel]}">${initials}</div>
+      ${isParent
+        ? `<button class="fam-toggle" data-fam="${opt.famIdx}" aria-expanded="false" title="Show the child ASINs"><span class="caret">▸</span>${opt.childCount}</button>`
+        : `<div class="avatar" style="background:${CH_COL[r.channel]}">${initials}</div>`}
       <div style="min-width:0">
         <div class="ptitle2" title="${esc(r.name)}">${esc(r.name || r.key)}</div>
         <div>
-          <span class="badge blue">${CH_NAME[r.channel]} Listing</span>
+          ${isParent
+            ? `<span class="badge purple">PARENT · ${opt.childCount} child ASIN${opt.childCount>1?'s':''}</span>`
+            : `<span class="badge blue">${CH_NAME[r.channel]} Listing</span>`}
           ${stock != null ? `<span class="badge green">Stock: ${fmtNum(stock)}</span>` : ''}
           ${stockDays != null ? `<span class="badge ${stockDays<14?'red':'grey'}">Stock ending in ${stockDays>99?'99+':stockDays.toFixed(1)} days</span>` : ''}
         </div>
-        <div class="kv">SKU: <b>${esc(r.key)}</b></div>
-        <div class="kv">Selling Price: <b>${price!=null?fmtGBP(price):'-'}</b></div>
-        <div class="kv">COGS: <b>${unitCogs!=null?fmtGBP(unitCogs):'-'}</b></div>
+        <div class="kv">${isParent?'Parent ASIN':'SKU'}: <b>${esc(r.key)}</b></div>
+        <div class="kv">${isParent?'Avg Selling Price':'Selling Price'}: <b>${price!=null?fmtGBP(price):'-'}</b></div>
+        <div class="kv">${isParent?'Avg COGS':'COGS'}: <b>${unitCogs!=null?fmtGBP(unitCogs):'-'}</b></div>
       </div>
     </div>
     <div style="text-align:center;line-height:1.6">${chLogo(r.channel)}<br><span style="font-size:16px">🇬🇧</span></div>
@@ -4723,12 +4742,13 @@ function skuRowHTML(r, i){
       ${expLine('','Margin:', fmtPct(r.margin_ex), r.margin_ex>=0?'var(--green)':'var(--red)', null, true)}
     </div>
     <div>
+      ${isParent ? `<button class="act-link" data-fam="${opt.famIdx}">▸ Show ${opt.childCount} child ASIN${opt.childCount>1?'s':''}</button>` : `
       <button class="act-link" data-trend="${i}">📊 See Trend</button>
       <button class="act-link" data-eco="${esc(CH_NAME[r.channel]+' | '+r.key)}">🧮 See Economics</button>
       ${r.channel==='ebay' ? `<button class="act-link" data-inv="${esc(r.key)}">📦 Inventory Stats</button>` : ''}
-      ${r.ads>0 ? `<button class="act-link" data-adv="${esc(r.key)}">📣 See in Advertising</button>` : ''}
+      ${r.ads>0 ? `<button class="act-link" data-adv="${esc(r.key)}">📣 See in Advertising</button>` : ''}`}
     </div>
-  </div>
+  </div>${isParent ? '' : `
   <div class="sku-trend hidden" id="sp-trend-${i}">
     <div class="fbar" style="margin-bottom:8px">
       <span class="flabel">Metric:</span>
@@ -4737,7 +4757,7 @@ function skuRowHTML(r, i){
       <span class="flabel" id="sp-trend-note-${i}" style="font-weight:500"></span>
     </div>
     <div style="position:relative;height:260px"><canvas id="sp-trend-cv-${i}"></canvas></div>
-  </div>`;
+  </div>`}`;
 }
 function renderSkuPerf(){
   // date chip from dated data
@@ -4748,9 +4768,22 @@ function renderSkuPerf(){
     : (dk.length ? `📅 ${dk[0]} - ${dk[dk.length-1]} (report period)` : '📅 period = your export range');
   const rows = spFiltered();
   const show = STATE.sp.show;
-  const pages = Math.max(1, Math.ceil(rows.length/show));
+  // Grouping by parent paginates over FAMILIES, not rows - a family always renders whole, so
+  // counting rows would spill one across two pages and draw its children twice.
+  const groupingByParent = STATE.sp.group === 'parent';
+  const famAll = {}, famOrder = [];
+  if(groupingByParent){
+    for(const r of rows){
+      const f = spFamilyKey(r);
+      if(!famAll[f]){ famAll[f] = []; famOrder.push(f); }
+      famAll[f].push(r);
+    }
+  }
+  const unit = groupingByParent ? famOrder : rows;
+  const pages = Math.max(1, Math.ceil(unit.length/show));
   if(STATE.sp.page >= pages) STATE.sp.page = pages-1;
-  const slice = rows.slice(STATE.sp.page*show, STATE.sp.page*show + show);
+  const unitSlice = unit.slice(STATE.sp.page*show, STATE.sp.page*show + show);
+  const slice = groupingByParent ? unitSlice.flatMap(f => famAll[f]) : unitSlice;
   // clear any per-SKU trend charts from the previous render
   for(const k of Object.keys(CH)) if(k.startsWith('spTrend')) destroy(k);
   SP_VIEW = [];
@@ -4765,40 +4798,27 @@ function renderSkuPerf(){
       html += byCh[ch].map(rowHtml).join('');
     }
   } else if(STATE.sp.group === 'parent'){
-    // Family totals come from the WHOLE filtered set, not just this page, so the header is
-    // the real combined figure for the parent even when a child sits on another page.
-    const fam = {};
-    for(const r of rows){
-      const f = spFamilyKey(r);
-      const t = fam[f] || (fam[f] = {n:0, units:0, rev:0, profit:0, ads:0, name:'', ch:r.channel});
-      t.n++; t.units += r.units||0; t.rev += r.revenue_gross||0;
-      t.profit += r.net_profit_ex||0; t.ads += r.ads||0;
-      if(!t.name) t.name = r.name || r.key;
-    }
-    const order = [], byFam = new Map();
-    for(const r of slice){
-      const f = spFamilyKey(r);
-      if(!byFam.has(f)){ byFam.set(f, []); order.push(f); }
-      byFam.get(f).push(r);
-    }
-    for(const f of order){
-      const kids = byFam.get(f), t = fam[f];
+    let famIdx = 0;
+    for(const f of unitSlice){
+      const all = famAll[f];
       // spFamilyKey returns a bare parent ASIN for a real family, or "channel|key" otherwise
       const isRealParent = f.indexOf('|') < 0;
-      const onPage = kids.length < t.n ? ` <span style="color:var(--muted)">(${kids.length} of ${t.n} on this page)</span>` : '';
-      const margin = t.rev ? (t.profit / t.rev * 100) : null;
-      html += `<div class="sku-group-head">`
-        + (isRealParent
-            ? `<span class="chip ${t.ch}">${CH_NAME[t.ch]}</span> <b>Parent ${esc(f)}</b> &middot; `
-              + (t.n > 1 ? `${t.n} child ASINs${onPage}`
-                         : `<span style="color:var(--muted)">1 child with sales</span>`)
-            : `<span class="chip ${t.ch}">${CH_NAME[t.ch]}</span> ${esc(t.name).substr(0,60)} <span style="color:var(--muted)">&middot; no parent</span>`)
-        + ` <span style="float:right;font-weight:700">${fmtNum(t.units)} units &middot; ${fmtGBP(t.rev)} &middot; `
-        + `<span style="color:${t.profit>=0?'var(--green)':'var(--red)'}">${fmtGBP(t.profit)}</span>`
-        + (margin!=null ? ` &middot; ${fmtPct(margin)}` : '')
-        + (t.ads>0 ? ` &middot; ads ${fmtGBP(t.ads)}` : '')
-        + `</span></div>`;
-      html += kids.map(rowHtml).join('');
+      if(!isRealParent || all.length < 2){
+        // no parent, or the parent has only this one child selling - show it as a normal row
+        html += all.map(rowHtml).join('');
+        continue;
+      }
+      // Roll the whole family into one row carrying the combined sales, ads, COGS and profit,
+      // with the children in a collapsed panel underneath.
+      const p = totalsOf(all);
+      p.channel = all[0].channel;
+      p.key = f;
+      p.name = all[0].name || f;
+      p.no_cost = all.every(k => k.no_cost);
+      p.fee_detail = []; p.ad_detail = [];
+      const idx = famIdx++;
+      html += skuRowHTML(p, -1, {parent:true, famIdx:idx, childCount:all.length});
+      html += `<div class="sku-children hidden" id="sp-fam-${idx}">` + all.map(rowHtml).join('') + `</div>`;
     }
   } else {
     html = slice.map(rowHtml).join('');
@@ -4806,19 +4826,32 @@ function renderSkuPerf(){
   document.getElementById('skuCards').innerHTML = html || '<div class="sku-row" style="justify-content:center;color:var(--muted)">No products match the current filters.</div>';
   // pager
   const pg = document.getElementById('skuPager');
-  const from = rows.length ? STATE.sp.page*show+1 : 0;
-  const to = Math.min(rows.length, (STATE.sp.page+1)*show);
+  const from = unit.length ? STATE.sp.page*show+1 : 0;
+  const to = Math.min(unit.length, (STATE.sp.page+1)*show);
+  const noun = groupingByParent ? 'parents / products' : 'products';
   let nums = '';
   const maxBtns = 7;
   let start = Math.max(0, STATE.sp.page-3), end = Math.min(pages, start+maxBtns);
   start = Math.max(0, end-maxBtns);
   for(let i=start;i<end;i++) nums += `<button class="${i===STATE.sp.page?'cur':''}" data-pg="${i}">${i+1}</button>`;
-  pg.innerHTML = `<span class="flabel">Showing ${from}-${to} of ${rows.length} products</span>
+  pg.innerHTML = `<span class="flabel">Showing ${from}-${to} of ${unit.length} ${noun}</span>
     <button data-pg="${STATE.sp.page-1}" ${STATE.sp.page===0?'disabled':''}>‹ Prev</button>${nums}
     <button data-pg="${STATE.sp.page+1}" ${STATE.sp.page>=pages-1?'disabled':''}>Next ›</button>`;
   pg.querySelectorAll('[data-pg]').forEach(b => b.addEventListener('click', () => {
     const p = parseInt(b.dataset.pg);
     if(p>=0 && p<pages){ STATE.sp.page = p; renderSkuPerf(); }
+  }));
+  // expand / collapse a parent's child ASINs
+  document.getElementById('skuCards').querySelectorAll('[data-fam]').forEach(b => b.addEventListener('click', () => {
+    const panel = document.getElementById('sp-fam-' + b.dataset.fam);
+    if(!panel) return;
+    const open = !panel.classList.toggle('hidden');
+    document.getElementById('skuCards').querySelectorAll('[data-fam="'+b.dataset.fam+'"]').forEach(btn => {
+      const caret = btn.querySelector('.caret');
+      if(caret) caret.textContent = open ? '▾' : '▸';
+      else btn.textContent = (open ? '▾ Hide ' : '▸ Show ') + btn.textContent.replace(/^[▸▾]\s*(Show|Hide)\s*/, '');
+      btn.setAttribute('aria-expanded', String(open));
+    });
   }));
   // drill-down toggles (+/−) in the Details mini-P&L
   document.getElementById('skuCards').querySelectorAll('[data-exp]').forEach(line => line.addEventListener('click', () => {
