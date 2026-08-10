@@ -322,7 +322,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <button class="btn" id="gDateApply" title="Apply the date filter" style="padding:6px 14px;font-size:12px">Apply</button>
       <button class="ch-chip" id="gDateClear" title="Clear date filter">All dates</button>
     </div>
-    <div class="ch-chips" id="chChips">
+    <div class="ch-chips" id="chChips" title="Click a channel to see just that one, then click others to add them - e.g. eBay + TikTok together">
       <button class="ch-chip active" data-ch="all">All Channels</button>
       <button class="ch-chip c-tiktok" data-ch="tiktok">TikTok</button>
       <button class="ch-chip c-amazon" data-ch="amazon">Amazon 1 (Vemart)</button>
@@ -3106,9 +3106,15 @@ function diagnostics(){
 
 // helpers over channels
 const loadedChannels = () => ALL_CH.filter(ch => STATE.channels[ch]);
+// The channel filter holds one of three shapes: 'all', a single channel id, or an ARRAY of
+// ids once several are picked. Keeping the single-id shape means every existing
+// "chFilter === 'amazon'" test still behaves exactly as before; only multi-select needs these.
+const chOn = ch => STATE.chFilter === 'all' ? true
+  : (Array.isArray(STATE.chFilter) ? STATE.chFilter.indexOf(ch) >= 0 : STATE.chFilter === ch);
+const chSelection = () => Array.isArray(STATE.chFilter) ? STATE.chFilter.slice()
+  : (STATE.chFilter === 'all' ? ALL_CH.slice() : [STATE.chFilter]);
 function filteredChannels(){
-  const chans = loadedChannels();
-  return STATE.chFilter === 'all' ? chans : chans.filter(c => c === STATE.chFilter);
+  return loadedChannels().filter(chOn);
 }
 function filteredRows(){ return filteredChannels().flatMap(ch => STATE.channels[ch]); }
 function opexFor(chans){
@@ -3336,7 +3342,8 @@ function plForRange(from, to){
 }
 function openPlDrawer(from, to, title){
   const t = plForRange(from, to);
-  const chLabel = STATE.chFilter === 'all' ? 'All channels' : (CH_NAME[STATE.chFilter] || STATE.chFilter);
+  const chLabel = STATE.chFilter === 'all' ? 'All channels'
+    : chSelection().map(c => CH_NAME[c] || c).join(' + ');
   document.getElementById('plsDrawerTitle').textContent = (title||'Custom') + ' — P&L';
   document.getElementById('plsDrawerRange').textContent = `${from===to?from:from+' → '+to} · ${chLabel}`;
   const money = (v, cls) => `<span class="amt ${cls||''}">${v<0?'-':''}${fmtGBP(Math.abs(v))}</span>`;
@@ -3449,7 +3456,7 @@ function setEnabledKpis(arr){ try{ store.set('mcpd_dash_kpis', JSON.stringify(ar
 function renderDashboard(){
   const useHist = STATE.dataSource === 'history';
   const chans = filteredChannels();
-  const histCh = STATE.chFilter === 'all' ? ALL_CH.slice() : [STATE.chFilter];
+  const histCh = chSelection();
   // source bar
   document.getElementById('srcLive').classList.toggle('active', !useHist);
   document.getElementById('srcHist').classList.toggle('active', useHist);
@@ -3647,7 +3654,7 @@ function renderHourly(){
     if(fixText(r['Type']) !== 'Order') continue;
     bucket(r['Transaction creation date'], cleanMoney(r['Gross transaction amount']), fixText(r['Order number']) || ('e'+(seq++)));
   }
-  const amzHourly = (chn, bucketName) => { if(!((STATE.chFilter==='all' || STATE.chFilter===chn) && R[bucketName])) return;
+  const amzHourly = (chn, bucketName) => { if(!(chOn(chn) && R[bucketName])) return;
     for(const r of R[bucketName]){ if(fixText(r['type']).toLowerCase() !== 'order') continue;
       bucket(r['date/time'], cleanMoney(r['product sales']) + cleanMoney(r['product sales tax']), fixText(r['order id']) || ('a'+(seq++))); } };
   amzHourly('amazon', 'amz_txn');
@@ -3775,8 +3782,8 @@ function renderOrders(){
   if(chans.includes('shopify') && STATE.extras.shopify) list = list.concat(STATE.extras.shopify.ordersList);
   // Amazon order rows come from the transaction report (not the Business Report), so gate on
   // the channel filter rather than loadedChannels (which only knows the Business-Report P&L).
-  if((STATE.chFilter==='all' || STATE.chFilter==='amazon') && STATE.extras.amazonTxn) list = list.concat(STATE.extras.amazonTxn.txnOrders);
-  if((STATE.chFilter==='all' || STATE.chFilter==='amazon2') && STATE.extras.amazon2Txn) list = list.concat(STATE.extras.amazon2Txn.txnOrders);
+  if(chOn('amazon') && STATE.extras.amazonTxn) list = list.concat(STATE.extras.amazonTxn.txnOrders);
+  if(chOn('amazon2') && STATE.extras.amazon2Txn) list = list.concat(STATE.extras.amazon2Txn.txnOrders);
   // Map each order line to its SKU's finalized row, then prorate that row's charges/profit
   // to the line by its share of the SKU's total order-line revenue. This makes every
   // per-order figure reconcile exactly to the verified channel totals.
@@ -3856,8 +3863,8 @@ function renderRefunds(){
   if(chans.includes('shopify') && STATE.extras.shopify){
     for(const o of STATE.extras.shopify.ordersList) if(o.refund > 0.005) list.push({channel:'shopify', date:o.date, order:o.order, sku:o.sku + ' - ' + (o.name||'').substr(0,40), amount:o.refund});
   }
-  if((STATE.chFilter==='all' || STATE.chFilter==='amazon') && STATE.extras.amazonTxn) list = list.concat(STATE.extras.amazonTxn.refundsList);
-  if((STATE.chFilter==='all' || STATE.chFilter==='amazon2') && STATE.extras.amazon2Txn) list = list.concat(STATE.extras.amazon2Txn.refundsList);
+  if(chOn('amazon') && STATE.extras.amazonTxn) list = list.concat(STATE.extras.amazonTxn.refundsList);
+  if(chOn('amazon2') && STATE.extras.amazon2Txn) list = list.concat(STATE.extras.amazon2Txn.refundsList);
   list.sort((a,b) => (b.date||'').localeCompare(a.date||''));
   const total = list.reduce((a,r)=>a+r.amount,0);
   const cards = [
@@ -5103,9 +5110,32 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
 
 // only real channel chips (data-ch) - the "All dates" button shares the styling
 // class but must NOT touch the channel filter
+function paintChChips(){
+  document.querySelectorAll('.ch-chip[data-ch]').forEach(x => {
+    const ch = x.dataset.ch;
+    x.classList.toggle('active', ch === 'all' ? STATE.chFilter === 'all'
+      : (STATE.chFilter !== 'all' && chOn(ch)));
+  });
+}
+// Channels are multi-select. Coming from "All Channels" a click narrows to just that one
+// (what a single click has always done); after that each click adds or removes a channel,
+// so eBay then TikTok gives you both. Clearing the last one, or picking every channel,
+// falls back to "All Channels".
 document.querySelectorAll('.ch-chip[data-ch]').forEach(c => c.addEventListener('click', () => {
-  STATE.chFilter = c.dataset.ch;
-  document.querySelectorAll('.ch-chip[data-ch]').forEach(x => x.classList.toggle('active', x===c));
+  const ch = c.dataset.ch;
+  if(ch === 'all'){
+    STATE.chFilter = 'all';
+  } else if(STATE.chFilter === 'all'){
+    STATE.chFilter = ch;                       // narrow to the one just clicked
+  } else {
+    const sel = chSelection();
+    const i = sel.indexOf(ch);
+    if(i >= 0) sel.splice(i, 1); else sel.push(ch);
+    const loaded = loadedChannels();
+    const coversEverything = loaded.length > 0 && loaded.every(x => sel.indexOf(x) >= 0);
+    STATE.chFilter = (!sel.length || coversEverything) ? 'all' : (sel.length === 1 ? sel[0] : sel);
+  }
+  paintChChips();
   renderPage();
 }));
 
@@ -5529,7 +5559,7 @@ function switchAccount(id){
   STATE.dateFrom = ''; STATE.dateTo = ''; STATE.custFrom = ''; STATE.custTo = '';
   STATE.histAnchor = ''; STATE.chFilter = 'all'; STATE.dataSource = 'live';
   STATE.diagText = 'Load files to see diagnostics.';
-  document.querySelectorAll('.ch-chip[data-ch]').forEach(x => x.classList.toggle('active', x.dataset.ch === 'all'));
+  paintChChips();
   document.querySelectorAll('.fs-item').forEach(el => {
     el.classList.remove('ok');
     el.querySelector('.check').textContent = '○';
