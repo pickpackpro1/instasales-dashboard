@@ -235,6 +235,9 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .badge.purple{background:#efe7fd;color:#6a3cb5}
 .badge.green{background:#e3f7ee;color:var(--green)}
 .badge.red{background:#fde7ec;color:var(--red)}
+/* SKU Management: a product that was never listed on one of the channels */
+#skuMapTable tr.row-missing td{background:#fff5f6}
+#skuMapTable tr.row-missing td:first-child{box-shadow:inset 3px 0 0 #e8467c}
 .badge.amber{background:#fdf3df;color:#b57b00}
 .badge.grey{background:#eef2f7;color:var(--muted)}
 .info-line{display:flex;justify-content:space-between;gap:8px;padding:2px 0;font-size:11.5px}
@@ -465,6 +468,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
             <select class="fsel" id="skuMapChannel"></select>
             <select class="fsel" id="skuMapStatus">
               <option value="all">All products</option>
+              <option value="missing">⚠ Missing from a channel</option>
               <option value="inactive">Only products with inactive SKUs</option>
               <option value="active">Only fully-active products</option>
               <option value="nosku">No SKU mapped yet</option>
@@ -3925,13 +3929,23 @@ function renderSkuMgt(){
     }
   }
   const famList = [...famMap.values()];
+  // Products are meant to launch on every channel, so a channel carrying NO SKU at all for a
+  // product (neither routed nor un-routed) is a listing that was never created. Flag it -
+  // that is invisible otherwise, because the table only draws rows for channels that HAVE SKUs.
+  for(const p of famList){
+    p.missing = map.channels.filter(c => !p.byCh[c].routed.length && !p.byCh[c].unrouted.length);
+    // a product with no SKUs anywhere isn't "missing from 5 channels", it just isn't mapped yet
+    if(p.missing.length === map.channels.length) p.missing = [];
+  }
 
   const withInactive = famList.filter(p => p.hasInactive).length;
+  const withMissing = famList.filter(p => p.missing.length).length;
   document.getElementById('skuMapTiles').innerHTML = [
     {tl:'Products', tv:fmtNum(famList.length), bg:'var(--pastel-4)'},
     {tl:'Active SKUs (routed)', tv:fmtNum(map.active), bg:'var(--pastel-3)'},
     {tl:'Inactive SKUs (un-routed)', tv:fmtNum(map.inactive), bg:'var(--pastel-2)'},
     {tl:'Products w/ inactive SKUs', tv:fmtNum(withInactive), bg:'var(--pastel-1)'},
+    {tl:'⚠ Missing from a channel', tv:fmtNum(withMissing), bg:withMissing?'#ffe3e8':'var(--pastel-3)'},
   ].map(x => `<div class="stat-tile" style="background:${x.bg}"><div class="tl">${x.tl}</div><div class="tv">${x.tv}</div></div>`).join('');
 
   const chSel = document.getElementById('skuMapChannel');
@@ -3946,6 +3960,7 @@ function renderSkuMgt(){
   const allSkus = p => map.channels.flatMap(c => [...p.byCh[c].routed, ...p.byCh[c].unrouted]);
   const totRouted = p => map.channels.reduce((a,c)=>a+p.byCh[c].routed.length,0);
   let products = famList.filter(p => {
+    if(status === 'missing' && !p.missing.length) return false;
     if(status === 'inactive' && !p.hasInactive) return false;
     if(status === 'active' && !(totRouted(p) > 0 && !p.hasInactive)) return false;
     if(status === 'nosku' && (totRouted(p) > 0 || p.hasInactive)) return false;
@@ -3994,10 +4009,13 @@ function renderSkuMgt(){
     let chList = chList0.filter(c => p.byCh[c].routed.length || p.byCh[c].unrouted.length);
     if(!chList.length){ if(chFilter) continue; chList = [chList0[0]]; }
     const vnote = p.variants > 1 ? `<span style="color:var(--muted);font-weight:400;font-size:11px"> · ${p.variants} variants</span>` : '';
+    const missNote = p.missing.length
+      ? `<div style="margin-top:4px"><span class="badge red" title="No SKU at all on ${esc(p.missing.join(', '))} - this product was never listed there">⚠ Not listed on ${p.missing.length} channel${p.missing.length>1?'s':''}</span></div>`
+      : '';
     chList.forEach((c, i) => {
       const b = p.byCh[c];
-      rows.push(`<tr>
-        <td style="font-weight:${i===0?700:400};max-width:220px">${i===0?esc(p.name)+vnote:''}</td>
+      rows.push(`<tr${i===0 && p.missing.length ? ' class="row-missing"' : ''}>
+        <td style="font-weight:${i===0?700:400};max-width:220px">${i===0?esc(p.name)+vnote+missNote:''}</td>
         <td>${i===0?'<span class="badge blue">Inventory</span>':''}</td>
         <td><span class="chip ${TYPE_CH_FROM_NAME(c)}">${esc(c)}</span></td>
         <td style="max-width:340px;white-space:normal">${chips(b.routed, 'green')}</td>
@@ -4006,6 +4024,17 @@ function renderSkuMgt(){
       </tr>`);
       shown++;
     });
+    // one explicit row per channel the product is absent from, so the gap is visible in the
+    // same place you read the SKUs rather than only as a count on the product name
+    if(!chFilter) for(const c of p.missing){
+      rows.push(`<tr class="row-missing">
+        <td></td><td></td>
+        <td><span class="chip ${TYPE_CH_FROM_NAME(c)}" style="opacity:.45">${esc(c)}</span></td>
+        <td colspan="2" style="color:#c0392b;font-weight:700">⛔ Not listed on ${esc(c)} — no SKU mapped</td>
+        ${EMPTY_STOCK}
+      </tr>`);
+      shown++;
+    }
   }
   document.querySelector('#skuMapTable tbody').innerHTML = rows.join('') || `<tr><td colspan="${COLS}" style="color:var(--muted)">No products match the filters.</td></tr>`;
   document.getElementById('skuMapCount').textContent = `${Math.min(products.length, CAP)}${products.length>CAP?'+':''} of ${famList.length} products`;
