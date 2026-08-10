@@ -5221,9 +5221,11 @@ document.querySelectorAll('.ch-chip[data-ch]').forEach(c => c.addEventListener('
     const sel = chSelection();
     const i = sel.indexOf(ch);
     if(i >= 0) sel.splice(i, 1); else sel.push(ch);
-    const loaded = loadedChannels();
-    const coversEverything = loaded.length > 0 && loaded.every(x => sel.indexOf(x) >= 0);
-    STATE.chFilter = (!sel.length || coversEverything) ? 'all' : (sel.length === 1 ? sel[0] : sel);
+    // An explicit pick stays explicit. This used to collapse back to "All Channels" whenever
+    // the selection happened to cover every channel that had data - so with only the two
+    // Amazon accounts loaded, choosing Vemart + Vefive silently reset to All. Only the
+    // "All Channels" button, or clearing the last channel, returns to 'all' now.
+    STATE.chFilter = !sel.length ? 'all' : (sel.length === 1 ? sel[0] : sel);
   }
   paintChChips();
   renderPage();
