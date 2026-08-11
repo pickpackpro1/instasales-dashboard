@@ -575,7 +575,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span><span id="cbHistTitle">Price history</span></h3>
         <button class="btn" id="cbHistClose">Close</button>
       </div>
-      <div class="sub-title">Every dated version for this ASIN. The one in force on your chosen date is highlighted. Deleting a version cannot be undone.</div>
+      <div class="sub-title">Every dated cost for this one product. The version in force on your chosen date is highlighted green. Use <b>Add version</b> when a supplier or courier price changes - reports before that date keep the old cost. <b>✕</b> deletes just that one version, nothing else.</div>
       <div id="cbHistBody"></div>
       <div class="fbar" style="margin-top:10px;flex-wrap:wrap">
         <span class="flabel">Add a new cost, effective from</span>
@@ -4309,7 +4309,8 @@ function cbAsMasterEntry(v, chan, name){
 }
 
 // ---- Cost Manager page ----
-let CB_OPEN = '';        // ASIN whose history panel is open
+let CB_OPEN = '';        // "fam|id" key whose history panel is open
+let CB_OPEN_CHAN = 'fbm';// which offer row it was opened from, so Add version defaults to it
 const cbKey = a => String(a||'').trim().toUpperCase();
 // Every ASIN worth showing: those selling right now, plus anything already in the book or
 // the uploaded master sheet.
@@ -4437,7 +4438,7 @@ function renderCostBook(){
       inp(o,'oper', n2(v.oper)) +
       inp(o,'ref', nRef(v.ref)) +
       '<td>' + (v.from ? esc(v.from) : '<span style="color:var(--muted)">not set</span>') + '</td>' +
-      '<td><button class="act-link" data-cbhist="' + esc(o.fam+'|'+o.id) + '">&#128197; ' + nv + '</button></td>' +
+      '<td><button class="act-link" data-cbhist="' + esc(o.fam+'|'+o.id) + '" data-cbchan="' + o.chan + '" title="Dated cost history for this offer - add, change or delete a single version">&#128197; ' + nv + '</button></td>' +
     '</tr>';
   }).join('');
   document.querySelector('#cbTable tbody').innerHTML = rows ||
@@ -4468,21 +4469,35 @@ function renderCostBook(){
     showBanner('Saved ' + chan.toUpperCase() + ' ' + field + ' for ' + id + ', effective ' + asAt + '.', 'success');
   }));
   document.querySelectorAll('#cbTable [data-cbhist]').forEach(b => b.addEventListener('click', () => {
-    CB_OPEN = b.dataset.cbhist; renderCostHistory();
+    CB_OPEN = b.dataset.cbhist;
+    CB_OPEN_CHAN = b.dataset.cbchan || 'fbm';
+    renderCostHistory();
+    document.getElementById('cbHistCard').scrollIntoView({behavior:'smooth', block:'nearest'});
   }));
   if(CB_OPEN) renderCostHistory();
 }
 function renderCostHistory(){
   const card = document.getElementById('cbHistCard');
-  if(!CB_OPEN || !COSTBOOK[CB_OPEN]){ card.classList.add('hidden'); return; }
+  if(!CB_OPEN){ card.classList.add('hidden'); return; }
   card.classList.remove('hidden');
   const asAt = document.getElementById('cbAsAt').value || todayISO();
-  const rec = COSTBOOK[CB_OPEN];
-  document.getElementById('cbHistTitle').textContent = `Price history · ${CB_OPEN}${rec.name ? ' · ' + rec.name.slice(0,50) : ''}`;
-  const inForce = {fbm: costBookAt(CB_OPEN,'fbm',asAt), fba: costBookAt(CB_OPEN,'fba',asAt)};
+  const bar = CB_OPEN.indexOf('|');
+  const fam = bar < 0 ? 'amazon' : CB_OPEN.slice(0, bar);
+  const id  = bar < 0 ? CB_OPEN : CB_OPEN.slice(bar + 1);
+  // An offer with no versions yet must still open - that is the ONLY way to give it its first
+  // dated cost. Render the empty shell rather than hiding the whole card.
+  const rec = COSTBOOK[CB_OPEN] || {name:'', fbm:[], fba:[]};
+  const chans = fam === 'amazon' ? ['fbm','fba'] : ['fbm'];
+  const label = chan => fam === 'amazon' ? chan.toUpperCase() : fam.toUpperCase();
+  document.getElementById('cbHistTitle').textContent =
+    `Price history · ${id}${rec.name ? ' · ' + rec.name.slice(0,50) : ''}`;
+  // costBookAt() takes the BARE id plus a family - passing the composite key made it look up
+  // "amazon|amazon|B0..." and miss every time, so nothing was ever marked in force.
+  const inForce = {};
+  for(const chan of chans) inForce[chan] = costBookAt(id, chan, asAt, fam);
   const block = chan => {
     const list = cbSorted(rec[chan]);
-    if(!list.length) return `<div style="margin:6px 0 12px"><b>${chan.toUpperCase()}</b> <span style="color:var(--muted)">- no versions yet</span></div>`;
+    if(!list.length) return `<div style="margin:6px 0 12px"><b>${label(chan)}</b> <span style="color:var(--muted)">- no versions yet. Add the first one below.</span></div>`;
     const rows = list.map((v,i) => {
       const live = inForce[chan] === v;
       return `<tr style="${live?'background:#eefaf4;font-weight:700':''}">
@@ -4491,25 +4506,41 @@ function renderCostHistory(){
         <td class="num">${chan==='fba' ? (v.fee!=null?fmtGBP(v.fee):'-') : (v.ship!=null?fmtGBP(v.ship):'-')}</td>
         <td class="num">${v.oper!=null?fmtGBP(v.oper):'-'}</td>
         <td class="num">${v.ref!=null?fmtPct(+v.ref>1?+v.ref:+v.ref*100):'-'}</td>
-        <td><button class="act-link" data-cbdel="${chan}" data-i="${i}">🗑 Delete</button></td>
+        <td><button class="btn danger" style="padding:2px 9px;font-size:11px" data-cbdel="${chan}" data-i="${i}" title="Delete just this version">✕</button></td>
       </tr>`;
     }).join('');
-    return `<div style="margin:6px 0 14px"><b>${chan.toUpperCase()}</b>
+    return `<div style="margin:6px 0 14px"><b>${label(chan)}</b>
       <table style="margin-top:4px"><thead><tr><th>Effective from</th><th class="num">COGS</th>
       <th class="num">${chan==='fba'?'FBA fee':'Shipping'}</th><th class="num">Operational</th><th class="num">Referral</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   };
-  document.getElementById('cbHistBody').innerHTML = block('fbm') + block('fba');
+  document.getElementById('cbHistBody').innerHTML = chans.map(block).join('');
+  // FBM/FBA only means something on Amazon; elsewhere there is one offer, so pin it to fbm.
+  const chanSel = document.getElementById('cbNewChan');
+  chanSel.style.display = fam === 'amazon' ? '' : 'none';
+  if(fam === 'amazon'){ if(chans.includes(CB_OPEN_CHAN)) chanSel.value = CB_OPEN_CHAN; }
+  else chanSel.value = 'fbm';
+  const shipInp = document.getElementById('cbNewShip');
+  shipInp.placeholder = (fam === 'amazon' && chanSel.value === 'fba') ? 'FBA fee £' : 'Ship £';
+  const nf = document.getElementById('cbNewFrom');
+  if(!nf.value) nf.value = asAt;
   document.getElementById('cbHistBody').querySelectorAll('[data-cbdel]').forEach(b => b.addEventListener('click', () => {
     const chan = b.dataset.cbdel, i = +b.dataset.i;
+    if(!COSTBOOK[CB_OPEN]) return;
     const list = cbSorted(COSTBOOK[CB_OPEN][chan]);
-    if(!confirm(`Delete the ${chan.toUpperCase()} cost effective ${list[i].from||'(no date)'} for ${CB_OPEN}? Past reports using it will change.`)) return;
+    const only = list.length === 1;
+    if(!confirm(`Delete the ${label(chan)} cost effective ${list[i].from||'(no date)'} for ${id}?` +
+      (only ? '\n\nThis is its only version, so this offer will be left with NO cost and book £0 COGS.' : '') +
+      '\n\nReports covering that period will change.')) return;
     list.splice(i,1);
     COSTBOOK[CB_OPEN][chan] = list;
+    if(!COSTBOOK[CB_OPEN].fbm.length && !COSTBOOK[CB_OPEN].fba.length) delete COSTBOOK[CB_OPEN];
     saveCostBook();
-    if(STATE.raw.master.length) STATE.master = buildMaster();
-    if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
+    STATE.master = buildMaster();
+    if(loadedChannels().length){ recompute(); diagnostics(); }
     renderCostBook();
+    renderCostHistory();
+    showBanner(`Deleted that ${label(chan)} version for ${id}.`, 'success');
   }));
 }
 
@@ -6055,6 +6086,9 @@ document.getElementById('spReport').addEventListener('change', e => { STATE.sp.r
 ['cbAsAt','cbScope','cbSearch','cbPlat'].forEach(id =>
   document.getElementById(id).addEventListener(id==='cbSearch'?'input':'change', () => renderCostBook()));
 document.getElementById('cbHistClose').addEventListener('click', () => { CB_OPEN=''; renderCostHistory(); });
+document.getElementById('cbNewChan').addEventListener('change', e => {
+  document.getElementById('cbNewShip').placeholder = e.target.value==='fba' ? 'FBA fee £' : 'Ship £';
+});
 // Bulk import. Accepts the master-sheet layout you already have, so an existing sheet loads
 // straight in. Every imported row becomes a VERSION dated by the "Costs as at" box, so an
 // import is a point-in-time price list - re-importing next month after a supplier change adds
@@ -6185,6 +6219,10 @@ document.getElementById('cbAddVersion').addEventListener('click', () => {
   const buy = num('cbNewBuy'), ship = num('cbNewShip'), oper = num('cbNewOper'), refRaw = num('cbNewRef');
   if(buy==null && ship==null && oper==null && refRaw==null){ showBanner('Enter at least one cost for the new version.', 'error'); return; }
   const rec = COSTBOOK[CB_OPEN] || (COSTBOOK[CB_OPEN] = {name:'', fbm:[], fba:[]});
+  const bar = CB_OPEN.indexOf('|');
+  const fam = bar < 0 ? 'amazon' : CB_OPEN.slice(0, bar);
+  const id  = bar < 0 ? CB_OPEN : CB_OPEN.slice(bar + 1);
+  if(!rec.name){ const f = cbOffers().find(x => x.fam===fam && x.id===id); if(f) rec.name = f.name||''; }
   rec[chan] = cbSorted(rec[chan]).filter(v => v.from !== from);   // same date replaces
   const v = {from};
   if(buy!=null) v.buy = buy;
@@ -6194,11 +6232,14 @@ document.getElementById('cbAddVersion').addEventListener('click', () => {
   rec[chan].push(v);
   rec[chan] = cbSorted(rec[chan]);
   saveCostBook();
-  if(STATE.raw.master.length) STATE.master = buildMaster();
-  if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
-  ['cbNewBuy','cbNewShip','cbNewOper','cbNewRef'].forEach(id => document.getElementById(id).value='');
+  // Unconditional: costs now come from the book, so there may be no master sheet at all.
+  // Gating this on STATE.raw.master.length left the new cost out of the P&L entirely.
+  STATE.master = buildMaster();
+  if(loadedChannels().length){ recompute(); diagnostics(); }
+  ['cbNewBuy','cbNewShip','cbNewOper','cbNewRef'].forEach(x => document.getElementById(x).value='');
   renderCostBook();
-  showBanner(`Added ${chan.toUpperCase()} cost for ${CB_OPEN}, effective ${from}. Earlier reports keep the previous cost.`, 'success');
+  renderCostHistory();
+  showBanner(`Added ${fam==='amazon'?chan.toUpperCase():fam.toUpperCase()} cost for ${id}, effective ${from}. Earlier reports keep the previous cost.`, 'success');
 });
 document.getElementById('cbExport').addEventListener('click', () => {
   const asAt = document.getElementById('cbAsAt').value || todayISO();
