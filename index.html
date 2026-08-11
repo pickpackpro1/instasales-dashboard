@@ -775,6 +775,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
             <div class="fs-item" data-t="amz_biz"><span class="check">○</span><span>Business Report (by ASIN)</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz_ads"><span class="check">○</span><span>Sponsored Products / ADV sheet</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz_txn"><span class="check">○</span><span>Transaction report (orders/refunds)</span><span class="cnt">-</span></div>
+            <div class="fs-item" data-t="amz_orders"><span class="check">○</span><span>All Orders Report (splits FBA / FBM)</span><span class="cnt">-</span></div>
           </div>
         </div>
         <div class="up-zone" style="border-color:var(--ch-amazon2);background:#fff8ee" data-drop="amazon2">
@@ -786,6 +787,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
             <div class="fs-item" data-t="amz2_biz"><span class="check">○</span><span>Business Report (by ASIN)</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz2_ads"><span class="check">○</span><span>Sponsored Products / ADV sheet</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz2_txn"><span class="check">○</span><span>Transaction report (orders/refunds)</span><span class="cnt">-</span></div>
+            <div class="fs-item" data-t="amz2_orders"><span class="check">○</span><span>All Orders Report (splits FBA / FBM)</span><span class="cnt">-</span></div>
           </div>
         </div>
         <div class="up-zone" style="border-color:var(--ch-tiktok)" data-drop="">
@@ -835,6 +837,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
           <tr><td><span class="chip tiktok">TikTok</span></td><td>Affiliate orders</td><td><span class="pill zero">Optional</span></td><td>Seller Center → Affiliate → Orders → Export</td><td>Affiliate + Shop Ads commissions</td></tr>
           <tr><td><span class="chip tiktok">TikTok</span></td><td>Ads export</td><td><span class="pill zero">Optional</span></td><td>Ads Manager → Reports (Product or Campaign data)</td><td>Ad spend, ACOS / TACOS</td></tr>
           <tr><td><span class="chip amazon">Amazon</span></td><td>Business Report (by Child ASIN)</td><td><span class="pill pos">Required</span></td><td>Seller Central → Reports → Business Reports → Detail Page Sales &amp; Traffic by Child Item → set date range → Download CSV</td><td>Sales &amp; units per ASIN. No dates inside - export per month (or per day for daily views)</td></tr>
+          <tr><td><span class="chip amazon">Amazon</span></td><td>All Orders Report</td><td><span class="pill amber" style="background:#fdf3df;color:#9a6a00">Needed for FBA</span></td><td>Seller Central &rarr; Reports &rarr; Fulfilment &rarr; All Orders &rarr; set date range &rarr; Download</td><td>The only export carrying <b>sku</b>, <b>asin</b> and <b>fulfilment-channel</b> together. Without it an ASIN sold as both FBA and FBM gets one combined figure and only one of the two costs can apply.</td></tr>
           <tr><td><span class="chip amazon">Amazon</span></td><td>Sponsored Products sheet</td><td><span class="pill zero">Optional</span></td><td>Advertising Console → Campaigns → export product-level sheet (columns: Products, Spend(GBP), Sales(GBP), ACOS)</td><td>Ad spend, ACOS / TACOS, ad waste</td></tr>
           <tr><td><span class="chip ebay">eBay</span></td><td>Listings Sales Report</td><td><span class="pill pos">Required</span></td><td>Seller Hub → Performance → Sales → listings table → Download report</td><td>Revenue + full fee breakdown per listing</td></tr>
           <tr><td><span class="chip ebay">eBay</span></td><td>Transaction report</td><td><span class="pill amber" style="background:#fdf3df;color:#9a6a00">Recommended</span></td><td>Seller Hub → Payments → Reports → Transaction report (CSV)</td><td>Order dates, refunds, daily trend, date filtering</td></tr>
@@ -1091,9 +1094,9 @@ function findKey(row, ...prefixes){
 const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
 
 // ================= state =================
-const EMPTY_RAW = () => ({master:[], tt_orders:[], tt_aff:[], tt_ads:[], amz_biz:[], amz_ads:[], amz_txn:[], amz_txn2:[], amz2_biz:[], amz2_ads:[], amz2_txn:[], amz2_txn2:[], ebay_list:[], ebay_txn:[], ebay_pl:[], ebay_ppc:[], shop_orders:[], sku_map:[]});
+const EMPTY_RAW = () => ({master:[], tt_orders:[], tt_aff:[], tt_ads:[], amz_biz:[], amz_ads:[], amz_txn:[], amz_txn2:[], amz_orders:[], amz2_biz:[], amz2_ads:[], amz2_txn:[], amz2_txn2:[], amz2_orders:[], ebay_list:[], ebay_txn:[], ebay_pl:[], ebay_ppc:[], shop_orders:[], sku_map:[]});
 // Amazon report types that get remapped to the Amazon-2 (Vefive) buckets when dropped in that slot
-const AMZ2_REMAP = {amz_biz:'amz2_biz', amz_ads:'amz2_ads', amz_txn:'amz2_txn', amz_txn2:'amz2_txn2'};
+const AMZ2_REMAP = {amz_biz:'amz2_biz', amz_ads:'amz2_ads', amz_txn:'amz2_txn', amz_txn2:'amz2_txn2', amz_orders:'amz2_orders'};
 const STATE = {
   raw: EMPTY_RAW(), files: {}, ttAdsMode: null,
   master: null, channels: {}, extras: {},
@@ -1191,6 +1194,9 @@ function detectSheet(sheet){
     if(s.has('Est. standard commission payment') || s.has('Est. Shop Ads commission payment')) return {type:'tt_aff', headerRow:i};
     if(s.has('(Child) ASIN') && s.has('Ordered Product Sales')) return {type:'amz_biz', headerRow:i};
     // Amazon Payments/Transaction report (per-order Orders + Refunds with real fees)
+    // All Orders Report - the only Amazon export that carries SKU *and* fulfilment channel
+    // per order line, which is what lets FBA and FBM offers on one ASIN be told apart.
+    if(s.has('sku') && s.has('asin') && cells.some(c => /^fulfill?ment.channel$/i.test(c))) return {type:'amz_orders', headerRow:i};
     if(s.has('settlement id') && s.has('type') && s.has('order id') && s.has('product sales')) return {type:'amz_txn', headerRow:i};
     // Amazon Date-Range Transaction report (simpler: no SKU, one lumped "Amazon fees" column)
     if(s.has('Transaction type') && s.has('Order ID') && s.has('Product Details') && s.has('Total product charges')) return {type:'amz_txn2', headerRow:i};
@@ -1447,9 +1453,10 @@ function showBanner(text, kind){
 const TYPE_LABEL = {master:'Master cost sheet', tt_orders:'TikTok orders', tt_aff:'TikTok affiliate', tt_ads:'TikTok ads',
   amz_biz:'Amazon Business Report', amz_ads:'Amazon Sponsored Products', amz_txn:'Amazon transaction report', amz_txn2:'Amazon transaction report (date-range)',
   amz2_biz:'Amazon 2 (Vefive) Business Report', amz2_ads:'Amazon 2 (Vefive) Sponsored Products', amz2_txn:'Amazon 2 (Vefive) transaction report', amz2_txn2:'Amazon 2 (Vefive) transaction report (date-range)',
+  amz_orders:'Amazon 1 (Vemart) All Orders Report', amz2_orders:'Amazon 2 (Vefive) All Orders Report',
   ebay_list:'eBay Listings Sales', ebay_txn:'eBay transactions', ebay_pl:'eBay General Campaigns Report', ebay_ppc:'eBay Priority Campaigns Report', shop_orders:'Shopify orders', sku_map:'SKU Management map'};
-const TYPE_CH = {tt_orders:'tiktok', tt_aff:'tiktok', tt_ads:'tiktok', amz_biz:'amazon', amz_ads:'amazon', amz_txn:'amazon', amz_txn2:'amazon', amz2_biz:'amazon2', amz2_ads:'amazon2', amz2_txn:'amazon2', amz2_txn2:'amazon2', ebay_list:'ebay', ebay_txn:'ebay', ebay_pl:'ebay', ebay_ppc:'ebay', shop_orders:'shopify'};
-const FILE_DATE_COLS = {tt_orders:['Created Time','Paid Time'], tt_aff:['Time Created','Payment time'], amz_txn:['date/time'], amz_txn2:['Date'], amz2_txn:['date/time'], amz2_txn2:['Date'], ebay_txn:['Transaction creation date'], shop_orders:['Created at','Paid at']};
+const TYPE_CH = {tt_orders:'tiktok', tt_aff:'tiktok', tt_ads:'tiktok', amz_biz:'amazon', amz_ads:'amazon', amz_txn:'amazon', amz_txn2:'amazon', amz_orders:'amazon', amz2_biz:'amazon2', amz2_ads:'amazon2', amz2_txn:'amazon2', amz2_txn2:'amazon2', amz2_orders:'amazon2', ebay_list:'ebay', ebay_txn:'ebay', ebay_pl:'ebay', ebay_ppc:'ebay', shop_orders:'shopify'};
+const FILE_DATE_COLS = {tt_orders:['Created Time','Paid Time'], tt_aff:['Time Created','Payment time'], amz_txn:['date/time'], amz_txn2:['Date'], amz_orders:['purchase-date'], amz2_orders:['purchase-date'], amz2_txn:['date/time'], amz2_txn2:['Date'], ebay_txn:['Transaction creation date'], shop_orders:['Created at','Paid at']};
 function fileMeta(type, rows){
   let dates = null;
   const dc = FILE_DATE_COLS[type];
@@ -1684,9 +1691,16 @@ function buildMaster(){
     if(ref != null && ref > 1) ref = ref/100;
     if(ref === 0 && r['Refferal fee %'] == null && r['Referral fee %'] == null) ref = null;
     const opt = c => (r[c] != null && String(r[c]).trim() !== '') ? cleanMoney(r[c]) : null;
+    // Fulfilment channel: an FBA offer and an FBM offer can share one ASIN but always have
+    // different SKUs, so the cost that applies depends on which SKU actually sold. "fba" is
+    // recognised from the sheet's SKU CHANNEL column, or from an FBA/AFN suffix on the SKU.
+    const chanRaw = fixText(r['SKU CHANNEL'] || r['sku channel'] || r['Fulfilment Channel'] || r['Fulfillment Channel']);
+    const fba = /fba|afn|amazon/i.test(chanRaw) || (!chanRaw && /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(sku));
     const e = {name: fixText(r['Name']), buying: cleanMoney(r['buying_cost_per_unit']), oper: cleanMoney(r['operational_cost_per_unit']), shipping: cleanMoney(r['shipping_cost_per_unit']), referral: ref,
       selling_price: opt('selling_price'),
       aff: opt('affiliate_pct'), shopads: opt('shopads_pct'), reg: opt('regulatory_pct'), fixedu: opt('fixed_fee_per_unit'),
+      fbaFee: opt('FBA Fees') != null ? opt('FBA Fees') : opt('FBA Fee'),
+      chan: chanRaw, fba,
       sku, asin, pid, plat};
     const put = (map, key) => {
       if(!key) return;
@@ -1989,7 +2003,7 @@ function computeTikTok(){
 
 // ================= Amazon (verified engine) =================
 function computeAmazon(A){
-  A = A || {chName:'amazon', biz:'amz_biz', ads:'amz_ads', txn:'amz_txn', txn2:'amz_txn2'};
+  A = A || {chName:'amazon', biz:'amz_biz', ads:'amz_ads', txn:'amz_txn', txn2:'amz_txn2', orders:'amz_orders'};
   const R = STATE.raw;
   if(!R[A.biz].length && !R[A.ads].length) return null;
   // Rows stamped with __day (date parsed from the daily file/sheet name) are EXACT
@@ -2152,6 +2166,80 @@ function computeAmazon(A){
     const totalGross = Object.values(agg).reduce((s,a)=>s+a.gross, 0);
     if(hasActualRefunds && totalGross > 0) amzRefundRate = amzRefundActual/totalGross;
   }
+  // ---- FBA / FBM split ----------------------------------------------------------------
+  // The Business Report is ASIN-level: one ASIN sold as both FBA and FBM arrives as a single
+  // combined units figure, so costing it needs a source that names the SKU. The All Orders
+  // Report does - it carries sku, asin and fulfilment-channel per order line. Use it to work
+  // out what share of each ASIN's units belongs to each SKU, then cost each share at ITS own
+  // master row. The Business Report still owns the totals; only their split comes from here.
+  const skuSplit = {};   // asin -> [{sku, units, fba}]
+  let ordersRowsUsed = 0;
+  {
+    const src = R[A.orders] || [];
+    const byAsin = {};
+    for(const r of src){
+      const status = fixText(r['order-status'] || r['order status']).toLowerCase();
+      if(status === 'cancelled' || status === 'canceled') continue;
+      const asin = fixText(r['asin']);
+      const sku  = fixText(r['sku']);
+      const qty  = cleanInt(r['quantity'] != null ? r['quantity']
+                    : (r['quantity-shipped'] != null ? r['quantity-shipped'] : r['quantity-purchased']));
+      if(!asin || !sku || qty <= 0) continue;
+      const d = parseDate(r['purchase-date'] || r['purchase date']);
+      if(d && !inR(d)) continue;          // undated lines still count; dated ones must be in range
+      const fc = fixText(r['fulfillment-channel'] || r['fulfilment-channel'] || r['fulfillment channel']).toUpperCase();
+      const isFba = fc.startsWith('AFN') || fc.includes('AMAZON');
+      const g = (byAsin[asin] = byAsin[asin] || {});
+      const k = sku + '|' + (isFba ? 'FBA' : 'FBM');
+      if(!g[k]) g[k] = {sku, fba:isFba, units:0};
+      g[k].units += qty;
+      ordersRowsUsed++;
+    }
+    for(const [asin, g] of Object.entries(byAsin)) skuSplit[asin] = Object.values(g);
+  }
+  // Cost one ASIN row. With a split we cost each SKU's share separately and add them up;
+  // without one we fall back to the ASIN-level master row exactly as before.
+  const costAmazonRow = (row, asin, e) => {
+    const parts = skuSplit[asin];
+    const tot = parts ? parts.reduce((a,p) => a + p.units, 0) : 0;
+    // FBA is fulfilled by Amazon, so its FBA fee stands in for the seller's own shipping.
+    const shipOf = (m, units, parcels) => m.fba ? units * (m.fbaFee || 0) : parcels * (m.shipping || 0);
+    if(parts && tot > 0){
+      let buying = 0, shipping = 0, oper = 0, covered = 0, fbaUnits = 0;
+      for(const p of parts){
+        const m = M.amazon.bySku[p.sku];
+        if(!m) continue;
+        const share = p.units / tot;
+        const units = (row.units || 0) * share;
+        const parcels = parcelsOf(row) * share;
+        buying += units * (m.buying || 0);
+        shipping += shipOf({fba:p.fba, fbaFee:m.fbaFee, shipping:m.shipping}, units, parcels);
+        oper += parcels * (m.oper || 0);
+        covered += share;
+        if(p.fba) fbaUnits += units;
+      }
+      if(covered > 0.999){                       // every SKU resolved - use the split verbatim
+        row.buying = buying; row.shipping = shipping; row.oper = oper;
+        row.fbaUnits = fbaUnits; row.splitBySku = true;
+        return true;
+      }
+      if(covered > 0 && e){                      // partially resolved - top up the remainder
+        const rest = 1 - covered;
+        row.buying = buying + (row.units||0)*rest*(e.buying||0);
+        row.shipping = shipping + shipOf(e, (row.units||0)*rest, parcelsOf(row)*rest);
+        row.oper = oper + parcelsOf(row)*rest*(e.oper||0);
+        row.fbaUnits = fbaUnits; row.splitBySku = true; row.splitPartial = true;
+        return true;
+      }
+    }
+    if(!e) return false;
+    row.buying = (row.units || 0) * (e.buying || 0);
+    row.shipping = shipOf(e, row.units || 0, parcelsOf(row));
+    row.oper = parcelsOf(row) * (e.oper || 0);
+    if(e.fba) row.fbaUnits = row.units || 0;
+    return true;
+  };
+
   for(const [asin, a] of Object.entries(agg)){
     const row = newRow(A.chName, asin, a.title, asin);
     row.parent = a.parent || '';
@@ -2160,17 +2248,27 @@ function computeAmazon(A){
     row.revenue_gross = a.gross;
     row.refunds = row.revenue_gross * amzRefundRate;
     const e = M.amazon.byAsin[asin];
-    row.no_cost = !e;
-    if(e){
-      row.buying = row.units * e.buying;   // COGS is genuinely per unit
-      // Shipping/operational are ONE charge per ORDER - a multi-unit order still ships as a
-      // single parcel - matching the TikTok engine so channels compare like for like.
-      // Amazon's Business Report has no order IDs, so a multi-ASIN order books one parcel
-      // per ASIN; orders_count ('Total order items') is the closest available basis.
-      row.shipping = parcelsOf(row) * e.shipping;
-      row.oper = parcelsOf(row) * e.oper;
+    // COGS is per unit. Shipping/operational are ONE charge per ORDER - a multi-unit order
+    // still ships as a single parcel - matching the TikTok engine so channels compare like
+    // for like. The Business Report has no order IDs, so a multi-ASIN order books one parcel
+    // per ASIN; orders_count ('Total order items') is the closest available basis.
+    // Where the All Orders Report tells us the SKU mix, each SKU is costed on its own row.
+    const costed = costAmazonRow(row, asin, e);
+    row.no_cost = !costed;
+    // Referral: prefer the split's own SKUs, since an FBA and an FBM offer can differ.
+    let rate = null;
+    const sp = skuSplit[asin];
+    if(sp){
+      let tot = 0, w = 0, cov = 0;
+      for(const p of sp) tot += p.units;
+      for(const p of sp){
+        const m = M.amazon.bySku[p.sku];
+        if(!m || m.referral == null || !tot) continue;
+        w += m.referral * (p.units / tot); cov += p.units / tot;
+      }
+      if(cov > 0.999) rate = w;
     }
-    const rate = (e && e.referral != null) ? e.referral : STATE.amzRef;
+    if(rate == null) rate = (e && e.referral != null) ? e.referral : STATE.amzRef;
     row.mkt_fee = (row.revenue_gross - row.refunds) * rate;
     const ad = ads[asin];
     if(ad){ row.ads = ad.spend*adFactor; row.ad_sales = ad.sales*adFactor; row.clicks = Math.round(ad.clicks*adFactor); row.impressions = Math.round(ad.impressions*adFactor); used.add(asin); }
@@ -2186,7 +2284,10 @@ function computeAmazon(A){
     wasteSpend += a.spend*adFactor;
     waste.push({channel:A.chName, name: row.name || asin, ads:a.spend*adFactor, clicks:Math.round(a.clicks*adFactor)});
   }
-  return {rows: finalizeRows(rows), extras:{waste, wasteSpend, estDays, daily, dayRows, undatedCount: undatedRows.length, fullSpan:{min:dMin, max:dMax}, dayCollisions, rangeExcludedCount, rangeExcludedNames:[...rangeExcludedNames], amzRefundActual: hasActualRefunds ? amzRefundActual : null, amzRefundRate}};
+  return {rows: finalizeRows(rows), extras:{waste, wasteSpend, estDays, daily, dayRows, undatedCount: undatedRows.length, fullSpan:{min:dMin, max:dMax}, dayCollisions, rangeExcludedCount, rangeExcludedNames:[...rangeExcludedNames], amzRefundActual: hasActualRefunds ? amzRefundActual : null, amzRefundRate,
+    skuSplitAsins: Object.keys(skuSplit).length, ordersRowsUsed,
+    splitRows: rows.filter(r=>r.splitBySku).length, partialSplitRows: rows.filter(r=>r.splitPartial).length,
+    fbaUnits: rows.reduce((a,r)=>a+(r.fbaUnits||0),0)}};
 }
 
 // ================= eBay (verified engine + txn lists) =================
@@ -2917,7 +3018,7 @@ function recompute(){
   else if(azt && azt.rows && azt.rows.length){ STATE.channels.amazon = azt.rows; STATE.extras.amazon = {waste:[], wasteSpend:0, daily:azt.daily||{}, fromTxn:true, amzRefundActual:azt.refundTotal, fullSpan:azt.fullSpan}; }
   STATE.extras.amazonTxn = azt || null;
   // Amazon 2 (Vefive) - same engine, reading the amz2_* buckets (files dropped in its slot)
-  const AZ2 = {chName:'amazon2', biz:'amz2_biz', ads:'amz2_ads', txn:'amz2_txn', txn2:'amz2_txn2'};
+  const AZ2 = {chName:'amazon2', biz:'amz2_biz', ads:'amz2_ads', txn:'amz2_txn', txn2:'amz2_txn2', orders:'amz2_orders'};
   const az2 = computeAmazon(AZ2); const az2t = computeAmazonTxn({chName:'amazon2', txn:'amz2_txn', txn2:'amz2_txn2'});
   if(az2){ STATE.channels.amazon2 = az2.rows; STATE.extras.amazon2 = az2.extras; }
   else if(az2t && az2t.rows && az2t.rows.length){ STATE.channels.amazon2 = az2t.rows; STATE.extras.amazon2 = {waste:[], wasteSpend:0, daily:az2t.daily||{}, fromTxn:true, amzRefundActual:az2t.refundTotal, fullSpan:az2t.fullSpan}; }
@@ -3113,6 +3214,19 @@ function diagnostics(){
   if(STATE.extras.ebay && STATE.extras.ebay.ppc){
     const p = STATE.extras.ebay.ppc;
     L.push(`eBay Ads: spend ${fmtGBP(p.ppcSpend)} / ad sales ${fmtGBP(p.ppcSales)} combined from the Priority Campaigns Report (${STATE.raw.ebay_ppc.length} rows) + General Campaigns Report (${STATE.raw.ebay_pl.length} rows) - this is the authoritative ad-spend source, distributed across SKUs by promoted-fee share.`);
+  }
+  // FBA / FBM split status, per Amazon account
+  for(const [ch, label] of [['amazon','Amazon 1 (Vemart)'],['amazon2','Amazon 2 (Vefive)']]){
+    const x = STATE.extras[ch];
+    if(!x || !STATE.channels[ch]) continue;
+    if(x.ordersRowsUsed){
+      L.push(`${label}: All Orders Report matched ${fmtNum(x.ordersRowsUsed)} order lines across ${fmtNum(x.skuSplitAsins)} ASIN(s). `
+        + `${fmtNum(x.splitRows)} product row(s) costed per SKU`
+        + (x.fbaUnits > 0 ? `, of which ${fmtNum(Math.round(x.fbaUnits))} unit(s) are FBA (FBA fee used instead of your own shipping).` : ' - no FBA units in range.')
+        + (x.partialSplitRows ? ` ⚠ ${fmtNum(x.partialSplitRows)} row(s) had SKUs missing from the master, so the remainder fell back to the ASIN-level cost.` : ''));
+    } else {
+      L.push(`${label}: no All Orders Report loaded, so costs come from the ASIN-level master row. If an ASIN has both an FBA and an FBM offer, only one of their costs can be applied - drop the All Orders Report in to split them.`);
+    }
   }
   if(STATE.extras.ebay && STATE.extras.ebay.refundOther > 0) L.push(`eBay: ${fmtGBP(STATE.extras.ebay.refundOther)} refunds not matched to a listing in this report (older orders) - counted in refund KPIs.`);
   if(STATE.extras.ebay && STATE.extras.ebay.unjoinableListings > 0) L.push(`eBay: ${STATE.extras.ebay.unjoinableListings} Listings rows had an item ID Excel had converted to scientific notation (e.g. "3.56887E+11") that could not be rebuilt, so they were dropped in favour of the transaction report (which carries the same sales with intact IDs). Re-export the Sale sheet as .xlsx - or format the item ID column as Text - to use it fully.`);
