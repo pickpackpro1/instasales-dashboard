@@ -546,6 +546,9 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <button class="btn" id="cbImport">⤓ Import</button>
         <input type="file" id="cbImportFile" accept=".xlsx,.xls,.csv" style="display:none">
         <button class="btn" id="cbExport">📄 Export</button>
+        <span class="flabel" style="margin-left:8px">Batch</span>
+        <select class="fsel" id="cbDelDate" style="min-width:200px"></select>
+        <button class="btn danger" id="cbDeleteBatch">🗑 Delete batch</button>
         <div class="count" id="cbCount"></div>
       </div>
       <div class="sub-title">
@@ -4362,7 +4365,27 @@ function cbOffers(){
   }
   return Object.values(out);
 }
+// Every distinct effective-date in the book, newest first. An Import stamps one date across all
+// its rows, so a date with a big count is almost always one import batch.
+function cbBatches(){
+  const n = {};
+  for(const rec of Object.values(COSTBOOK)){
+    for(const chan of ['fbm','fba']) for(const v of (rec[chan]||[])) if(v.from) n[v.from] = (n[v.from]||0) + 1;
+  }
+  return Object.entries(n).sort((a,b) => b[0].localeCompare(a[0]));
+}
+function renderBatchPicker(){
+  const sel = document.getElementById('cbDelDate');
+  if(!sel) return;
+  const keep = sel.value;
+  const b = cbBatches();
+  sel.innerHTML = b.length
+    ? b.map(([d,c]) => `<option value="${d}">${d} · ${fmtNum(c)} cost(s)</option>`).join('')
+    : '<option value="">nothing dated yet</option>';
+  if(keep && b.some(x => x[0] === keep)) sel.value = keep;
+}
 function renderCostBook(){
+  renderBatchPicker();
   const asAtEl = document.getElementById('cbAsAt');
   if(!asAtEl.value) asAtEl.value = costRefDate();
   const asAt = asAtEl.value || todayISO();
@@ -6124,6 +6147,34 @@ document.getElementById('cbImportFile').addEventListener('change', async e => {
   }catch(err){
     showBanner('Import failed: ' + err.message, 'error');
   }
+});
+document.getElementById('cbDeleteBatch').addEventListener('click', () => {
+  const date = document.getElementById('cbDelDate').value;
+  if(!date){ showBanner('There are no dated cost versions to remove.', 'error'); return; }
+  let hits = 0, orphans = 0;
+  for(const rec of Object.values(COSTBOOK)){
+    for(const chan of ['fbm','fba']){
+      const list = rec[chan] || [];
+      const n = list.filter(v => v.from === date).length;
+      hits += n;
+      // this offer had a cost ONLY because of this batch - removing it leaves a £0-COGS gap
+      if(n && n === list.length) orphans++;
+    }
+  }
+  if(!hits){ showBanner('No cost versions are dated ' + date + '.', 'error'); return; }
+  if(!confirm(`Delete ${hits} cost version(s) dated ${date}, across every offer?\n\n` +
+    (orphans ? `${orphans} offer(s) have no other version, so they will be left with NO cost at all and book £0 COGS until you import or type one in. Check the "Missing a cost" filter afterwards.\n\n` : '') +
+    `This cannot be undone.`)) return;
+  for(const [k, rec] of Object.entries(COSTBOOK)){
+    for(const chan of ['fbm','fba']) rec[chan] = (rec[chan]||[]).filter(v => v.from !== date);
+    if(!rec.fbm.length && !rec.fba.length) delete COSTBOOK[k];
+  }
+  saveCostBook();
+  STATE.master = buildMaster();
+  if(loadedChannels().length){ recompute(); diagnostics(); }
+  renderCostBook();
+  if(CB_OPEN) renderCostHistory();
+  showBanner(`Deleted ${hits} cost version(s) dated ${date}.`, 'success');
 });
 document.getElementById('cbAddVersion').addEventListener('click', () => {
   if(!CB_OPEN) return;
