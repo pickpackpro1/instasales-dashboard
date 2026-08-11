@@ -785,7 +785,9 @@ input[type=range]{accent-color:var(--accent);width:150px}
 
   <!-- ============ OPEX ============ -->
   <div class="page" id="page-opex">
-    <div class="notice">Fixed monthly overheads (subscriptions, warehouse, staff, software...). These are deducted in the <b>PLS</b> and in the Dashboard's "Net after OpEx" KPI. Saved in this browser.</div>
+    <div class="notice">Fixed monthly overheads (subscriptions, warehouse, staff, software...). Deducted in the <b>PLS</b> and in the Dashboard's "Net after OpEx" KPI.
+      <br><b>A full month is charged whatever date range you view</b> - these are monthly bills, not daily costs, so a shorter range does not reduce them.
+      <br><b>"All channels" overhead is never split across channels.</b> Viewing one channel on its own leaves it out and says so, so per-channel profit is always <i>before</i> shared overhead - only the all-channels view carries the whole cost.</div>
     <div class="card" style="margin-bottom:14px">
       <h3><span class="dot"></span>Add expense</h3>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
@@ -3370,6 +3372,14 @@ function opexFor(chans){
     return chans.includes(o.ch) ? a + o.amt : a;
   }, 0);
 }
+// Shared (all-channel) overhead that the CURRENT view deliberately leaves out. Convention is
+// to keep shared cost out of a single-channel view rather than allocate it, so it has to be
+// reported alongside instead - otherwise the channel simply looks more profitable than it is
+// and the single-channel views never reconcile to the all-channels total.
+function opexExcludedFor(chans){
+  if(STATE.chFilter === 'all' || chans.length > 1) return 0;
+  return OPEX.reduce((a,o) => o.ch === 'all' ? a + o.amt : a, 0);
+}
 
 // ================= charts =================
 const CH = {};
@@ -3695,7 +3705,7 @@ const KPI_DEFS = {
   payouts:    {label:'Est. Payouts',         card:(t)=>({value:fmtGBP0(t.revenue_gross - t.mkt_fee - t.affiliate - t.shop_ads - t.ads - t.refunds)})},
   units:      {label:'Units',                card:(t)=>({value:fmtNum(t.units)})},
   orders:     {label:'Orders',               card:(t)=>({value:fmtNum(t.orders_count)})},
-  opex:       {label:'Net after OpEx',       card:(t,c)=>({value:fmtGBP0(t.net_profit_ex-c.opex), sub:`OpEx ${fmtGBP0(c.opex)}/mo`, valueCls:(t.net_profit_ex-c.opex)>=0?'pos':'neg'}), needs:c=>c.opex>0}
+  opex:       {label:'Net after OpEx',       card:(t,c)=>({value:fmtGBP0(t.net_profit_ex-c.opex), sub:`OpEx ${fmtGBP0(c.opex)}/mo` + (c.opexExcluded ? ` · before ${fmtGBP0(c.opexExcluded)}/mo shared` : ''), valueCls:(t.net_profit_ex-c.opex)>=0?'pos':'neg'}), needs:c=>c.opex>0 || c.opexExcluded>0}
 };
 const KPI_ORDER = ['sales','refunds','cogs','referral','shipping','operational','affiliate','shopads','ads','acos','tacos','vat','grossprofit','profit','margin','payouts','units','orders','opex'];
 const KPI_DEFAULT = ['sales','refunds','cogs','referral','ads','acos','tacos','vat','profit','margin'];
@@ -3730,7 +3740,8 @@ function renderDashboard(){
   }
   const extraRefunds = (!useHist && chans.includes('ebay') && STATE.extras.ebay) ? STATE.extras.ebay.refundOther : 0;
   const opex = opexFor(useHist ? histCh : chans);
-  const kctx = {xref: extraRefunds, opex};
+  const opexExcluded = opexExcludedFor(useHist ? histCh : chans);
+  const kctx = {xref: extraRefunds, opex, opexExcluded};
   const cards = getEnabledKpis()
     .filter(k => KPI_DEFS[k] && (!KPI_DEFS[k].needs || KPI_DEFS[k].needs(kctx)))
     .map(k => ({label: KPI_DEFS[k].label, ...KPI_DEFS[k].card(t, kctx)}));
