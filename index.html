@@ -4329,7 +4329,9 @@ function cbOffers(){
   const touch = (fam, id, name, chan) => {
     if(!id) return null;
     const k = cbId(fam, id) + '::' + chan;
-    if(!out[k]) out[k] = {fam, id:String(id).trim().toUpperCase(), name:name||'', chan, live:false, units:0};
+    // `on` records which sales channels this one cost actually governs. Vemart and Vefive share
+    // the amazon family, so a single entry can drive BOTH accounts - the row has to say so.
+    if(!out[k]) out[k] = {fam, id:String(id).trim().toUpperCase(), name:name||'', chan, live:false, units:0, on:new Set()};
     if(!out[k].name && name) out[k].name = name;
     return out[k];
   };
@@ -4356,11 +4358,11 @@ function cbOffers(){
         // before any FBA cost is entered - otherwise there would be no row to type it into.
         // Units are attributed to whichever channel actually sold them.
         const fbm = touch(fam, r.key, r.name, 'fbm'), fba = touch(fam, r.key, r.name, 'fba');
-        if(fbm){ fbm.units += Math.max(u - fu, 0); fbm.asinLive = true; fbm.live = (u - fu) > 0; }
-        if(fba){ fba.units += fu; fba.asinLive = true; fba.live = fu > 0; }
+        if(fbm){ fbm.units += Math.max(u - fu, 0); fbm.asinLive = true; fbm.live = (u - fu) > 0; if(u - fu > 0) fbm.on.add(ch); }
+        if(fba){ fba.units += fu; fba.asinLive = true; fba.live = fu > 0; if(fu > 0) fba.on.add(ch); }
       } else {
         const o = touch(fam, r.key, r.name, 'fbm');
-        if(o){ o.live = true; o.asinLive = true; o.units += u; }
+        if(o){ o.live = true; o.asinLive = true; o.units += u; o.on.add(ch); }
       }
     }
   }
@@ -4434,9 +4436,16 @@ function renderCostBook(){
     const liveBit = o.live
       ? ' &middot; <span style="color:var(--green)">selling' + (o.units ? ' &middot; ' + fmtNum(Math.round(o.units)) + 'u' : '') + '</span>'
       : '';
+    // Which accounts this single cost drives. Only worth showing when it spans more than one,
+    // because that is the case where an edit here quietly moves a second account's P&L too.
+    const on = [...(o.on||[])];
+    const spans = on.length > 1
+      ? ' <span title="This one cost is used by every account listed - editing it changes them all">' +
+        on.map(c => '<span class="chip ' + c + '" style="font-size:9.5px;padding:1px 5px">' + CH_NAME[c] + '</span>').join(' ') + '</span>'
+      : '';
     return '<tr' + (o.live && noCost(o) ? ' style="background:#fff5f5"' : '') + '>' +
       '<td style="max-width:330px">' +
-        '<div style="font-size:11.5px;color:var(--muted)"><b>' + esc(o.id) + '</b>' + liveBit + '</div>' +
+        '<div style="font-size:11.5px;color:var(--muted)"><b>' + esc(o.id) + '</b>' + liveBit + spans + '</div>' +
         '<div class="ptitle2" title="' + esc(o.name) + '">' + esc((o.name||o.id).slice(0,72)) + '</div>' +
       '</td>' +
       '<td>' + tag + '</td>' +
@@ -6255,6 +6264,7 @@ document.getElementById('cbExport').addEventListener('click', () => {
     return {Platform:o.fam, ID:o.id, Product:o.name,
       Channel: o.fam==='amazon' ? o.chan.toUpperCase() : '',
       'Selling now': o.live ? 'Yes' : '',
+      'Used by': [...(o.on||[])].map(c => CH_NAME[c]).join(', '),
       COGS: v.buy!=null?v.buy:'',
       'Ship / FBA fee': (o.chan==='fba' ? (v.fee!=null?v.fee:'') : (v.ship!=null?v.ship:'')),
       Operational: v.oper!=null?v.oper:'',
