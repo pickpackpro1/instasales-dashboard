@@ -240,6 +240,10 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .kv{font-size:11.5px;color:var(--muted);margin-top:2px}
 .kv b{color:var(--text)}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:800;margin:3px 4px 0 0}
+/* Fulfilment column: a real dropdown where the choice is the user's, a plain label where the
+   platform allows only one, so the two never look like the same kind of control. */
+select.fchan{min-width:150px;font-size:11.5px;padding:3px 6px}
+.fchan-fixed{display:inline-block;font-size:11.5px;font-weight:700;color:var(--muted);white-space:nowrap}
 .badge.blue{background:#e3f2fc;color:#1a7fc4}
 .badge.purple{background:#efe7fd;color:#6a3cb5}
 .badge.green{background:#e3f7ee;color:var(--green)}
@@ -581,7 +585,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <div class="fbar" style="margin-top:10px;flex-wrap:wrap">
         <span class="flabel">Add a new cost, effective from</span>
         <input type="date" id="cbNewFrom" style="width:150px">
-        <select class="fsel" id="cbNewChan"><option value="fbm">FBM (you ship)</option><option value="fba">FBA (Amazon ships)</option></select>
+        <select class="fsel" id="cbNewChan"></select>
         <input type="number" step="0.01" id="cbNewBuy" placeholder="COGS £" style="width:100px">
         <input type="number" step="0.01" id="cbNewShip" placeholder="Ship £ / FBA fee £" style="width:150px">
         <input type="number" step="0.01" id="cbNewOper" placeholder="Oper £" style="width:100px">
@@ -1805,7 +1809,10 @@ function buildMaster(){
       if(bar < 0) continue;
       const fam = key.slice(0, bar), id = key.slice(bar + 1);
       if(!id) continue;
-      const chan = cbSorted(rec.fbm).length ? 'fbm' : (cbSorted(rec.fba).length ? 'fba' : null);
+      // Whichever channel actually holds costs - 'fbm' first so Amazon keeps using its FBM
+      // entry as the ASIN-level default, but a TikTok product set to platform fulfilment
+      // resolves through its own channel instead of silently getting no cost at all.
+      const chan = CB_ALL_CHANS.find(c => cbSorted(rec[c]).length);
       if(!chan) continue;
       const e = cbAsMasterEntry(costBookAt(id, chan, refDate, fam), chan, rec.name);
       if(!e) continue;
@@ -4282,6 +4289,30 @@ function costRefDate(){
   return latest || todayISO();
 }
 const cbSorted = list => (list||[]).slice().sort((a,b) => String(a.from||'').localeCompare(String(b.from||'')));
+// Fulfilment channels per platform. 'fbm' is the seller-fulfils case everywhere, which is why
+// it keeps that name on non-Amazon platforms too - every cost already stored sits under it and
+// renaming the key would orphan the lot. Amazon is the only platform where a product genuinely
+// has two live offers at once, so it is the only one that gets two rows.
+const CB_CHANS = {
+  amazon:  [['fbm','FBM'], ['fba','FBA']],
+  tiktok:  [['fbm','Fulfil via Seller'], ['ttplat','Fulfil via Platform'], ['tttok','Fulfil via TikTok']],
+  ebay:    [['fbm','Fulfil by Seller']],
+  shopify: [['fbm','Fulfil by Seller']]
+};
+const CB_ALL_CHANS = ['fbm','fba','ttplat','tttok'];   // for loops over a record of any platform
+const cbChanList  = fam => CB_CHANS[fam] || CB_CHANS.tiktok;
+const cbChanLabel = (fam, k) => { const f = cbChanList(fam).find(x => x[0] === k); return f ? f[1] : String(k).toUpperCase(); };
+// How a product is currently fulfilled: whichever of its platform's channels holds costs,
+// else the platform default. Sales must attach to THIS channel, not always to 'fbm', or a
+// product switched to platform fulfilment splits into two rows - units on one, costs on the
+// other - and its sales get costed at zero. Amazon is excluded: there both offers coexist.
+function cbCurrentChan(fam, id){
+  const opts = cbChanList(fam);
+  if(fam === 'amazon' || opts.length < 2) return 'fbm';
+  const rec = COSTBOOK[cbId(fam, id)];
+  if(rec) for(const [k] of opts) if(cbSorted(rec[k]).length) return k;
+  return opts[0][0];
+}
 // The version in force on `date` for one ASIN and channel ('fbm' | 'fba').
 // The Cost Book is the single source of costs for EVERY channel, so its key carries the
 // platform family as well as the identifier - an ASIN on Amazon, an item ID on eBay, a SKU
@@ -4354,12 +4385,12 @@ function cbOffers(){
     if(!id) continue;
     const chanRaw = fixText(r['SKU CHANNEL']||'');
     const isFba = fam==='amazon' && (/fba|afn|amazon/i.test(chanRaw) || /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(fixText(r.sku)));
-    touch(fam, id, fixText(r.Name), isFba ? 'fba' : 'fbm');
+    touch(fam, id, fixText(r.Name), isFba ? 'fba' : cbCurrentChan(fam, id));
   }
   for(const [key, rec] of Object.entries(COSTBOOK)){
     const bar = key.indexOf('|'); if(bar < 0) continue;
     const fam = key.slice(0,bar), id = key.slice(bar+1);
-    for(const chan of ['fbm','fba']) if(cbSorted(rec[chan]).length) touch(fam, id, rec.name, chan);
+    for(const [chan] of cbChanList(fam)) if(cbSorted(rec[chan]).length) touch(fam, id, rec.name, chan);
   }
   for(const ch of ALL_CH){
     const fam = CB_FAM[ch] || 'tiktok';
@@ -4377,7 +4408,7 @@ function cbOffers(){
         if(fba){ fba.units += fu; fba.asinLive = true; fba.live = fba.live || fu > 0;
                  if(fu > 0){ fba.on.add(ch); fba.byCh[ch] = (fba.byCh[ch]||0) + fu; } }
       } else {
-        const o = touch(fam, r.key, r.name, 'fbm');
+        const o = touch(fam, r.key, r.name, cbCurrentChan(fam, r.key));
         if(o){ o.live = true; o.asinLive = true; o.units += u; o.on.add(ch); o.byCh[ch] = (o.byCh[ch]||0) + u; }
       }
     }
@@ -4406,7 +4437,7 @@ function cbOffers(){
 function cbBatches(){
   const n = {};
   for(const rec of Object.values(COSTBOOK)){
-    for(const chan of ['fbm','fba']) for(const v of (rec[chan]||[])) if(v.from) n[v.from] = (n[v.from]||0) + 1;
+    for(const chan of CB_ALL_CHANS) for(const v of (rec[chan]||[])) if(v.from) n[v.from] = (n[v.from]||0) + 1;
   }
   return Object.entries(n).sort((a,b) => b[0].localeCompare(a[0]));
 }
@@ -4461,9 +4492,17 @@ function renderCostBook(){
     const rec = COSTBOOK[cbId(o.fam,o.id)];
     const nv = rec ? cbSorted(rec[o.chan]).length : 0;
     const isFba = o.chan === 'fba';
-    const tag = o.fam !== 'amazon'
-      ? '<span class="badge grey">#' + o.fam.toUpperCase() + '</span>'
-      : '<span class="badge ' + (isFba?'purple':'blue') + '">#' + (isFba?'FBA':'FBM') + '</span>';
+    // Amazon lists both offers as their own rows, so its selector is fixed - switching a row
+    // there would just collide with the row that already exists. Everywhere else one product
+    // is fulfilled one way, so the selector sets it and carries the costs across.
+    const opts = cbChanList(o.fam);
+    const tag = opts.length < 2 || o.fam === 'amazon'
+      ? '<span class="fchan-fixed" title="' + (o.fam === 'amazon'
+          ? 'FBA and FBM are separate offers, each with its own row and costs'
+          : 'The only fulfilment option on this platform') + '">' + esc(cbChanLabel(o.fam, o.chan)) + '</span>'
+      : '<select class="fsel fchan" data-cbfc="' + esc(o.fam+'|'+o.id) + '" data-chan="' + o.chan + '">' +
+        opts.map(([k,lab]) => '<option value="' + k + '"' + (k === o.chan ? ' selected' : '') + '>' + esc(lab) + '</option>').join('') +
+        '</select>';
     // Under an account filter, report THAT account's units - o.units is the combined figure
     // across Vemart and Vefive and would overstate whichever one you are looking at.
     const acctFilter = (famSel === 'amazon' || famSel === 'amazon2');
@@ -4511,7 +4550,34 @@ function renderCostBook(){
     if(STATE.raw.master.length || Object.keys(COSTBOOK).length) STATE.master = buildMaster();
     if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
     renderCostBook();
-    showBanner('Saved ' + chan.toUpperCase() + ' ' + field + ' for ' + id + ', effective ' + asAt + '.', 'success');
+    showBanner('Saved ' + cbChanLabel(fam, chan) + ' ' + field + ' for ' + id + ', effective ' + asAt + '.', 'success');
+  }));
+  // Changing how a product is fulfilled carries its whole dated cost history to the new
+  // channel, rather than stranding it - the costs are the same costs, just booked differently.
+  document.querySelectorAll('#cbTable select[data-cbfc]').forEach(el => el.addEventListener('change', () => {
+    const key = el.dataset.cbfc, from = el.dataset.chan, to = el.value;
+    if(from === to) return;
+    const bar = key.indexOf('|'), fam = key.slice(0,bar), id = key.slice(bar+1);
+    const rec = COSTBOOK[cbId(fam, id)];
+    const moving = rec ? cbSorted(rec[from]) : [];
+    if(rec){
+      const existing = cbSorted(rec[to]);
+      if(existing.length && moving.length &&
+         !confirm(`${id} already has ${existing.length} ${cbChanLabel(fam,to)} cost version(s).\n\n` +
+                  `Moving its ${moving.length} ${cbChanLabel(fam,from)} version(s) across will keep both sets, ` +
+                  `and where two share a date the ${cbChanLabel(fam,from)} one wins. Continue?`)){
+        renderCostBook(); return;                       // put the dropdown back
+      }
+      const merged = existing.filter(v => !moving.some(m => m.from === v.from)).concat(moving);
+      rec[to] = cbSorted(merged);
+      rec[from] = [];
+      saveCostBook();
+      STATE.master = buildMaster();
+      if(loadedChannels().length){ recompute(); diagnostics(); }
+    }
+    renderCostBook();
+    showBanner(`${id} is now fulfilled as "${cbChanLabel(fam, to)}"` +
+      (moving.length ? `, and its ${moving.length} cost version(s) moved with it.` : '.'), 'success');
   }));
   document.querySelectorAll('#cbTable [data-cbhist]').forEach(b => b.addEventListener('click', () => {
     CB_OPEN = b.dataset.cbhist;
@@ -4532,8 +4598,11 @@ function renderCostHistory(){
   // An offer with no versions yet must still open - that is the ONLY way to give it its first
   // dated cost. Render the empty shell rather than hiding the whole card.
   const rec = COSTBOOK[CB_OPEN] || {name:'', fbm:[], fba:[]};
-  const chans = fam === 'amazon' ? ['fbm','fba'] : ['fbm'];
-  const label = chan => fam === 'amazon' ? chan.toUpperCase() : fam.toUpperCase();
+  // Show every channel the platform has, plus any that already carry costs - a TikTok product
+  // switched to platform fulfilment must not hide the seller-fulfilled history it built up.
+  const chans = cbChanList(fam).map(x => x[0]);
+  for(const c of CB_ALL_CHANS) if(!chans.includes(c) && cbSorted(rec[c]).length) chans.push(c);
+  const label = chan => cbChanLabel(fam, chan);
   document.getElementById('cbHistTitle').textContent =
     `Price history · ${id}${rec.name ? ' · ' + rec.name.slice(0,50) : ''}`;
   // costBookAt() takes the BARE id plus a family - passing the composite key made it look up
@@ -4560,13 +4629,14 @@ function renderCostHistory(){
       <tbody>${rows}</tbody></table></div>`;
   };
   document.getElementById('cbHistBody').innerHTML = chans.map(block).join('');
-  // FBM/FBA only means something on Amazon; elsewhere there is one offer, so pin it to fbm.
+  // Offer the channels this platform actually has; hide the control entirely when there is
+  // only one, since a single-option dropdown is just noise.
   const chanSel = document.getElementById('cbNewChan');
-  chanSel.style.display = fam === 'amazon' ? '' : 'none';
-  if(fam === 'amazon'){ if(chans.includes(CB_OPEN_CHAN)) chanSel.value = CB_OPEN_CHAN; }
-  else chanSel.value = 'fbm';
+  chanSel.innerHTML = chans.map(c => `<option value="${c}">${esc(label(c))}</option>`).join('');
+  chanSel.style.display = chans.length > 1 ? '' : 'none';
+  chanSel.value = chans.includes(CB_OPEN_CHAN) ? CB_OPEN_CHAN : chans[0];
   const shipInp = document.getElementById('cbNewShip');
-  shipInp.placeholder = (fam === 'amazon' && chanSel.value === 'fba') ? 'FBA fee £' : 'Ship £';
+  shipInp.placeholder = chanSel.value === 'fba' ? 'FBA fee £' : 'Ship £';
   const nf = document.getElementById('cbNewFrom');
   if(!nf.value) nf.value = asAt;
   document.getElementById('cbHistBody').querySelectorAll('[data-cbdel]').forEach(b => b.addEventListener('click', () => {
@@ -6232,7 +6302,7 @@ document.getElementById('cbDeleteBatch').addEventListener('click', () => {
   if(!date){ showBanner('There are no dated cost versions to remove.', 'error'); return; }
   let hits = 0, orphans = 0;
   for(const rec of Object.values(COSTBOOK)){
-    for(const chan of ['fbm','fba']){
+    for(const chan of CB_ALL_CHANS){
       const list = rec[chan] || [];
       const n = list.filter(v => v.from === date).length;
       hits += n;
@@ -6245,8 +6315,8 @@ document.getElementById('cbDeleteBatch').addEventListener('click', () => {
     (orphans ? `${orphans} offer(s) have no other version, so they will be left with NO cost at all and book £0 COGS until you import or type one in. Check the "Missing a cost" filter afterwards.\n\n` : '') +
     `This cannot be undone.`)) return;
   for(const [k, rec] of Object.entries(COSTBOOK)){
-    for(const chan of ['fbm','fba']) rec[chan] = (rec[chan]||[]).filter(v => v.from !== date);
-    if(!rec.fbm.length && !rec.fba.length) delete COSTBOOK[k];
+    for(const chan of CB_ALL_CHANS) rec[chan] = (rec[chan]||[]).filter(v => v.from !== date);
+    if(!CB_ALL_CHANS.some(c => (rec[c]||[]).length)) delete COSTBOOK[k];
   }
   saveCostBook();
   STATE.master = buildMaster();
@@ -6291,7 +6361,7 @@ document.getElementById('cbExport').addEventListener('click', () => {
   const rows = cbOffers().map(o => {
     const v = costBookAt(o.id, o.chan, asAt, o.fam) || {};
     return {Platform:o.fam, ID:o.id, Product:o.name,
-      Channel: o.fam==='amazon' ? o.chan.toUpperCase() : '',
+      Channel: cbChanLabel(o.fam, o.chan),
       'Selling now': o.live ? 'Yes' : '',
       'Used by': [...(o.on||[])].map(c => CH_NAME[c]).join(', '),
       COGS: v.buy!=null?v.buy:'',
@@ -6304,10 +6374,10 @@ document.getElementById('cbExport').addEventListener('click', () => {
   for(const [key, rec] of Object.entries(COSTBOOK)){
     const bar = key.indexOf('|'); if(bar < 0) continue;
     const fam = key.slice(0,bar), id = key.slice(bar+1);
-    for(const chan of ['fbm','fba'])
+    for(const chan of CB_ALL_CHANS)
       for(const v of cbSorted(rec[chan]))
         hist.push({Platform:fam, ID:id, Product:rec.name||'',
-          Channel: fam==='amazon' ? chan.toUpperCase() : '',
+          Channel: cbChanLabel(fam, chan),
           'Effective from':v.from||'', COGS:v.buy!=null?v.buy:'',
           'Ship / FBA fee': (chan==='fba' ? (v.fee!=null?v.fee:'') : (v.ship!=null?v.ship:'')),
           Operational:v.oper!=null?v.oper:'',
