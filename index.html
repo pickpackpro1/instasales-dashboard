@@ -532,7 +532,8 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <input type="date" id="cbAsAt" style="width:150px">
         <select class="fsel" id="cbPlat">
           <option value="all">All platforms</option>
-          <option value="amazon">Amazon</option>
+          <option value="amazon">Amazon 1 (Vemart)</option>
+          <option value="amazon2">Amazon 2 (Vefive)</option>
           <option value="tiktok">TikTok</option>
           <option value="ebay">eBay</option>
           <option value="shopify">Shopify</option>
@@ -4340,9 +4341,10 @@ function cbOffers(){
   const touch = (fam, id, name, chan) => {
     if(!id) return null;
     const k = cbId(fam, id) + '::' + chan;
-    // `on` records which sales channels this one cost actually governs. Vemart and Vefive share
-    // the amazon family, so a single entry can drive BOTH accounts - the row has to say so.
-    if(!out[k]) out[k] = {fam, id:String(id).trim().toUpperCase(), name:name||'', chan, live:false, units:0, on:new Set()};
+    // `on` records which sales channels this one cost actually governs, and `byCh` their units.
+    // Vemart and Vefive share the amazon family, so a single entry can drive BOTH accounts -
+    // the account filter needs to know which, and the unit count has to follow that filter.
+    if(!out[k]) out[k] = {fam, id:String(id).trim().toUpperCase(), name:name||'', chan, live:false, units:0, on:new Set(), byCh:{}};
     if(!out[k].name && name) out[k].name = name;
     return out[k];
   };
@@ -4369,11 +4371,14 @@ function cbOffers(){
         // before any FBA cost is entered - otherwise there would be no row to type it into.
         // Units are attributed to whichever channel actually sold them.
         const fbm = touch(fam, r.key, r.name, 'fbm'), fba = touch(fam, r.key, r.name, 'fba');
-        if(fbm){ fbm.units += Math.max(u - fu, 0); fbm.asinLive = true; fbm.live = (u - fu) > 0; if(u - fu > 0) fbm.on.add(ch); }
-        if(fba){ fba.units += fu; fba.asinLive = true; fba.live = fu > 0; if(fu > 0) fba.on.add(ch); }
+        const fbmU = Math.max(u - fu, 0);
+        if(fbm){ fbm.units += fbmU; fbm.asinLive = true; fbm.live = fbm.live || fbmU > 0;
+                 if(fbmU > 0){ fbm.on.add(ch); fbm.byCh[ch] = (fbm.byCh[ch]||0) + fbmU; } }
+        if(fba){ fba.units += fu; fba.asinLive = true; fba.live = fba.live || fu > 0;
+                 if(fu > 0){ fba.on.add(ch); fba.byCh[ch] = (fba.byCh[ch]||0) + fu; } }
       } else {
         const o = touch(fam, r.key, r.name, 'fbm');
-        if(o){ o.live = true; o.asinLive = true; o.units += u; o.on.add(ch); }
+        if(o){ o.live = true; o.asinLive = true; o.units += u; o.on.add(ch); o.byCh[ch] = (o.byCh[ch]||0) + u; }
       }
     }
   }
@@ -4384,6 +4389,16 @@ function cbOffers(){
     const other = o.chan === 'fbm' ? 'fba' : 'fbm';
     touch(o.fam, o.id, o.name, other);
   }
+  // Roll each offer's accounts up to its PRODUCT, so the empty counterpart row created above
+  // inherits them. Without this an FBA row with no sales of its own looks account-less and
+  // would show under Vemart even when the ASIN only ever sells on Vefive.
+  const byProduct = {};
+  for(const o of Object.values(out)){
+    const k = cbId(o.fam, o.id);
+    (byProduct[k] = byProduct[k] || new Set());
+    for(const ch of o.on) byProduct[k].add(ch);
+  }
+  for(const o of Object.values(out)) o.asinOn = byProduct[cbId(o.fam, o.id)] || new Set();
   return Object.values(out);
 }
 // Every distinct effective-date in the book, newest first. An Import stamps one date across all
@@ -4417,7 +4432,12 @@ function renderCostBook(){
   const all = cbOffers();
   const noCost = o => { const v = costBookAt(o.id, o.chan, asAt, o.fam); return !(v && +v.buy > 0); };
   let list = all.slice();
-  if(famSel !== 'all') list = list.filter(o => o.fam === famSel);
+  // Vemart and Vefive are one cost family, so an account filter selects on where the offer
+  // actually SELLS, not on the key. An offer selling nowhere belongs to neither account in
+  // particular, so it stays visible under both rather than disappearing from every view.
+  if(famSel === 'amazon' || famSel === 'amazon2')
+    list = list.filter(o => o.fam === 'amazon' && (o.asinOn.has(famSel) || o.asinOn.size === 0));
+  else if(famSel !== 'all') list = list.filter(o => o.fam === famSel);
   if(scope === 'live') list = list.filter(o => o.live || o.asinLive);
   else if(scope === 'gaps') list = list.filter(noCost);
   if(q) list = list.filter(o => o.id.toLowerCase().includes(q) || (o.name||'').toLowerCase().includes(q));
@@ -4444,19 +4464,17 @@ function renderCostBook(){
     const tag = o.fam !== 'amazon'
       ? '<span class="badge grey">#' + o.fam.toUpperCase() + '</span>'
       : '<span class="badge ' + (isFba?'purple':'blue') + '">#' + (isFba?'FBA':'FBM') + '</span>';
-    const liveBit = o.live
-      ? ' &middot; <span style="color:var(--green)">selling' + (o.units ? ' &middot; ' + fmtNum(Math.round(o.units)) + 'u' : '') + '</span>'
-      : '';
-    // Which accounts this single cost drives. Only worth showing when it spans more than one,
-    // because that is the case where an edit here quietly moves a second account's P&L too.
-    const on = [...(o.on||[])];
-    const spans = on.length > 1
-      ? ' <span title="This one cost is used by every account listed - editing it changes them all">' +
-        on.map(c => '<span class="chip ' + c + '" style="font-size:9.5px;padding:1px 5px">' + CH_NAME[c] + '</span>').join(' ') + '</span>'
+    // Under an account filter, report THAT account's units - o.units is the combined figure
+    // across Vemart and Vefive and would overstate whichever one you are looking at.
+    const acctFilter = (famSel === 'amazon' || famSel === 'amazon2');
+    const shownU = acctFilter ? (o.byCh[famSel] || 0) : o.units;
+    const shownLive = acctFilter ? o.on.has(famSel) : o.live;
+    const liveBit = shownLive
+      ? ' &middot; <span style="color:var(--green)">selling' + (shownU ? ' &middot; ' + fmtNum(Math.round(shownU)) + 'u' : '') + '</span>'
       : '';
     return '<tr' + (o.live && noCost(o) ? ' style="background:#fff5f5"' : '') + '>' +
       '<td style="max-width:330px">' +
-        '<div style="font-size:11.5px;color:var(--muted)"><b>' + esc(o.id) + '</b>' + liveBit + spans + '</div>' +
+        '<div style="font-size:11.5px;color:var(--muted)"><b>' + esc(o.id) + '</b>' + liveBit + '</div>' +
         '<div class="ptitle2" title="' + esc(o.name) + '">' + esc((o.name||o.id).slice(0,72)) + '</div>' +
       '</td>' +
       '<td>' + tag + '</td>' +
