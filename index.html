@@ -1478,11 +1478,11 @@ async function handleFiles(fileList, targetAcct){
   const missing = [];
   if(!STATE.raw.tt_orders.length && !STATE.raw.amz_biz.length && !STATE.raw.amz2_biz.length && !STATE.raw.ebay_list.length && !STATE.raw.shop_orders.length
      && !STATE.raw.amz_txn.length && !STATE.raw.amz_txn2.length && !STATE.raw.amz2_txn.length && !STATE.raw.amz2_txn2.length) missing.push('at least one sales file');
-  const noCosts = !STATE.raw.master.length;
+  const noCosts = !haveCosts();
   if(errors.length) showBanner('Some issues: ' + errors.join(' | '), 'error');
   else if(dcStockLoaded && missing.length) showBanner('Stock data imported into SKU Management → Weekly Stock Tracking.' + (missing.length ? ' (No sales/P&L files in this batch.)' : ''), 'success');
   else if(missing.length) showBanner('Loaded. Still need: ' + missing.join(', '));
-  else if(noCosts) showBanner('Dashboard built, but no cost data for this account yet - add products in the Master Products menu (or drop a master Excel) for real profit figures.', 'error');
+  else if(noCosts) showBanner('Dashboard built, but no cost data for this account yet - open Cost Manager and use Import to load your costs, for real profit figures.', 'error');
   else {
     const dc = STATE.extras.amazon && STATE.extras.amazon.dayCollisions;
     const collisionNote = (dc && dc.length) ? ` ⚠ ${dc.length} Amazon day(s) had duplicate sheets for the same date - only the latest-loaded sheet was kept per day, see Reports for details.` : '';
@@ -1657,14 +1657,14 @@ function rebuildFromFileStore(){
   const R = STATE.raw;
   const hasSales = R.tt_orders.length || R.amz_biz.length || R.amz2_biz.length || R.ebay_list.length || R.shop_orders.length
     || R.amz_txn.length || R.amz_txn2.length || R.amz2_txn.length || R.amz2_txn2.length || R.ebay_txn.length;
-  if((STATE.master ? true : STATE.raw.master.length) && hasSales){
+  if((STATE.master ? true : haveCosts()) && hasSales){
     STATE.master = buildMaster();
     recompute();
     diagnostics();
     renderPage();
   } else {
     STATE.channels = {}; STATE.extras = {};
-    STATE.master = STATE.raw.master.length ? buildMaster() : null;
+    STATE.master = haveCosts() ? buildMaster() : null;
     renderPage();
   }
 }
@@ -1742,6 +1742,13 @@ async function restoreFileRows(){
 }
 
 // ================= master (verified) =================
+// Costs can come from an uploaded sheet OR the Cost Manager, and since the master upload was
+// removed from WorkSpace the book is usually the ONLY source. Anything that used to gate on
+// "is there a master sheet" must ask this instead, or a book-only account silently computes
+// with no costs at all and books zero COGS across the board.
+function haveCosts(){
+  return !!((STATE.raw.master && STATE.raw.master.length) || Object.keys(COSTBOOK || {}).length);
+}
 function buildMaster(){
   const M = {tiktok:{bySku:{}, byPid:{}}, amazon:{byAsin:{}, bySku:{}}, ebay:{byItem:{}, bySku:{}}, shopify:{bySku:{}}};
   let n = 0;
@@ -4242,7 +4249,7 @@ async function cloudSyncCostBook(){
       COSTBOOK = cb;
       migrateCostBook();
       store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK));
-      if(STATE.raw.master.length) STATE.master = buildMaster();
+      if(haveCosts()) STATE.master = buildMaster();
       if(STATE.master && loadedChannels().length){ recompute(); renderPage(); }
       else if(STATE.page === 'costbook') renderCostBook();
     } else if(Object.keys(COSTBOOK).length){
@@ -4900,7 +4907,7 @@ function renderProducts(){
   renderCostGaps();
   const tb = document.querySelector('#prodTable tbody');
   if(!STATE.raw.master.length){
-    tb.innerHTML = '<tr><td colspan="17" style="color:var(--muted)">No products yet - drop a master Excel anywhere in the app, or add products one by one with the form below.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="17" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
     document.getElementById('prodCount').textContent = '';
     return;
   }
@@ -5866,7 +5873,7 @@ document.getElementById('rsGo').addEventListener('click', () => {
     clearMasterProducts();
   } else if(doFiles){
     restoreMaster();   // files cleared but master kept -> bring the saved copy back
-    if(STATE.raw.master.length) STATE.master = buildMaster();
+    if(haveCosts()) STATE.master = buildMaster();
   }
   if(doFiles) persistFileRows();   // forget the uploaded files for next session too
   renderLoadedReports();
@@ -6420,7 +6427,7 @@ function switchAccount(id){
   loadStock();
   loadCostBook();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
-  if(STATE.raw.master.length) STATE.master = buildMaster();
+  if(haveCosts()) STATE.master = buildMaster();
   renderAcctSelect();
   const acct = ACCOUNTS.find(a => a.id === id);
   (async () => {
