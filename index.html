@@ -530,35 +530,39 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <h3 style="margin:0"><span class="dot"></span>Cost Manager</h3>
         <span class="flabel">Costs as at</span>
         <input type="date" id="cbAsAt" style="width:150px">
+        <select class="fsel" id="cbPlat">
+          <option value="all">All platforms</option>
+          <option value="amazon">Amazon</option>
+          <option value="tiktok">TikTok</option>
+          <option value="ebay">eBay</option>
+          <option value="shopify">Shopify</option>
+        </select>
         <select class="fsel" id="cbScope">
           <option value="live">Selling now</option>
-          <option value="all">Every ASIN I have</option>
+          <option value="all">Every offer I have</option>
           <option value="gaps">Missing a cost</option>
         </select>
-        <input type="search" id="cbSearch" placeholder="Search ASIN / product...">
-        <button class="btn" id="cbSeed">↧ Import from master sheet</button>
+        <input type="search" id="cbSearch" placeholder="Search ASIN / SKU / product...">
+        <button class="btn" id="cbImport">⤓ Import</button>
+        <input type="file" id="cbImportFile" accept=".xlsx,.xls,.csv" style="display:none">
         <button class="btn" id="cbExport">📄 Export</button>
         <div class="count" id="cbCount"></div>
       </div>
       <div class="sub-title">
-        One row per ASIN, with a <b>separate FBM and FBA cost</b> - the same ASIN can be sold both ways and they cost
-        different amounts. Costs are <b>dated</b>: when a supplier or courier price changes, add a new version from the
-        day it takes effect and every past report keeps the cost that applied at the time. Edits save instantly and the
-        P&amp;L recalculates. The Cost Manager overrides the uploaded master sheet.
+        <b>One row per offer.</b> An ASIN sold both FBA and FBM appears twice, tagged, because the two cost different
+        amounts. Costs are <b>dated</b>: when a supplier or courier price changes, add a new version from the day it
+        takes effect and every past report keeps the cost that applied at the time. Edits save instantly and the P&amp;L
+        recalculates. <b>This is the only place costs come from</b> - use <b>Import</b> to load them in bulk.
       </div>
       <div id="cbNote"></div>
       <div class="table-wrap" style="max-height:640px"><table id="cbTable">
         <thead><tr>
-          <th>ASIN</th><th>Product</th>
-          <th class="num" style="background:#eef6fd">FBM COGS £</th>
-          <th class="num" style="background:#eef6fd">FBM Ship £</th>
-          <th class="num" style="background:#eef6fd">FBM Oper £</th>
-          <th class="num" style="background:#eef6fd">FBM Ref %</th>
-          <th class="num" style="background:#f7f4ff">FBA COGS £</th>
-          <th class="num" style="background:#f7f4ff">FBA Fee £</th>
-          <th class="num" style="background:#f7f4ff">FBA Oper £</th>
-          <th class="num" style="background:#f7f4ff">FBA Ref %</th>
-          <th>In force from</th><th>History</th>
+          <th>Product</th><th>Channel</th>
+          <th class="num">COGS &pound;</th>
+          <th class="num" title="FBM: your own shipping. FBA: the Amazon fulfilment fee.">Ship / FBA fee &pound;</th>
+          <th class="num">Operational &pound;</th>
+          <th class="num">Referral %</th>
+          <th>In force from</th><th>Versions</th>
         </tr></thead>
         <tbody></tbody>
       </table></div>
@@ -819,12 +823,10 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <div class="sub-title">Drop everything at once, any order - file type is <b>auto-detected from columns</b>, filenames don't matter. Minimum: master cost sheet + one channel's sales file. You can also drop files anywhere in the app. <b>The master cost sheet is remembered</b> after the first load (re-drop it only when costs change), and every load is <b>saved to history automatically</b>.<br>
       <b>Daily reports:</b> drop as many files of the same type as you like - they add together. Duplicate order lines and identical files are detected and skipped, and re-dropping a file with the same name replaces its earlier data. One caution: Amazon Business Reports and eBay Listings Sales Reports are period totals with no dates inside - make sure those don't cover overlapping periods.</div>
       <div class="up-grid">
-        <div class="up-zone" style="border-color:var(--amber)" data-drop="">
-          <div class="up-title"><i style="background:var(--amber)"></i>Master Product Sheet <span class="req" style="color:var(--green);font-size:10px">BUILT-IN</span></div>
-          <div class="up-hint">Managed in the <b>Master Products</b> menu. Drop an Excel here only to <b>replace</b> the built-in cost sheet.</div>
-          <button class="btn secondary up-pick" data-for="inMaster">📂 Choose master file</button>
-          <input type="file" id="inMaster" class="up-input" multiple accept=".xlsx,.xls,.csv" style="display:none">
-          <div class="up-list"><div class="fs-item" data-t="master"><span class="check">○</span><span>Master cost sheet</span><span class="cnt">-</span></div></div>
+        <div class="up-zone" style="border-color:var(--ch-amazon2)">
+          <div class="up-title"><i style="background:var(--ch-amazon2)"></i>Product costs <span class="req" style="color:var(--green);font-size:10px">COST MANAGER</span></div>
+          <div class="up-hint">Costs no longer live here. They are kept in <b>Cost Manager</b> (left menu), where each cost is dated so past reports keep the price that applied at the time. Use <b>Import</b> there to load a cost spreadsheet in bulk.</div>
+          <button class="btn secondary" id="wsGoCostBook">🗓️ Open Cost Manager</button>
         </div>
         <div class="up-zone" style="border-color:var(--ch-amazon)" data-drop="">
           <div class="up-title"><i style="background:var(--ch-amazon)"></i>Amazon 1 (Vemart)</div>
@@ -1777,6 +1779,32 @@ function buildMaster(){
     else { put(M.tiktok.bySku, sku); if(pid){ if(!M.tiktok.byPid[pid]) M.tiktok.byPid[pid] = []; if(!M.tiktok.byPid[pid].includes(sku)) M.tiktok.byPid[pid].push(sku); } }
     n++;
   }
+  // ---- Cost Book overlay ----
+  // The Cost Book is the single source of truth for costs on every channel. Anything it holds
+  // replaces the sheet's value for that product, resolved to the version in force on the date
+  // the loaded reports cover. Amazon's FBA/FBM split is applied later, per SKU, in
+  // computeAmazon(); here the FBM entry stands in as the ASIN-level default.
+  {
+    const refDate = costRefDate();
+    let overlaid = 0;
+    for(const [key, rec] of Object.entries(COSTBOOK)){
+      const bar = key.indexOf('|');
+      if(bar < 0) continue;
+      const fam = key.slice(0, bar), id = key.slice(bar + 1);
+      if(!id) continue;
+      const chan = cbSorted(rec.fbm).length ? 'fbm' : (cbSorted(rec.fba).length ? 'fba' : null);
+      if(!chan) continue;
+      const e = cbAsMasterEntry(costBookAt(id, chan, refDate, fam), chan, rec.name);
+      if(!e) continue;
+      e.sku = id; e.asin = fam === 'amazon' ? id : ''; e.pid = id; e.plat = fam;
+      if(fam === 'amazon'){ M.amazon.byAsin[id] = e; }
+      else if(fam === 'ebay'){ M.ebay.byItem[id] = e; }
+      else if(fam === 'shopify'){ M.shopify.bySku[id] = e; }
+      else { M.tiktok.bySku[id] = e; }
+      overlaid++;
+    }
+    M.costBookCount = overlaid;
+  }
   M.count = n;
   M.list = [...Object.values(M.tiktok.bySku), ...Object.values(M.amazon.byAsin), ...Object.values(M.ebay.byItem), ...Object.values(M.shopify.bySku)];
   return M;
@@ -2262,7 +2290,7 @@ function computeAmazon(A){
   const refDate = costRefDate();
   // The Cost Book, where it has an entry for this ASIN + channel, always wins over the
   // uploaded sheet - it is dated, so it answers "what did this cost on the day it sold".
-  const cbFor = (asin, fba) => cbAsMasterEntry(costBookAt(asin, fba ? 'fba' : 'fbm', refDate), fba ? 'fba' : 'fbm');
+  const cbFor = (asin, fba) => cbAsMasterEntry(costBookAt(asin, fba ? 'fba' : 'fbm', refDate, 'amazon'), fba ? 'fba' : 'fbm');
   const costAmazonRow = (row, asin, e) => {
     const parts = skuSplit[asin];
     const tot = parts ? parts.reduce((a,p) => a + p.units, 0) : 0;
@@ -4183,6 +4211,7 @@ const LS_COSTBOOK = 'mcpd_costbook';
 let COSTBOOK = {};
 function loadCostBook(){
   try{ COSTBOOK = JSON.parse(store.get(lsKey(LS_COSTBOOK))) || {}; }catch(e){ COSTBOOK = {}; }
+  migrateCostBook();
 }
 function saveCostBook(){
   try{ store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK)); }catch(e){}
@@ -4208,6 +4237,7 @@ async function cloudSyncCostBook(){
     const cb = data && data.data && data.data.costBook;
     if(cb && Object.keys(cb).length){
       COSTBOOK = cb;
+      migrateCostBook();
       store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK));
       if(STATE.raw.master.length) STATE.master = buildMaster();
       if(STATE.master && loadedChannels().length){ recompute(); renderPage(); }
@@ -4231,8 +4261,33 @@ function costRefDate(){
 }
 const cbSorted = list => (list||[]).slice().sort((a,b) => String(a.from||'').localeCompare(String(b.from||'')));
 // The version in force on `date` for one ASIN and channel ('fbm' | 'fba').
-function costBookAt(asin, chan, date){
-  const rec = COSTBOOK[String(asin||'').trim().toUpperCase()];
+// The Cost Book is the single source of costs for EVERY channel, so its key carries the
+// platform family as well as the identifier - an ASIN on Amazon, an item ID on eBay, a SKU
+// on TikTok/Shopify. FBA/FBM only ever applies to Amazon; other platforms use 'fbm' alone.
+const CB_FAM = {amazon:'amazon', amazon2:'amazon', tiktok:'tiktok', ebay:'ebay', shopify:'shopify'};
+const cbFam = plat => {
+  const p = String(plat||'').toLowerCase();
+  if(p.includes('amazon')||p.includes('amz')||p.includes('vemart')||p.includes('vefive')) return 'amazon';
+  if(p.includes('ebay')) return 'ebay';
+  if(p.includes('shopif')) return 'shopify';
+  return 'tiktok';
+};
+const cbId = (fam, id) => fam + '|' + String(id==null?'':id).trim().toUpperCase();
+// Earlier versions of the book keyed Amazon rows on the bare ASIN. Fold those into the
+// platform-scoped form once, so nothing entered before this change is lost.
+function migrateCostBook(){
+  let moved = 0;
+  for(const k of Object.keys(COSTBOOK)){
+    if(k.indexOf('|') >= 0) continue;
+    const to = cbId('amazon', k);
+    if(!COSTBOOK[to]) COSTBOOK[to] = COSTBOOK[k];
+    delete COSTBOOK[k]; moved++;
+  }
+  if(moved){ try{ store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK)); }catch(e){} }
+  return moved;
+}
+function costBookAt(id, chan, date, fam){
+  const rec = COSTBOOK[cbId(fam || 'amazon', id)];
   if(!rec) return null;
   const list = cbSorted(rec[chan]);
   if(!list.length) return null;
@@ -4255,19 +4310,55 @@ let CB_OPEN = '';        // ASIN whose history panel is open
 const cbKey = a => String(a||'').trim().toUpperCase();
 // Every ASIN worth showing: those selling right now, plus anything already in the book or
 // the uploaded master sheet.
-function cbAllAsins(){
+// Every product worth a row, one per OFFER: an ASIN sold both FBA and FBM is two rows, each
+// with its own costs. Sources: what is selling now, plus anything already in the book or the
+// uploaded sheet. Non-Amazon channels have a single offer and no FBA/FBM distinction.
+function cbOffers(){
   const out = {};
-  const add = (asin, name) => { const k = cbKey(asin); if(!k) return; if(!out[k] || (!out[k].name && name)) out[k] = {asin:k, name: out[k] && out[k].name || name || '', live: out[k] && out[k].live || false}; };
+  const touch = (fam, id, name, chan) => {
+    if(!id) return null;
+    const k = cbId(fam, id) + '::' + chan;
+    if(!out[k]) out[k] = {fam, id:String(id).trim().toUpperCase(), name:name||'', chan, live:false, units:0};
+    if(!out[k].name && name) out[k].name = name;
+    return out[k];
+  };
   for(const r of (STATE.raw.master||[])){
-    const p = String(r.platform||'').toLowerCase();
-    if(!(p.includes('amazon')||p.includes('amz')||p.includes('vemart')||p.includes('vefive'))) continue;
-    add(r.asin || r.productid, fixText(r.Name));
+    const fam = cbFam(r.platform);
+    const id = fam==='amazon' ? (r.asin||r.productid) : (fam==='ebay' ? r.productid : r.sku);
+    if(!id) continue;
+    const chanRaw = fixText(r['SKU CHANNEL']||'');
+    const isFba = fam==='amazon' && (/fba|afn|amazon/i.test(chanRaw) || /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(fixText(r.sku)));
+    touch(fam, id, fixText(r.Name), isFba ? 'fba' : 'fbm');
   }
-  for(const k of Object.keys(COSTBOOK)) add(k, COSTBOOK[k].name);
-  for(const ch of ['amazon','amazon2']) for(const r of (STATE.channels[ch]||[])){
-    const k = cbKey(r.key); if(!k) continue;
-    add(k, r.name);
-    out[k].live = true; out[k].units = (out[k].units||0) + (r.units||0);
+  for(const [key, rec] of Object.entries(COSTBOOK)){
+    const bar = key.indexOf('|'); if(bar < 0) continue;
+    const fam = key.slice(0,bar), id = key.slice(bar+1);
+    for(const chan of ['fbm','fba']) if(cbSorted(rec[chan]).length) touch(fam, id, rec.name, chan);
+  }
+  for(const ch of ALL_CH){
+    const fam = CB_FAM[ch] || 'tiktok';
+    for(const r of (STATE.channels[ch]||[])){
+      if(!r.key) continue;
+      const fu = r.fbaUnits || 0, u = r.units || 0;
+      if(fam === 'amazon'){
+        // Both offers always exist for an Amazon ASIN, so both are always editable even
+        // before any FBA cost is entered - otherwise there would be no row to type it into.
+        // Units are attributed to whichever channel actually sold them.
+        const fbm = touch(fam, r.key, r.name, 'fbm'), fba = touch(fam, r.key, r.name, 'fba');
+        if(fbm){ fbm.units += Math.max(u - fu, 0); fbm.asinLive = true; fbm.live = (u - fu) > 0; }
+        if(fba){ fba.units += fu; fba.asinLive = true; fba.live = fu > 0; }
+      } else {
+        const o = touch(fam, r.key, r.name, 'fbm');
+        if(o){ o.live = true; o.asinLive = true; o.units += u; }
+      }
+    }
+  }
+  // Amazon rows already in the book or the sheet also get their counterpart, so an FBA cost
+  // can be added to anything, not only to what happens to be selling right now.
+  for(const o of Object.values(out)){
+    if(o.fam !== 'amazon') continue;
+    const other = o.chan === 'fbm' ? 'fba' : 'fbm';
+    touch(o.fam, o.id, o.name, other);
   }
   return Object.values(out);
 }
@@ -4276,63 +4367,68 @@ function renderCostBook(){
   if(!asAtEl.value) asAtEl.value = costRefDate();
   const asAt = asAtEl.value || todayISO();
   const scope = document.getElementById('cbScope').value;
+  const famEl = document.getElementById('cbPlat');
+  const famSel = famEl ? famEl.value : 'all';
   const q = (document.getElementById('cbSearch').value||'').toLowerCase();
-  let list = cbAllAsins();
-  const missing = r => {
-    const a = costBookAt(r.asin,'fbm',asAt), b = costBookAt(r.asin,'fba',asAt);
-    return !(a && +a.buy > 0) && !(b && +b.buy > 0);
-  };
-  if(scope === 'live') list = list.filter(r => r.live);
-  else if(scope === 'gaps') list = list.filter(missing);
-  if(q) list = list.filter(r => r.asin.toLowerCase().includes(q) || (r.name||'').toLowerCase().includes(q));
-  list.sort((a,b) => (b.units||0)-(a.units||0) || a.asin.localeCompare(b.asin));
+  const all = cbOffers();
+  const noCost = o => { const v = costBookAt(o.id, o.chan, asAt, o.fam); return !(v && +v.buy > 0); };
+  let list = all.slice();
+  if(famSel !== 'all') list = list.filter(o => o.fam === famSel);
+  if(scope === 'live') list = list.filter(o => o.live || o.asinLive);
+  else if(scope === 'gaps') list = list.filter(noCost);
+  if(q) list = list.filter(o => o.id.toLowerCase().includes(q) || (o.name||'').toLowerCase().includes(q));
+  list.sort((a,b) => (b.units||0)-(a.units||0) || a.id.localeCompare(b.id) || a.chan.localeCompare(b.chan));
 
-  const note = document.getElementById('cbNote');
-  const gaps = cbAllAsins().filter(r => r.live && missing(r));
   const engineDate = costRefDate();
-  // "Costs as at" only changes what you are LOOKING at. The P&L always costs a sale with the
-  // version in force on the day it sold, so say plainly which date that is right now.
+  const gaps = all.filter(o => o.live && noCost(o));
   const lens = asAt !== engineDate
-    ? `<div class="notice"><b>You are viewing costs as at ${asAt}.</b> Your loaded reports are being costed as at <b>${engineDate}</b> - editing here writes a version dated ${asAt}, which will only affect reports from that date onward.</div>`
-    : `<div class="notice" style="background:#eefaf4;border-color:#bfe6d4">Your loaded reports are costed as at <b>${engineDate}</b>, which is what you are viewing. Change the date above to see or edit a different period.</div>`;
-  note.innerHTML = (gaps.length
-    ? `<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>⚠ ${fmtNum(gaps.length)} ASIN(s) selling right now have no cost on ${asAt}.</b> They are booking £0 COGS, so their profit is overstated. Use the “Missing a cost” filter to see just those.</div>`
+    ? '<div class="notice"><b>You are viewing costs as at ' + asAt + '.</b> Your loaded reports are costed as at <b>' + engineDate + '</b> - editing here writes a version dated ' + asAt + ', which only affects reports from that date onward.</div>'
+    : '<div class="notice" style="background:#eefaf4;border-color:#bfe6d4">Your loaded reports are costed as at <b>' + engineDate + '</b>, which is what you are viewing.</div>';
+  document.getElementById('cbNote').innerHTML = (gaps.length
+    ? '<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>&#9888; ' + fmtNum(gaps.length) + ' offer(s) selling right now have no cost on ' + asAt + '.</b> They book &pound;0 COGS, so their profit is overstated - use the &ldquo;Missing a cost&rdquo; filter.</div>'
     : '') + lens;
 
   const n2 = v => (v==null || v==='') ? '' : (+v).toFixed(2);
   const nRef = v => (v==null || v==='') ? '' : (+v > 1 ? (+v).toFixed(2) : (+v*100).toFixed(2));
-  const cell = (asin, chan, field, val, cls) =>
-    `<td class="num" style="background:${cls}"><input type="number" step="0.01" value="${val}" data-cb="${esc(asin)}" data-chan="${chan}" data-f="${field}" style="width:78px;text-align:right"></td>`;
-  const rows = list.map(r => {
-    const m = costBookAt(r.asin,'fbm',asAt) || {}, f = costBookAt(r.asin,'fba',asAt) || {};
-    const nv = (COSTBOOK[r.asin] ? (cbSorted(COSTBOOK[r.asin].fbm).length + cbSorted(COSTBOOK[r.asin].fba).length) : 0);
-    const from = [m.from, f.from].filter(Boolean).sort().slice(-1)[0] || '';
-    return `<tr${r.live && missing(r) ? ' style="background:#fff5f5"' : ''}>
-      <td><b>${esc(r.asin)}</b>${r.live?' <span class="badge green">selling</span>':''}</td>
-      <td style="max-width:280px">${esc((r.name||'').slice(0,70))}</td>
-      ${cell(r.asin,'fbm','buy', n2(m.buy),'#eef6fd')}
-      ${cell(r.asin,'fbm','ship',n2(m.ship),'#eef6fd')}
-      ${cell(r.asin,'fbm','oper',n2(m.oper),'#eef6fd')}
-      ${cell(r.asin,'fbm','ref', nRef(m.ref),'#eef6fd')}
-      ${cell(r.asin,'fba','buy', n2(f.buy),'#f7f4ff')}
-      ${cell(r.asin,'fba','fee', n2(f.fee),'#f7f4ff')}
-      ${cell(r.asin,'fba','oper',n2(f.oper),'#f7f4ff')}
-      ${cell(r.asin,'fba','ref', nRef(f.ref),'#f7f4ff')}
-      <td>${from ? esc(from) : '<span style="color:var(--muted)">not set</span>'}</td>
-      <td><button class="act-link" data-cbhist="${esc(r.asin)}">🗓 ${nv} version${nv===1?'':'s'}</button></td>
-    </tr>`;
+  const inp = (o, field, val) =>
+    '<td class="num"><input type="number" step="0.01" value="' + val + '" data-cb="' + esc(o.fam+'|'+o.id) + '" data-chan="' + o.chan + '" data-f="' + field + '" style="width:80px;text-align:right"></td>';
+  const rows = list.map(o => {
+    const v = costBookAt(o.id, o.chan, asAt, o.fam) || {};
+    const rec = COSTBOOK[cbId(o.fam,o.id)];
+    const nv = rec ? cbSorted(rec[o.chan]).length : 0;
+    const isFba = o.chan === 'fba';
+    const tag = o.fam !== 'amazon'
+      ? '<span class="badge grey">#' + o.fam.toUpperCase() + '</span>'
+      : '<span class="badge ' + (isFba?'purple':'blue') + '">#' + (isFba?'FBA':'FBM') + '</span>';
+    const liveBit = o.live
+      ? ' &middot; <span style="color:var(--green)">selling' + (o.units ? ' &middot; ' + fmtNum(Math.round(o.units)) + 'u' : '') + '</span>'
+      : '';
+    return '<tr' + (o.live && noCost(o) ? ' style="background:#fff5f5"' : '') + '>' +
+      '<td style="max-width:330px">' +
+        '<div style="font-size:11.5px;color:var(--muted)"><b>' + esc(o.id) + '</b>' + liveBit + '</div>' +
+        '<div class="ptitle2" title="' + esc(o.name) + '">' + esc((o.name||o.id).slice(0,72)) + '</div>' +
+      '</td>' +
+      '<td>' + tag + '</td>' +
+      inp(o,'buy', n2(v.buy)) +
+      inp(o, isFba?'fee':'ship', n2(isFba ? v.fee : v.ship)) +
+      inp(o,'oper', n2(v.oper)) +
+      inp(o,'ref', nRef(v.ref)) +
+      '<td>' + (v.from ? esc(v.from) : '<span style="color:var(--muted)">not set</span>') + '</td>' +
+      '<td><button class="act-link" data-cbhist="' + esc(o.fam+'|'+o.id) + '">&#128197; ' + nv + '</button></td>' +
+    '</tr>';
   }).join('');
   document.querySelector('#cbTable tbody').innerHTML = rows ||
-    '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:18px">No ASINs match. Load your Amazon files, or switch the filter to “Every ASIN I have”.</td></tr>';
-  document.getElementById('cbCount').textContent = `${fmtNum(list.length)} ASIN(s) · costs as at ${asAt}`;
+    '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:18px">No offers match. Load your files, or use <b>Import</b> to bring costs in from a spreadsheet.</td></tr>';
+  document.getElementById('cbCount').textContent = fmtNum(list.length) + ' offer(s) · costs as at ' + asAt;
 
-  // inline edits write into the version in force on the chosen date, or start one dated that day
-  document.querySelectorAll('#cbTable input[data-cb]').forEach(inp => inp.addEventListener('change', () => {
-    const asin = cbKey(inp.dataset.cb), chan = inp.dataset.chan, field = inp.dataset.f;
-    const raw = inp.value.trim();
+  document.querySelectorAll('#cbTable input[data-cb]').forEach(el => el.addEventListener('change', () => {
+    const key = el.dataset.cb, chan = el.dataset.chan, field = el.dataset.f;
+    const bar = key.indexOf('|'), fam = key.slice(0,bar), id = key.slice(bar+1);
+    const raw = el.value.trim();
     const val = raw === '' ? null : (field === 'ref' ? (+raw > 1 ? +raw/100 : +raw) : +raw);
-    const rec = COSTBOOK[asin] || (COSTBOOK[asin] = {name:'', fbm:[], fba:[]});
-    if(!rec.name){ const f = cbAllAsins().find(x=>x.asin===asin); if(f) rec.name = f.name||''; }
+    const k = cbId(fam, id);
+    const rec = COSTBOOK[k] || (COSTBOOK[k] = {name:'', fbm:[], fba:[]});
+    if(!rec.name){ const f = all.find(x => x.fam===fam && x.id===id); if(f) rec.name = f.name||''; }
     rec[chan] = cbSorted(rec[chan]);
     let v = null;
     for(const x of rec[chan]) if(!x.from || x.from <= asAt) v = x;
@@ -4343,13 +4439,13 @@ function renderCostBook(){
     }
     if(val == null) delete v[field]; else v[field] = val;
     saveCostBook();
-    if(STATE.raw.master.length) STATE.master = buildMaster();
+    if(STATE.raw.master.length || Object.keys(COSTBOOK).length) STATE.master = buildMaster();
     if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
     renderCostBook();
-    showBanner(`Saved ${chan.toUpperCase()} ${field} for ${asin}, effective ${asAt}.`, 'success');
+    showBanner('Saved ' + chan.toUpperCase() + ' ' + field + ' for ' + id + ', effective ' + asAt + '.', 'success');
   }));
   document.querySelectorAll('#cbTable [data-cbhist]').forEach(b => b.addEventListener('click', () => {
-    CB_OPEN = cbKey(b.dataset.cbhist); renderCostHistory();
+    CB_OPEN = b.dataset.cbhist; renderCostHistory();
   }));
   if(CB_OPEN) renderCostHistory();
 }
@@ -5933,40 +6029,101 @@ const spReset = () => { STATE.sp.page = 0; renderSkuPerf(); };
 document.getElementById('spPlatform').addEventListener('change', e => { STATE.sp.platform = e.target.value; spReset(); });
 document.getElementById('spReport').addEventListener('change', e => { STATE.sp.report = e.target.value; spReset(); });
 // ---- Cost Manager controls ----
-['cbAsAt','cbScope','cbSearch'].forEach(id =>
+['cbAsAt','cbScope','cbSearch','cbPlat'].forEach(id =>
   document.getElementById(id).addEventListener(id==='cbSearch'?'input':'change', () => renderCostBook()));
 document.getElementById('cbHistClose').addEventListener('click', () => { CB_OPEN=''; renderCostHistory(); });
-// Seed the book from the uploaded sheet so you start from what you already have rather than
-// a blank grid. Existing versions are never overwritten - this only fills ASINs with none.
-document.getElementById('cbSeed').addEventListener('click', () => {
+// Bulk import. Accepts the master-sheet layout you already have, so an existing sheet loads
+// straight in. Every imported row becomes a VERSION dated by the "Costs as at" box, so an
+// import is a point-in-time price list - re-importing next month after a supplier change adds
+// new versions and leaves the old ones (and every past report) untouched.
+document.getElementById('wsGoCostBook').addEventListener('click', () => showPage('costbook'));
+document.getElementById('cbImport').addEventListener('click', () => document.getElementById('cbImportFile').click());
+document.getElementById('cbImportFile').addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if(!file) return;
   const from = document.getElementById('cbAsAt').value || todayISO();
-  let added = 0, skipped = 0;
-  for(const r of (STATE.raw.master||[])){
-    const p = String(r.platform||'').toLowerCase();
-    if(!(p.includes('amazon')||p.includes('amz')||p.includes('vemart')||p.includes('vefive'))) continue;
-    const asin = cbKey(r.asin || r.productid); if(!asin) continue;
-    const chanRaw = fixText(r['SKU CHANNEL']||'');
-    const chan = (/fba|afn|amazon/i.test(chanRaw) || /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(fixText(r.sku))) ? 'fba' : 'fbm';
-    const rec = COSTBOOK[asin] || (COSTBOOK[asin] = {name: fixText(r.Name)||'', fbm:[], fba:[]});
-    if(!rec.name) rec.name = fixText(r.Name)||'';
-    if(cbSorted(rec[chan]).length){ skipped++; continue; }     // already has history - leave it
-    let ref = r['Refferal fee %'] != null ? cleanMoney(r['Refferal fee %']) : null;
-    if(ref != null && ref > 1) ref = ref/100;
-    const v = {from};
-    const buy = cleanMoney(r.buying_cost_per_unit), oper = cleanMoney(r.operational_cost_per_unit);
-    if(buy) v.buy = buy;
-    if(oper) v.oper = oper;
-    if(ref != null) v.ref = ref;
-    if(chan === 'fba'){ const fee = cleanMoney(r['FBA Fees']); if(fee) v.fee = fee; }
-    else { const sh = cleanMoney(r.shipping_cost_per_unit); if(sh) v.ship = sh; }
-    rec[chan].push(v); added++;
+  try{
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const wb = XLSX.read(buf, {type:'array', cellDates:true});
+    let rows = [];
+    for(const sn of wb.SheetNames){
+      const sh = wb.Sheets[sn];
+      fixRef(sh);
+      const arr = XLSX.utils.sheet_to_json(sh, {header:1, defval:null});
+      let hdr = -1;
+      for(let i=0;i<Math.min(25, arr.length);i++){
+        const set = new Set((arr[i]||[]).map(c => c==null?'':String(c).replace(/^﻿/,'').trim().toLowerCase()));
+        if((set.has('asin') || set.has('sku') || set.has('productid') || set.has('item id')) &&
+           [...set].some(c => /cogs|buying|product cost|cost/.test(c))){ hdr = i; break; }
+      }
+      if(hdr < 0) continue;
+      let r = XLSX.utils.sheet_to_json(sh, {range:hdr, defval:null, raw:false});
+      rows = rows.concat(normKeys(r));
+      if(rows.length) break;
+    }
+    if(!rows.length){
+      showBanner('Could not find a cost table in that file. It needs a header row with an ASIN/SKU column and a cost column.', 'error');
+      return;
+    }
+    const pick = (r, ...names) => {
+      for(const n of names){
+        for(const k of Object.keys(r)){
+          if(k.trim().toLowerCase() === n) return r[k];
+        }
+      }
+      for(const n of names){
+        for(const k of Object.keys(r)){
+          if(k.trim().toLowerCase().indexOf(n) >= 0) return r[k];
+        }
+      }
+      return null;
+    };
+    let added = 0, skipped = 0;
+    for(const r of rows){
+      const platRaw = fixText(pick(r,'platform','marketplace','channel name') || '');
+      const skuRaw  = fixText(pick(r,'sku','seller sku') || '');
+      const asinRaw = fixText(pick(r,'asin') || '');
+      const pidRaw  = fixText(pick(r,'productid','product id','item id','ebay item id') || '');
+      const fam = platRaw ? cbFam(platRaw) : (asinRaw ? 'amazon' : 'tiktok');
+      const id = fam==='amazon' ? (asinRaw || pidRaw) : (fam==='ebay' ? (pidRaw || skuRaw) : (skuRaw || pidRaw));
+      if(!id){ skipped++; continue; }
+      const chanRaw = fixText(pick(r,'sku channel','fulfilment channel','fulfillment channel') || '');
+      const chan = (fam==='amazon' && (/fba|afn|amazon/i.test(chanRaw) ||
+                    (!chanRaw && /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(skuRaw)))) ? 'fba' : 'fbm';
+      const num = v => (v==null || String(v).trim()==='') ? null : cleanMoney(v);
+      const buy  = num(pick(r,'buying_cost_per_unit','product cost','cogs','buying'));
+      const oper = num(pick(r,'operational_cost_per_unit','prep cost','operational'));
+      const ship = num(pick(r,'shipping_cost_per_unit','shipping cost','shipping'));
+      const fee  = num(pick(r,'fba fees','fba fee','fulfilment fee','fulfillment fee'));
+      let ref    = num(pick(r,'refferal fee %','referral fee %','refrral %','referral','refferal'));
+      if(ref != null && ref > 1) ref = ref/100;
+      if(buy==null && oper==null && ship==null && fee==null && ref==null){ skipped++; continue; }
+      const k = cbId(fam, id);
+      const rec = COSTBOOK[k] || (COSTBOOK[k] = {name:'', fbm:[], fba:[]});
+      const nm = fixText(pick(r,'name','title','product') || '');
+      if(nm && !rec.name) rec.name = nm;
+      rec[chan] = cbSorted(rec[chan]).filter(v => v.from !== from);   // same date replaces
+      const v = {from};
+      if(buy  != null) v.buy  = buy;
+      if(oper != null) v.oper = oper;
+      if(ref  != null) v.ref  = ref;
+      if(chan === 'fba'){ if(fee != null) v.fee = fee; else if(ship != null) v.fee = ship; }
+      else if(ship != null) v.ship = ship;
+      rec[chan].push(v);
+      rec[chan] = cbSorted(rec[chan]);
+      added++;
+    }
+    saveCostBook();
+    STATE.master = buildMaster();
+    if(loadedChannels().length){ recompute(); diagnostics(); }
+    renderCostBook();
+    showBanner('Imported ' + fmtNum(added) + ' cost row(s) as a version effective ' + from + '.' +
+      (skipped ? ' ' + fmtNum(skipped) + ' row(s) had no usable ID or cost and were skipped.' : '') +
+      ' Earlier versions and past reports are unchanged.', 'success');
+  }catch(err){
+    showBanner('Import failed: ' + err.message, 'error');
   }
-  saveCostBook();
-  if(STATE.raw.master.length) STATE.master = buildMaster();
-  if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
-  renderCostBook();
-  showBanner(added ? `Imported ${added} cost row(s) effective ${from}. ${skipped} already had history and were left alone.`
-                   : 'Nothing to import - every ASIN in the sheet already has a cost version.', added?'success':'');
 });
 document.getElementById('cbAddVersion').addEventListener('click', () => {
   if(!CB_OPEN) return;
@@ -5994,25 +6151,34 @@ document.getElementById('cbAddVersion').addEventListener('click', () => {
 });
 document.getElementById('cbExport').addEventListener('click', () => {
   const asAt = document.getElementById('cbAsAt').value || todayISO();
-  const rows = [];
-  for(const r of cbAllAsins()){
-    const m = costBookAt(r.asin,'fbm',asAt)||{}, f = costBookAt(r.asin,'fba',asAt)||{};
-    rows.push({ASIN:r.asin, Product:r.name, 'Selling now':r.live?'Yes':'',
-      'FBM COGS':m.buy??'', 'FBM Shipping':m.ship??'', 'FBM Operational':m.oper??'', 'FBM Referral %':m.ref!=null?(+m.ref*100).toFixed(2):'',
-      'FBA COGS':f.buy??'', 'FBA Fee':f.fee??'', 'FBA Operational':f.oper??'', 'FBA Referral %':f.ref!=null?(+f.ref*100).toFixed(2):'',
-      'FBM from':m.from??'', 'FBA from':f.from??''});
-  }
+  const rows = cbOffers().map(o => {
+    const v = costBookAt(o.id, o.chan, asAt, o.fam) || {};
+    return {Platform:o.fam, ID:o.id, Product:o.name,
+      Channel: o.fam==='amazon' ? o.chan.toUpperCase() : '',
+      'Selling now': o.live ? 'Yes' : '',
+      COGS: v.buy!=null?v.buy:'',
+      'Ship / FBA fee': (o.chan==='fba' ? (v.fee!=null?v.fee:'') : (v.ship!=null?v.ship:'')),
+      Operational: v.oper!=null?v.oper:'',
+      'Referral %': v.ref!=null?(+v.ref*100).toFixed(2):'',
+      'In force from': v.from||''};
+  });
   const hist = [];
-  for(const [asin,rec] of Object.entries(COSTBOOK))
+  for(const [key, rec] of Object.entries(COSTBOOK)){
+    const bar = key.indexOf('|'); if(bar < 0) continue;
+    const fam = key.slice(0,bar), id = key.slice(bar+1);
     for(const chan of ['fbm','fba'])
       for(const v of cbSorted(rec[chan]))
-        hist.push({ASIN:asin, Product:rec.name||'', Channel:chan.toUpperCase(), 'Effective from':v.from||'',
-          COGS:v.buy??'', 'Shipping / FBA fee': (chan==='fba'? (v.fee??'') : (v.ship??'')),
-          Operational:v.oper??'', 'Referral %': v.ref!=null?(+v.ref*100).toFixed(2):''});
+        hist.push({Platform:fam, ID:id, Product:rec.name||'',
+          Channel: fam==='amazon' ? chan.toUpperCase() : '',
+          'Effective from':v.from||'', COGS:v.buy!=null?v.buy:'',
+          'Ship / FBA fee': (chan==='fba' ? (v.fee!=null?v.fee:'') : (v.ship!=null?v.ship:'')),
+          Operational:v.oper!=null?v.oper:'',
+          'Referral %': v.ref!=null?(+v.ref*100).toFixed(2):''});
+  }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Costs as at ' + asAt);
   if(hist.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hist), 'Full history');
-  XLSX.writeFile(wb, `InstaSales_Cost_Manager_${asAt}.xlsx`);
+  XLSX.writeFile(wb, 'InstaSales_Cost_Manager_' + asAt + '.xlsx');
 });
 
 document.getElementById('spGroup').addEventListener('change', e => { STATE.sp.group = e.target.value; spReset(); });
