@@ -240,9 +240,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .kv{font-size:11.5px;color:var(--muted);margin-top:2px}
 .kv b{color:var(--text)}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:800;margin:3px 4px 0 0}
-/* Fulfilment column: a real dropdown where the choice is the user's, a plain label where the
-   platform allows only one, so the two never look like the same kind of control. */
-select.fchan{min-width:150px;font-size:11.5px;padding:3px 6px}
+/* Fulfilment column: a compact code (FBA/FBM/FBS/FBP/FBT) with the full name on hover. */
 .fchan-fixed{display:inline-block;font-size:11.5px;font-weight:700;color:var(--muted);white-space:nowrap}
 .badge.blue{background:#e3f2fc;color:#1a7fc4}
 .badge.purple{background:#efe7fd;color:#6a3cb5}
@@ -542,6 +540,7 @@ select.fchan{min-width:150px;font-size:11.5px;padding:3px 6px}
           <option value="ebay">eBay</option>
           <option value="shopify">Shopify</option>
         </select>
+        <select class="fsel" id="cbFul"></select>
         <select class="fsel" id="cbScope">
           <option value="live">Selling now</option>
           <option value="all">Every offer I have</option>
@@ -4294,14 +4293,16 @@ const cbSorted = list => (list||[]).slice().sort((a,b) => String(a.from||'').loc
 // renaming the key would orphan the lot. Amazon is the only platform where a product genuinely
 // has two live offers at once, so it is the only one that gets two rows.
 const CB_CHANS = {
-  amazon:  [['fbm','FBM'], ['fba','FBA']],
-  tiktok:  [['fbm','Fulfil via Seller'], ['ttplat','Fulfil via Platform'], ['tttok','Fulfil via TikTok']],
-  ebay:    [['fbm','Fulfil by Seller']],
-  shopify: [['fbm','Fulfil by Seller']]
+  amazon:  [['fbm','FBM','Fulfilled by Merchant'], ['fba','FBA','Fulfilled by Amazon']],
+  tiktok:  [['fbm','FBS','Fulfil by Seller'], ['ttplat','FBP','Fulfil by Platform'], ['tttok','FBT','Fulfil by TikTok']],
+  ebay:    [['fbm','Fulfil by Seller','Fulfil by Seller']],
+  shopify: [['fbm','Fulfil by Seller','Fulfil by Seller']]
 };
 const CB_ALL_CHANS = ['fbm','fba','ttplat','tttok'];   // for loops over a record of any platform
 const cbChanList  = fam => CB_CHANS[fam] || CB_CHANS.tiktok;
-const cbChanLabel = (fam, k) => { const f = cbChanList(fam).find(x => x[0] === k); return f ? f[1] : String(k).toUpperCase(); };
+const cbChanFind  = (fam, k) => cbChanList(fam).find(x => x[0] === k);
+const cbChanLabel = (fam, k) => { const f = cbChanFind(fam, k); return f ? f[1] : String(k).toUpperCase(); };
+const cbChanLong  = (fam, k) => { const f = cbChanFind(fam, k); return f ? f[2] : String(k).toUpperCase(); };
 // How a product is currently fulfilled: whichever of its platform's channels holds costs,
 // else the platform default. Sales must attach to THIS channel, not always to 'fbm', or a
 // product switched to platform fulfilment splits into two rows - units on one, costs on the
@@ -4451,6 +4452,25 @@ function renderBatchPicker(){
     : '<option value="">nothing dated yet</option>';
   if(keep && b.some(x => x[0] === keep)) sel.value = keep;
 }
+const CB_PLAT_LABEL = {amazon:'Amazon', tiktok:'TikTok', ebay:'eBay', shopify:'Shopify'};
+// Fulfilment filter, scoped to whichever platform is selected. Values are "family:channel"
+// because 'fbm' means Amazon FBM, TikTok FBS and eBay seller-fulfilled all at once - filtering
+// on the bare channel key would sweep up all three.
+function renderFulPicker(famSel){
+  const sel = document.getElementById('cbFul');
+  if(!sel) return;
+  const keep = sel.value;
+  const fam = famSel === 'amazon2' ? 'amazon' : famSel;
+  const fams = fam === 'all' ? ['amazon','tiktok','ebay','shopify'] : [fam];
+  let html = '<option value="all">All fulfilment</option>';
+  for(const f of fams){
+    const body = cbChanList(f).map(([k, short, long]) =>
+      `<option value="${f}:${k}">${esc(short === long ? short : short + ' - ' + long)}</option>`).join('');
+    html += fams.length > 1 ? `<optgroup label="${esc(CB_PLAT_LABEL[f])}">${body}</optgroup>` : body;
+  }
+  sel.innerHTML = html;
+  sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'all';
+}
 function renderCostBook(){
   renderBatchPicker();
   const asAtEl = document.getElementById('cbAsAt');
@@ -4459,6 +4479,8 @@ function renderCostBook(){
   const scope = document.getElementById('cbScope').value;
   const famEl = document.getElementById('cbPlat');
   const famSel = famEl ? famEl.value : 'all';
+  renderFulPicker(famSel);
+  const fulSel = document.getElementById('cbFul').value;
   const q = (document.getElementById('cbSearch').value||'').toLowerCase();
   const all = cbOffers();
   const noCost = o => { const v = costBookAt(o.id, o.chan, asAt, o.fam); return !(v && +v.buy > 0); };
@@ -4469,6 +4491,10 @@ function renderCostBook(){
   if(famSel === 'amazon' || famSel === 'amazon2')
     list = list.filter(o => o.fam === 'amazon' && (o.asinOn.has(famSel) || o.asinOn.size === 0));
   else if(famSel !== 'all') list = list.filter(o => o.fam === famSel);
+  if(fulSel !== 'all'){
+    const [ff, fc] = fulSel.split(':');
+    list = list.filter(o => o.fam === ff && o.chan === fc);
+  }
   if(scope === 'live') list = list.filter(o => o.live || o.asinLive);
   else if(scope === 'gaps') list = list.filter(noCost);
   if(q) list = list.filter(o => o.id.toLowerCase().includes(q) || (o.name||'').toLowerCase().includes(q));
@@ -4492,17 +4518,8 @@ function renderCostBook(){
     const rec = COSTBOOK[cbId(o.fam,o.id)];
     const nv = rec ? cbSorted(rec[o.chan]).length : 0;
     const isFba = o.chan === 'fba';
-    // Amazon lists both offers as their own rows, so its selector is fixed - switching a row
-    // there would just collide with the row that already exists. Everywhere else one product
-    // is fulfilled one way, so the selector sets it and carries the costs across.
-    const opts = cbChanList(o.fam);
-    const tag = opts.length < 2 || o.fam === 'amazon'
-      ? '<span class="fchan-fixed" title="' + (o.fam === 'amazon'
-          ? 'FBA and FBM are separate offers, each with its own row and costs'
-          : 'The only fulfilment option on this platform') + '">' + esc(cbChanLabel(o.fam, o.chan)) + '</span>'
-      : '<select class="fsel fchan" data-cbfc="' + esc(o.fam+'|'+o.id) + '" data-chan="' + o.chan + '">' +
-        opts.map(([k,lab]) => '<option value="' + k + '"' + (k === o.chan ? ' selected' : '') + '>' + esc(lab) + '</option>').join('') +
-        '</select>';
+    const tag = '<span class="fchan-fixed" title="' + esc(cbChanLong(o.fam, o.chan)) + '">' +
+      esc(cbChanLabel(o.fam, o.chan)) + '</span>';
     // Under an account filter, report THAT account's units - o.units is the combined figure
     // across Vemart and Vefive and would overstate whichever one you are looking at.
     const acctFilter = (famSel === 'amazon' || famSel === 'amazon2');
@@ -4551,33 +4568,6 @@ function renderCostBook(){
     if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
     renderCostBook();
     showBanner('Saved ' + cbChanLabel(fam, chan) + ' ' + field + ' for ' + id + ', effective ' + asAt + '.', 'success');
-  }));
-  // Changing how a product is fulfilled carries its whole dated cost history to the new
-  // channel, rather than stranding it - the costs are the same costs, just booked differently.
-  document.querySelectorAll('#cbTable select[data-cbfc]').forEach(el => el.addEventListener('change', () => {
-    const key = el.dataset.cbfc, from = el.dataset.chan, to = el.value;
-    if(from === to) return;
-    const bar = key.indexOf('|'), fam = key.slice(0,bar), id = key.slice(bar+1);
-    const rec = COSTBOOK[cbId(fam, id)];
-    const moving = rec ? cbSorted(rec[from]) : [];
-    if(rec){
-      const existing = cbSorted(rec[to]);
-      if(existing.length && moving.length &&
-         !confirm(`${id} already has ${existing.length} ${cbChanLabel(fam,to)} cost version(s).\n\n` +
-                  `Moving its ${moving.length} ${cbChanLabel(fam,from)} version(s) across will keep both sets, ` +
-                  `and where two share a date the ${cbChanLabel(fam,from)} one wins. Continue?`)){
-        renderCostBook(); return;                       // put the dropdown back
-      }
-      const merged = existing.filter(v => !moving.some(m => m.from === v.from)).concat(moving);
-      rec[to] = cbSorted(merged);
-      rec[from] = [];
-      saveCostBook();
-      STATE.master = buildMaster();
-      if(loadedChannels().length){ recompute(); diagnostics(); }
-    }
-    renderCostBook();
-    showBanner(`${id} is now fulfilled as "${cbChanLabel(fam, to)}"` +
-      (moving.length ? `, and its ${moving.length} cost version(s) moved with it.` : '.'), 'success');
   }));
   document.querySelectorAll('#cbTable [data-cbhist]').forEach(b => b.addEventListener('click', () => {
     CB_OPEN = b.dataset.cbhist;
@@ -6198,7 +6188,7 @@ const spReset = () => { STATE.sp.page = 0; renderSkuPerf(); };
 document.getElementById('spPlatform').addEventListener('change', e => { STATE.sp.platform = e.target.value; spReset(); });
 document.getElementById('spReport').addEventListener('change', e => { STATE.sp.report = e.target.value; spReset(); });
 // ---- Cost Manager controls ----
-['cbAsAt','cbScope','cbSearch','cbPlat'].forEach(id =>
+['cbAsAt','cbScope','cbSearch','cbPlat','cbFul'].forEach(id =>
   document.getElementById(id).addEventListener(id==='cbSearch'?'input':'change', () => renderCostBook()));
 document.getElementById('cbHistClose').addEventListener('click', () => { CB_OPEN=''; renderCostHistory(); });
 document.getElementById('cbNewChan').addEventListener('change', e => {
