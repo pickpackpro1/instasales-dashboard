@@ -846,6 +846,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
             <div class="fs-item" data-t="amz_biz"><span class="check">○</span><span>Business Report (by ASIN)</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz_ads"><span class="check">○</span><span>Sponsored Products / ADV sheet</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz_txn"><span class="check">○</span><span>Transaction report (orders/refunds)</span><span class="cnt">-</span></div>
+            <div class="fs-item" data-t="amz_txn2"><span class="check">○</span><span>Transaction report - date range (refunds)</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz_orders"><span class="check">○</span><span>All Orders Report (splits FBA / FBM)</span><span class="cnt">-</span></div>
           </div>
         </div>
@@ -858,6 +859,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
             <div class="fs-item" data-t="amz2_biz"><span class="check">○</span><span>Business Report (by ASIN)</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz2_ads"><span class="check">○</span><span>Sponsored Products / ADV sheet</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz2_txn"><span class="check">○</span><span>Transaction report (orders/refunds)</span><span class="cnt">-</span></div>
+            <div class="fs-item" data-t="amz2_txn2"><span class="check">○</span><span>Transaction report - date range (refunds)</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="amz2_orders"><span class="check">○</span><span>All Orders Report (splits FBA / FBM)</span><span class="cnt">-</span></div>
           </div>
         </div>
@@ -1329,6 +1331,7 @@ function readFile(file){
     reader.onload = e => {
       try{
         const buf = new Uint8Array(e.target.result);
+        let csvSheet = null;
         // DC stock CSVs get the tolerant parser (they have malformed embedded quotes)
         if(/\.csv$/i.test(file.name)){
           const text = new TextDecoder('utf-8').decode(buf);
@@ -1343,8 +1346,19 @@ function readFile(file){
             else if(s.has('Action Quantity') && s.has('Log Created Date') && s.has('Action')) type = 'dc_stock_txn';
             if(type){ resolve({name: file._path || file.name, found:[{type, rows}]}); return; }
           }
+          // A CSV carries no format information, so SheetJS guesses at "10/08/2026" and picks
+          // the US month-first reading - 10 August silently becomes 8 October. It commits to
+          // that inside XLSX.read (the cell becomes serial 46303), so no read option gets the
+          // true date back. Build the sheet from the text ourselves with every cell left as a
+          // string: parseDate then sees "10/08/2026" and applies the day-first rule correctly.
+          const aoa = parseCsvTolerant(text).filter(r => r.some(c => String(c).trim() !== ''));
+          if(aoa.length){
+            csvSheet = XLSX.utils.aoa_to_sheet(aoa.map(r => r.map(c => c == null ? null : String(c))));
+          }
         }
-        const wb = XLSX.read(buf, {type:'array', cellDates:true});
+        const wb = csvSheet
+          ? {SheetNames:['Sheet1'], Sheets:{Sheet1: csvSheet}}
+          : XLSX.read(buf, {type:'array', cellDates:true});
         const found = [];
         for(const sn of wb.SheetNames){
           const sh = wb.Sheets[sn];
