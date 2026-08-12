@@ -319,6 +319,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <button class="nav-item" data-page="costbook"><span class="ic">🗓️</span>Cost Manager</button>
     <button class="nav-item has-sub" data-group="analyticsG"><span class="ic">📈</span>Analytics<span class="chev">▶</span></button>
     <div class="submenu" id="analyticsG">
+      <button class="nav-item" data-page="daily"><span class="ic">📅</span>Daily Analysis</button>
       <button class="nav-item" data-page="skuperf"><span class="ic">📉</span>SKU Performance</button>
       <button class="nav-item" data-page="intel"><span class="ic">🧠</span>Product Intelligence</button>
       <button class="nav-item" data-page="comparison"><span class="ic">⚖️</span>Comparison Charts</button>
@@ -633,6 +634,41 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <input type="number" id="npRef" placeholder="Referral %" step="0.1" min="0" style="width:105px">
         <button class="btn" id="npAdd">Add</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ============ DAILY ANALYSIS ============ -->
+  <div class="page" id="page-daily">
+    <div class="card" style="margin-bottom:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot"></span>Daily Analysis</h3>
+        <span class="flabel">Range</span>
+        <button class="btn secondary da-q" data-days="2">Last 2 days</button>
+        <button class="btn secondary da-q" data-days="7">7 days</button>
+        <button class="btn secondary da-q" data-days="14">14 days</button>
+        <button class="btn secondary da-q" data-days="30">30 days</button>
+        <button class="btn secondary da-q" data-days="0">All</button>
+        <span class="flabel" style="margin-left:8px">Custom</span>
+        <input type="date" id="daFrom" style="width:150px">
+        <input type="date" id="daTo" style="width:150px">
+        <button class="btn" id="daApply">Apply</button>
+        <span style="flex:1"></span>
+        <button class="btn secondary" id="daExport">⬇️ Export</button>
+        <div class="count" id="daCount"></div>
+      </div>
+      <div class="sub-title">
+        Every metric summarised <b>per day</b>, on the same engine as the rest of the app — each row is a real
+        P&amp;L for that single day, not a share of the period. Respects the <b>channel filter</b> at the top, and
+        ignores the global date filter so you can always see the full span. <b>vs Prev</b> compares revenue with the
+        previous day shown.
+      </div>
+      <div id="daNote"></div>
+    </div>
+    <div class="kpi-strip" id="daKpis"></div>
+    <div class="card">
+      <div class="table-wrap" style="max-height:640px"><table id="daTable">
+        <thead></thead><tbody></tbody><tfoot></tfoot>
+      </table></div>
     </div>
   </div>
 
@@ -3544,7 +3580,7 @@ function kpiCard(c){
 
 // ================= pages =================
 const PAGE_TITLES = {dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Master Products', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
-const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','inventory','pls','skuperf','intel','comparison','economics','fees','advertising','grow']);
+const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','inventory','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily']);
 
 function showPage(id){
   STATE.page = id;
@@ -3575,7 +3611,7 @@ function renderPage(){
       inventory:renderInventory, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
       economics:renderEconomics, fees:renderFees, reports:renderReports, opex:renderOpex, advertising:renderAds,
       grow:renderGrow, tasks:renderTasks, workspace:renderLoadedReports, products:renderProducts, skumgt:renderSkuMgtPage,
-      costbook:renderCostBook}[id] || (()=>{}))();
+      costbook:renderCostBook, daily:renderDaily}[id] || (()=>{}))();
   } catch(err){
     showBanner('Render error: ' + err.message, 'error');
     console.error(err);
@@ -5104,6 +5140,175 @@ function renderInventory(){
   }).join('');
 }
 
+// ---- Daily Analysis ----
+// One real P&L per day rather than a period total split by revenue share, so a day's margin is
+// its own margin. Each day is costed by re-running the engines with the filter pinned to that
+// date - the same path the comparison drawer uses - which is why the numbers here reconcile
+// exactly with the Dashboard when you set the same single-day filter.
+let DA_DAYS = 7;                 // 0 = every day loaded
+let DA_FROM = '', DA_TO = '';    // set by the custom range
+// Every day the loaded files actually cover, ignoring the global date filter: this page has its
+// own range control, and inheriting the filter would hide the days you came here to compare.
+function daAllDates(){
+  const sf = STATE.dateFrom, st = STATE.dateTo;
+  const set = new Set();
+  const grab = () => { for(const ch of ALL_CH){ const d = STATE.extras[ch] && STATE.extras[ch].daily; if(d) for(const k of Object.keys(d)) if(k) set.add(k); } };
+  if(!sf && !st){ grab(); }
+  else {
+    STATE.dateFrom = ''; STATE.dateTo = '';
+    try{ recompute(); grab(); }
+    finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
+  }
+  return [...set].sort();
+}
+// The P&L for each date in turn. Restores the filter once at the end rather than per day, so
+// this costs N+1 recomputes instead of 2N.
+function daSeries(dates){
+  const sf = STATE.dateFrom, st = STATE.dateTo;
+  const out = [];
+  try{
+    for(const date of dates){
+      STATE.dateFrom = date; STATE.dateTo = date;
+      recompute();
+      const t = totalsOf(filteredRows());
+      const chans = filteredChannels();
+      const refunds = (t.refunds || 0) + unattachedRefunds(chans);
+      const rev = t.revenue_gross || 0, revEx = t.revenue_ex || 0;
+      const ads = t.ads || 0;
+      // totalsOf already rolls ad_sales up for every channel; extras.adRevTotal exists only on
+      // TikTok, so reading that gave Amazon and eBay a permanently blank ACoS.
+      const adSales = t.ad_sales || 0;
+      out.push({
+        date,
+        orders: t.orders_count || 0,
+        units: t.units || 0,
+        rev, refunds, revEx,
+        cogs: t.buying || 0,
+        fees: (t.mkt_fee || 0) + (t.affiliate || 0) + (t.shop_ads || 0),
+        ship: (t.shipping || 0) + (t.oper || 0),
+        ads, adSales,
+        profit: t.net_profit_ex || 0,
+        margin: revEx > 0 ? (t.net_profit_ex || 0) / revEx * 100 : null,
+        // no ad spend is "not advertised", not "0% ACoS" - a real zero would read as a
+        // spectacular result rather than an absence of data
+        acos: (ads > 0 && adSales > 0) ? ads / adSales * 100 : null,
+        tacos: (ads > 0 && rev > 0) ? ads / rev * 100 : null
+      });
+    }
+  } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
+  return out;
+}
+function daStatus(d){
+  if(d.rev <= 0) return '<span class="badge grey">No sales</span>';
+  if(d.profit < 0) return '<span class="badge red">Loss</span>';
+  if(d.margin != null && d.margin < 8) return '<span class="badge amber" style="background:#fdf3df;color:#9a6a00">Low margin</span>';
+  if(d.margin != null && d.margin >= 20) return '<span class="badge green">Excellent</span>';
+  return '<span class="badge blue">Healthy</span>';
+}
+function renderDaily(){
+  const all = daAllDates();
+  const countEl = document.getElementById('daCount');
+  if(!all.length){
+    document.querySelector('#daTable thead').innerHTML = '';
+    document.querySelector('#daTable tbody').innerHTML = '<tr><td style="color:var(--muted);padding:18px">No dated sales data loaded. Daily Analysis needs files that carry dates - TikTok orders, eBay transactions, Shopify orders, or dated Amazon daily reports.</td></tr>';
+    document.querySelector('#daTable tfoot').innerHTML = '';
+    document.getElementById('daKpis').innerHTML = '';
+    document.getElementById('daNote').innerHTML = '';
+    countEl.textContent = '';
+    return;
+  }
+  let dates = all;
+  if(DA_FROM || DA_TO) dates = all.filter(d => (!DA_FROM || d >= DA_FROM) && (!DA_TO || d <= DA_TO));
+  else if(DA_DAYS > 0) dates = all.slice(-DA_DAYS);
+  if(!dates.length) dates = all.slice(-1);
+  const fromEl = document.getElementById('daFrom'), toEl = document.getElementById('daTo');
+  fromEl.value = dates[0]; toEl.value = dates[dates.length-1];
+
+  const S = daSeries(dates);
+  const sum = k => S.reduce((a,d) => a + (d[k] || 0), 0);
+  const tRev = sum('rev'), tProfit = sum('profit'), tRevEx = sum('revEx');
+  const tAds = sum('ads'), tAdSales = sum('adSales');
+  const tMargin = tRevEx > 0 ? tProfit/tRevEx*100 : null;
+  const tAcos = (tAds > 0 && tAdSales > 0) ? tAds/tAdSales*100 : null;
+  const tTacos = (tAds > 0 && tRev > 0) ? tAds/tRev*100 : null;
+  const withRev = S.filter(d => d.rev > 0);
+  const bestRev = withRev.slice().sort((a,b) => b.rev - a.rev)[0];
+  const bestPft = withRev.slice().sort((a,b) => b.profit - a.profit)[0];
+  const worstPft = withRev.slice().sort((a,b) => a.profit - b.profit)[0];
+  const profitable = S.filter(d => d.rev > 0 && d.profit > 0).length;
+
+  document.getElementById('daKpis').innerHTML = [
+    {label:'Period Revenue', value:fmtGBP0(tRev), sub:`${fmtNum(sum('orders'))} orders / ${fmtNum(sum('units'))} units`},
+    {label:'Period Profit', value:fmtGBP0(tProfit), valueCls:tProfit>=0?'pos':'neg', sub:`margin ${fmtPct(tMargin)}`},
+    {label:'Avg Daily Revenue', value:fmtGBP0(tRev/S.length), sub:`over ${fmtNum(S.length)} day(s)`},
+    {label:'Avg Daily Profit', value:fmtGBP0(tProfit/S.length), valueCls:tProfit>=0?'pos':'neg'},
+    {label:'Overall ACoS', value:tAcos==null?'—':fmtPct(tAcos), sub:tAdSales>0?`ad sales ${fmtGBP0(tAdSales)}`:'no ad sales data'},
+    {label:'Overall TACoS', value:tTacos==null?'—':fmtPct(tTacos), sub:tAds>0?`ad spend ${fmtGBP0(tAds)}`:'no ad spend in range'},
+    {label:'Profitable Days', value:`${fmtNum(profitable)} / ${fmtNum(withRev.length)}`, valueCls:profitable===withRev.length&&withRev.length?'pos':(profitable===0?'neg':'')},
+    {label:'Best Day (profit)', value:bestPft?fmtGBP0(bestPft.profit):'—', sub:bestPft?bestPft.date:'', valueCls:'pos'},
+  ].map(kpiCard).join('');
+
+  document.getElementById('daNote').innerHTML = worstPft && worstPft.profit < 0
+    ? `<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>&#9888; ${fmtNum(S.filter(d=>d.rev>0&&d.profit<0).length)} day(s) in this range lost money.</b> Worst was <b>${worstPft.date}</b> at ${fmtGBP(worstPft.profit)} on ${fmtGBP0(worstPft.rev)} of sales.</div>`
+    : '';
+
+  document.querySelector('#daTable thead').innerHTML = `<tr>
+    <th>Date</th><th class="num">Orders</th><th class="num">Units</th>
+    <th class="num">Revenue</th><th class="num">Refunds</th>
+    <th class="num">COGS</th><th class="num" title="Referral / marketplace fee, affiliate and shop-ads commission">Fees</th>
+    <th class="num" title="Shipping plus operational cost">Ship + Oper</th>
+    <th class="num">Ad Spend</th><th class="num" title="Ad spend as a share of ad-attributed sales">ACoS</th>
+    <th class="num" title="Ad spend as a share of ALL sales">TACoS</th>
+    <th class="num">Profit</th><th class="num">Margin</th>
+    <th class="num" title="Revenue against the previous day shown">vs Prev</th><th>Status</th>
+  </tr>`;
+
+  const chg = (cur, prev) => {
+    if(prev == null || !(prev > 0)) return '<span style="color:var(--muted)">—</span>';
+    const p = (cur - prev) / prev * 100;
+    if(Math.abs(p) < 0.05) return '<span style="color:var(--muted)">—</span>';
+    return `<span style="color:${p>0?'var(--green)':'var(--red)'};font-weight:700">${p>0?'▲':'▼'} ${Math.abs(p).toFixed(1)}%</span>`;
+  };
+  document.querySelector('#daTable tbody').innerHTML = S.map((d, i) => `<tr${d.rev>0&&d.profit<0?' style="background:#fff5f5"':''}>
+    <td style="font-weight:700;white-space:nowrap">${esc(d.date)}</td>
+    <td class="num">${fmtNum(d.orders)}</td>
+    <td class="num">${fmtNum(d.units)}</td>
+    <td class="num" style="font-weight:700">${fmtGBP0(d.rev)}</td>
+    <td class="num"${d.refunds>0?' style="color:var(--red)"':''}>${d.refunds>0?fmtGBP0(d.refunds):'—'}</td>
+    <td class="num">${d.cogs>0?fmtGBP0(d.cogs):'—'}</td>
+    <td class="num">${d.fees>0?fmtGBP0(d.fees):'—'}</td>
+    <td class="num">${d.ship>0?fmtGBP0(d.ship):'—'}</td>
+    <td class="num">${d.ads>0?fmtGBP0(d.ads):'—'}</td>
+    <td class="num">${d.acos==null?'—':fmtPct(d.acos)}</td>
+    <td class="num">${d.tacos==null?'—':fmtPct(d.tacos)}</td>
+    <td class="num" style="font-weight:700;color:${d.profit>=0?'var(--green)':'var(--red)'}">${fmtGBP0(d.profit)}</td>
+    <td class="num" style="color:${d.margin==null?'var(--muted)':(d.margin<0?'var(--red)':d.margin<8?'#9a6a00':'var(--green)')}">${d.margin==null?'—':fmtPct(d.margin)}</td>
+    <td class="num">${chg(d.rev, i>0?S[i-1].rev:null)}</td>
+    <td>${daStatus(d)}</td>
+  </tr>`).join('');
+
+  document.querySelector('#daTable tfoot').innerHTML = `<tr>
+    <td style="font-weight:800">TOTAL &middot; ${fmtNum(S.length)} day(s)</td>
+    <td class="num">${fmtNum(sum('orders'))}</td>
+    <td class="num">${fmtNum(sum('units'))}</td>
+    <td class="num">${fmtGBP0(tRev)}</td>
+    <td class="num">${fmtGBP0(sum('refunds'))}</td>
+    <td class="num">${fmtGBP0(sum('cogs'))}</td>
+    <td class="num">${fmtGBP0(sum('fees'))}</td>
+    <td class="num">${fmtGBP0(sum('ship'))}</td>
+    <td class="num">${fmtGBP0(tAds)}</td>
+    <td class="num">${tAcos==null?'—':fmtPct(tAcos)}</td>
+    <td class="num">${tTacos==null?'—':fmtPct(tTacos)}</td>
+    <td class="num" style="color:${tProfit>=0?'var(--green)':'var(--red)'}">${fmtGBP0(tProfit)}</td>
+    <td class="num">${tMargin==null?'—':fmtPct(tMargin)}</td>
+    <td class="num"></td><td></td>
+  </tr>`;
+
+  countEl.textContent = `${fmtNum(S.length)} of ${fmtNum(all.length)} day(s) · ${all[0]} → ${all[all.length-1]}`;
+  DA_LAST = S;
+}
+let DA_LAST = [];
+
 // ---- PLS ----
 function renderPLS(){
   const chans = loadedChannels();
@@ -6383,6 +6588,35 @@ document.getElementById('gDateClear').addEventListener('click', () => applyDateF
 const spReset = () => { STATE.sp.page = 0; renderSkuPerf(); };
 document.getElementById('spPlatform').addEventListener('change', e => { STATE.sp.platform = e.target.value; spReset(); });
 document.getElementById('spReport').addEventListener('change', e => { STATE.sp.report = e.target.value; spReset(); });
+// ---- Daily Analysis controls ----
+document.querySelectorAll('.da-q').forEach(b => b.addEventListener('click', () => {
+  DA_DAYS = +b.dataset.days; DA_FROM = ''; DA_TO = '';
+  document.querySelectorAll('.da-q').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderDaily();
+}));
+document.getElementById('daApply').addEventListener('click', () => {
+  DA_FROM = document.getElementById('daFrom').value;
+  DA_TO   = document.getElementById('daTo').value;
+  if(!DA_FROM && !DA_TO){ showBanner('Pick a from and/or to date, or use one of the quick ranges.', 'error'); return; }
+  document.querySelectorAll('.da-q').forEach(x => x.classList.add('secondary'));
+  renderDaily();
+});
+document.getElementById('daExport').addEventListener('click', () => {
+  if(!DA_LAST.length){ showBanner('Nothing to export yet.', 'error'); return; }
+  const rows = DA_LAST.map(d => ({
+    Date:d.date, Orders:d.orders, Units:d.units,
+    'Revenue (inc VAT)':+d.rev.toFixed(2), Refunds:+d.refunds.toFixed(2),
+    'Revenue (ex VAT)':+d.revEx.toFixed(2), COGS:+d.cogs.toFixed(2),
+    Fees:+d.fees.toFixed(2), 'Ship + Oper':+d.ship.toFixed(2),
+    'Ad Spend':+d.ads.toFixed(2), 'Ad Sales':+d.adSales.toFixed(2),
+    'ACoS %': d.acos==null?'':+d.acos.toFixed(2), 'TACoS %': d.tacos==null?'':+d.tacos.toFixed(2),
+    Profit:+d.profit.toFixed(2), 'Margin %': d.margin==null?'':+d.margin.toFixed(2)
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Daily Analysis');
+  XLSX.writeFile(wb, `InstaSales_Daily_Analysis_${rows[0].Date}_to_${rows[rows.length-1].Date}.xlsx`);
+});
 // ---- Cost Manager controls ----
 ['cbAsAt','cbScope','cbSearch','cbPlat','cbFul'].forEach(id =>
   document.getElementById(id).addEventListener(id==='cbSearch'?'input':'change', () => renderCostBook()));
