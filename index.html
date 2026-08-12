@@ -240,6 +240,11 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .kv{font-size:11.5px;color:var(--muted);margin-top:2px}
 .kv b{color:var(--text)}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:800;margin:3px 4px 0 0}
+/* Stock totals pin to the bottom of the scroll box - the whole point is the inventory total,
+   which is otherwise 500 rows away. Each cell needs its own background or rows show through. */
+#stockTable tfoot td{position:sticky;bottom:0;background:#eef3f9;z-index:3;border-top:2px solid var(--rule-strong,#c3cdd9)}
+#stockTable tfoot td[style*="fff8d6"]{background:#f6efc8}
+#stockTable th.st-sort:hover{background:#e7eef7}
 /* Fulfilment column: a compact code (FBA/FBM/FBS/FBP/FBT) with the full name on hover. */
 .fchan-fixed{display:inline-block;font-size:11.5px;font-weight:700;color:var(--muted);white-space:nowrap}
 .badge.blue{background:#e3f2fc;color:#1a7fc4}
@@ -511,7 +516,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
           <button class="btn danger" id="stockClear">Clear all</button>
         </div>
       </div>
-      <div class="table-wrap" style="max-height:640px"><table id="stockTable"><thead></thead><tbody></tbody></table></div>
+      <div class="table-wrap" style="max-height:640px"><table id="stockTable"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
     </div>
   </div>
 
@@ -4764,6 +4769,9 @@ function renderCostHistory(){
 const LS_STOCK = 'mcpd_stock';
 let STOCK = {};   // { productName: { daily:{iso:qty}, inventory:num|null, actions:'', alarm:'' } }
 let STOCK_VIEW = 'map';   // 'map' | 'stock'
+// Weekly stock table sort. Defaults to best-sellers first, which is the question the table is
+// usually being asked; click any of the four measure headers to sort on that instead.
+let STOCK_SORT = {key:'week', dir:'desc'};
 function loadStock(){ try{ STOCK = JSON.parse(store.get(lsKey(LS_STOCK))) || {}; }catch(e){ STOCK = {}; } }
 function saveStock(){ try{ store.set(lsKey(LS_STOCK), JSON.stringify(STOCK)); }catch(e){} cloudSaveStock(); }
 
@@ -4944,11 +4952,19 @@ function renderStock(){
     const daysLeft = (inv != null && avg > 0) ? inv/avg : (inv != null && inv <= 0 ? 0 : null);
     return {p, weekTotal, avg, inv, daysLeft};
   };
+  // Best-sellers first by default. Any of the four measures can be sorted instead by clicking
+  // its header. A null (no inventory recorded, so no cover figure) always sinks to the bottom
+  // rather than counting as zero, which would otherwise rank unknowns as the most urgent.
+  const SK = STOCK_SORT.key, dir = STOCK_SORT.dir === 'asc' ? 1 : -1;
+  const metric = {week:c=>c.weekTotal, avg:c=>c.avg, inv:c=>c.inv, days:c=>c.daysLeft};
   names.sort((a,b) => {
-    const da = calc(a).daysLeft, db = calc(b).daysLeft;
-    if(da == null && db == null) return a.localeCompare(b);
-    if(da == null) return 1; if(db == null) return -1;
-    return da - db;   // most urgent (fewest days left) first
+    if(SK === 'name') return dir * a.localeCompare(b);
+    const f = metric[SK] || metric.week;
+    const va = f(calc(a)), vb = f(calc(b));
+    if(va == null && vb == null) return a.localeCompare(b);
+    if(va == null) return 1;
+    if(vb == null) return -1;
+    return va === vb ? a.localeCompare(b) : dir * (va - vb);
   });
 
   const low = names.filter(n => { const c = calc(n); return c.daysLeft != null && c.daysLeft < threshold; }).length;
@@ -4961,8 +4977,19 @@ function renderStock(){
   ].map(x => `<div class="stat-tile" style="background:${x.bg}"><div class="tl">${x.tl}</div><div class="tv">${x.tv}</div></div>`).join('');
 
   const dayHdr = visDates.map(d => `<th class="num" style="min-width:56px">${d.slice(5).replace('-','/')}</th>`).join('');
+  const sortTh = (key, label, style) => {
+    const on = SK === key;
+    const arrow = on ? (STOCK_SORT.dir === 'asc' ? ' ▲' : ' ▼') : '<span style="opacity:.28"> ⇅</span>';
+    return `<th class="num st-sort" data-sk="${key}" title="Sort by ${label}"
+      style="cursor:pointer;user-select:none;white-space:nowrap;${style||''}${on?'text-decoration:underline':''}">${label}${arrow}</th>`;
+  };
   document.querySelector('#stockTable thead').innerHTML =
-    `<tr><th style="min-width:170px">Product</th>${dayHdr}<th class="num" style="background:#fff8d6">Weekly TOTAL</th><th class="num">AVG/Day</th><th class="num" style="background:#fff8d6">TOTAL INVT</th><th class="num">Days Left</th><th>Actions</th><th>China Alarm</th></tr>`;
+    `<tr><th class="st-sort" data-sk="name" title="Sort by product name" style="min-width:170px;cursor:pointer;user-select:none${SK==='name'?';text-decoration:underline':''}">Product${SK==='name'?(STOCK_SORT.dir==='asc'?' ▲':' ▼'):'<span style="opacity:.28"> ⇅</span>'}</th>${dayHdr}` +
+    sortTh('week','Weekly TOTAL','background:#fff8d6;') +
+    sortTh('avg','AVG/Day') +
+    sortTh('inv','TOTAL INVT','background:#fff8d6;') +
+    sortTh('days','Days Left') +
+    `<th>Actions</th><th>China Alarm</th></tr>`;
   // Same product identity as the mapping table above: stock joins on the inventory-family
   // name, so carry that table's variant note across and flag anything the mapping does not
   // know about - a name here that matches nothing there will never line up with its SKUs.
@@ -5007,6 +5034,29 @@ function renderStock(){
   }).join('');
   document.querySelector('#stockTable tbody').innerHTML = body || `<tr><td colspan="${visDates.length+6}" style="color:var(--muted)">No stock data yet. Import your daily sales &amp; inventory sheets above, or type directly into the table.</td></tr>`;
 
+  // Totals across every product currently listed (so a search narrows them too). Days Left is
+  // NOT a sum - averaging cover figures is meaningless. It is the whole book's cover: total
+  // stock divided by total units a day, i.e. how long everything lasts at the current rate.
+  const shownNames = names.slice(0, CAP);
+  const tDay = {};
+  for(const d of visDates) tDay[d] = shownNames.reduce((a,n) => a + (num(STOCK[n].daily[d]) || 0), 0);
+  const tWeek = shownNames.reduce((a,n) => a + calc(n).weekTotal, 0);
+  const tAvg = tWeek / 7;
+  const invKnown = shownNames.filter(n => calc(n).inv != null);
+  const tInv = invKnown.reduce((a,n) => a + calc(n).inv, 0);
+  const tDays = tAvg > 0 ? tInv / tAvg : null;
+  const noInv = shownNames.length - invKnown.length;
+  const foot = shownNames.length ? `<tr style="background:#eef3f9;font-weight:800;border-top:2px solid var(--border)">
+      <td style="font-weight:800">TOTAL &middot; ${fmtNum(shownNames.length)} product(s)${noInv?`<span style="font-weight:400;color:var(--muted);font-size:11px"> &middot; ${fmtNum(noInv)} with no stock figure</span>`:''}</td>
+      ${visDates.map(d => `<td class="num">${fmtNum(tDay[d])}</td>`).join('')}
+      <td class="num" style="background:#fff8d6">${fmtNum(tWeek)}</td>
+      <td class="num">${tAvg.toFixed(1)}</td>
+      <td class="num" style="background:#fff8d6">${fmtNum(tInv)}</td>
+      <td class="num" title="Total stock ÷ total units per day - how long the whole book lasts at the current rate">${tDays==null?'—':(tDays>999?'999+':tDays.toFixed(1))}</td>
+      <td></td><td></td>
+    </tr>` : '';
+  document.querySelector('#stockTable tfoot').innerHTML = foot;
+
   document.querySelectorAll('#stockTable [data-sn]').forEach(inp => inp.addEventListener('change', () => {
     const name = inp.dataset.sn, field = inp.dataset.sf, p = stockProduct(name);
     if(field === 'day'){ const v = inp.value.trim(); if(v==='') delete p.daily[inp.dataset.sd]; else p.daily[inp.dataset.sd] = parseFloat(inp.value)||0; }
@@ -5014,7 +5064,14 @@ function renderStock(){
     else p[field] = inp.value;
     saveStock();
     renderStock();
-    renderSkuMgt();   // keep the merged stock columns in the mapping table in sync
+  }));
+  document.querySelectorAll('#stockTable .st-sort').forEach(th => th.addEventListener('click', () => {
+    const k = th.dataset.sk;
+    // re-clicking the active column flips it; a new column starts on the useful end -
+    // biggest first for the measures, A-Z for the name
+    if(STOCK_SORT.key === k) STOCK_SORT.dir = STOCK_SORT.dir === 'asc' ? 'desc' : 'asc';
+    else STOCK_SORT = {key:k, dir: k === 'name' ? 'asc' : 'desc'};
+    renderStock();
   }));
 }
 
