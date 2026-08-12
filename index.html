@@ -499,7 +499,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <!-- ---- Weekly stock tracking section ---- -->
     <div id="skuStockView" style="margin-top:24px;border-top:2px solid var(--border);padding-top:18px">
       <h3 style="margin:4px 0 12px;font-size:16px"><span class="dot" style="background:var(--amber)"></span> 📦 Weekly Stock Tracking <span style="font-weight:400;color:var(--muted);font-size:13px">— forecast reordering by product name</span></h3>
-      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the SKU Mapping table above, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. You can also edit any cell directly.</div>
+      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the SKU Mapping table above, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. <b>Daily units are read-only</b> — they come from the imported sales sheet, so re-import to change them; <b>stock on hand, Actions and China Alarm are editable</b>.</div>
       <div class="grid g4" id="stockTiles"></div>
       <div class="card" style="margin-bottom:14px;padding:12px 16px">
         <div class="fbar">
@@ -5005,12 +5005,18 @@ function renderStock(){
     }
   }
 
-  const cellIn = (name, field, day, val, w) => `<input data-sn="${esc(name)}" data-sf="${field}"${day?` data-sd="${day}"`:''} value="${val==null?'':val}" style="width:${w||52}px;padding:4px 5px;text-align:right;border:1px solid var(--border);border-radius:5px">`;
+  const cellIn = (name, field, val, w) => `<input data-sn="${esc(name)}" data-sf="${field}" value="${val==null?'':val}" style="width:${w||52}px;padding:4px 5px;text-align:right;border:1px solid var(--border);border-radius:5px">`;
   const txtIn = (name, field, val) => `<input data-sn="${esc(name)}" data-sf="${field}" value="${esc(val||'')}" style="width:150px;padding:4px 6px;border:1px solid var(--border);border-radius:5px">`;
   const CAP = 500;
   const body = names.slice(0, CAP).map(n => {
     const c = calc(n);
-    const dayCells = visDates.map(d => `<td class="num">${cellIn(n,'day',d, c.p.daily[d]!=null?c.p.daily[d]:'')}</td>`).join('');
+    // Per-day units are read-only: they come from the imported daily sales sheet, so typing
+    // over one would be overwritten on the next import and silently disagree with the source.
+    // Stock on hand, actions and the alarm are yours to set, so those stay editable.
+    const dayCells = visDates.map(d => {
+      const v = num(c.p.daily[d]);
+      return `<td class="num">${v != null ? fmtNum(v) : '<span style="color:var(--muted)">·</span>'}</td>`;
+    }).join('');
     const dl = c.daysLeft;
     const dlCell = dl == null ? '<span style="color:var(--muted)">—</span>'
       : `<span class="pill ${dl < threshold ? 'neg' : 'pos'}" style="${dl<threshold?'background:#e8467c;color:#fff':''}">${dl>999?'999+':dl.toFixed(1)}</span>`;
@@ -5026,7 +5032,7 @@ function renderStock(){
       ${dayCells}
       <td class="num" style="background:#fff8d6;font-weight:700">${fmtNum(c.weekTotal)}</td>
       <td class="num">${c.avg.toFixed(1)}</td>
-      <td class="num" style="background:#fff8d6">${cellIn(n,'inventory',null, c.inv!=null?c.inv:'', 64)}</td>
+      <td class="num" style="background:#fff8d6">${cellIn(n,'inventory', c.inv!=null?c.inv:'', 64)}</td>
       <td class="num">${dlCell}</td>
       <td>${txtIn(n,'actions', c.p.actions)}</td>
       <td>${txtIn(n,'alarm', c.p.alarm)}</td>
@@ -5059,8 +5065,8 @@ function renderStock(){
 
   document.querySelectorAll('#stockTable [data-sn]').forEach(inp => inp.addEventListener('change', () => {
     const name = inp.dataset.sn, field = inp.dataset.sf, p = stockProduct(name);
-    if(field === 'day'){ const v = inp.value.trim(); if(v==='') delete p.daily[inp.dataset.sd]; else p.daily[inp.dataset.sd] = parseFloat(inp.value)||0; }
-    else if(field === 'inventory'){ p.inventory = inp.value.trim()==='' ? null : (parseFloat(inp.value)||0); }
+    // no 'day' case: the per-day cells are read-only, sourced from the imported sales sheet
+    if(field === 'inventory'){ p.inventory = inp.value.trim()==='' ? null : (parseFloat(inp.value)||0); }
     else p[field] = inp.value;
     saveStock();
     renderStock();
