@@ -2123,6 +2123,24 @@ function computeTikTok(){
 }
 
 // ================= Amazon (verified engine) =================
+// What a refund actually costs. The report's total column is the NET cash movement: the
+// product charge reversed, LESS the referral fee Amazon gives back, PLUS whatever it keeps or
+// recharges ("Other"). Summing the product charge alone books a different number from the one
+// the report itself states, and from the one the payments page shows.
+//   e.g. -120.33 product + 20.20 fees returned - 24.08 other = -124.21 actually out
+// Fall back to the components only when the total column is absent or empty.
+function amzRefundAmount(r, kind){
+  const cm = v => cleanMoney(v);
+  const totalCol = kind === 'txn2' ? r['Total (GBP)'] : r['total'];
+  if(totalCol != null && String(totalCol).trim() !== ''){
+    const t = Math.abs(cm(totalCol));
+    if(t > 0) return t;
+  }
+  return kind === 'txn2'
+    ? Math.abs(cm(r['Total product charges']) + cm(r['Total promotional rebates']))
+    : Math.abs(cm(r['product sales']) + cm(r['product sales tax']) + cm(r['postage credits'])
+             + cm(r['gift wrap credits']) + cm(r['promotional rebates']));
+}
 function computeAmazon(A){
   A = A || {chName:'amazon', biz:'amz_biz', ads:'amz_ads', txn:'amz_txn', txn2:'amz_txn2', orders:'amz_orders'};
   const R = STATE.raw;
@@ -2286,13 +2304,11 @@ function computeAmazon(A){
     };
     if(R2[A.txn]) for(const r of R2[A.txn]){
       if(fixText(r['type']).toLowerCase() !== 'refund') continue;
-      take(parseDate(r['date/time']),
-        Math.abs(cm(r['product sales'])+cm(r['product sales tax'])+cm(r['postage credits'])+cm(r['gift wrap credits'])+cm(r['promotional rebates'])));
+      take(parseDate(r['date/time']), amzRefundAmount(r, 'txn'));
     }
     if(R2[A.txn2]) for(const r of R2[A.txn2]){
       if(fixText(r['Transaction type']).toLowerCase() !== 'refund') continue;
-      take(parseDate(r['Date']),
-        Math.abs(cm(r['Total product charges'])+cm(r['Total promotional rebates'])));
+      take(parseDate(r['Date']), amzRefundAmount(r, 'txn2'));
     }
     const totalGross = Object.values(agg).reduce((s,a)=>s+a.gross, 0);
     if(amzRefundActual > 0 && totalGross > 0) amzRefundRate = amzRefundActual/totalGross;
@@ -3227,7 +3243,7 @@ function computeAmazonTxn(B){
     const grossInc = prodSales + prodTax + postage + gift + promo;   // buyer-paid inc VAT, net of promos
     const qty = cleanInt(r['quantity']) || 1;
     if(type === 'refund'){
-      const amt = Math.abs(grossInc);
+      const amt = amzRefundAmount(r, 'txn');   // same definition as the P&L, or the two disagree
       refundsList.push({channel:B.chName, date, order, sku:(sku + (name?' - '+name.substr(0,40):'')), amount:amt});
       refTotal += amt; addDaily(date, 0, 0, 0, amt);
       continue;
@@ -3264,7 +3280,7 @@ function computeAmazonTxn(B){
     const prod = m(r['Total product charges']), promo = m(r['Total promotional rebates']);
     const grossInc = prod + promo;   // buyer-paid inc VAT (prod is negative on refunds)
     if(isRefund){
-      const amt = Math.abs(grossInc) || Math.abs(m(r['Total (GBP)']));
+      const amt = amzRefundAmount(r, 'txn2');   // same definition as the P&L, or the two disagree
       refundsList.push({channel:B.chName, date, order, sku:(name||order).substr(0,55), amount:amt});
       refTotal += amt; addDaily(date, 0, 0, 0, amt);
       continue;
