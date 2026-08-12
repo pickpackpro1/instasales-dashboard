@@ -1109,6 +1109,12 @@ function parseDate(v){
   if(m) return `20${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
   m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if(m) return s.slice(0,10);
+  // DD-MM-YYYY / DD-MM-YY - Amazon's transaction export writes 10 August 2026 as "10-08-26".
+  // Checked after the ISO form above so a real YYYY-MM-DD is never read day-first.
+  m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2})$/);
+  if(m) return `20${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
   m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\s+(\d{4})/);
   if(m && MONTHS[m[2].toLowerCase()]) return `${m[3]}-${String(MONTHS[m[2].toLowerCase()]).padStart(2,'0')}-${m[1].padStart(2,'0')}`;
   return '';
@@ -1302,7 +1308,19 @@ function fixRef(sh){
 // delimiter/EOL) as a literal character, instead of prematurely closing the field.
 // The DC stock exports contain unescaped quotes like `Pegs 6" Heavy Duty` that break
 // SheetJS's stricter CSV reader and silently drop every row after them.
-function parseCsvTolerant(text){
+// Amazon ships TAB-separated data under a .csv name, so the separator has to be sniffed from
+// the header rather than assumed - parsing a tab file on commas yields one giant column and
+// the type is never recognised.
+function sniffDelim(text){
+  const line = String(text||'').split(/\r?\n/)[0] || '';
+  const count = ch => line.split(ch).length - 1;
+  const tabs = count('\t'), semis = count(';'), commas = count(',');
+  if(tabs >= commas && tabs >= semis && tabs > 0) return '\t';
+  if(semis > commas && semis > 0) return ';';
+  return ',';
+}
+function parseCsvTolerant(text, delim){
+  delim = delim || ',';
   if(text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const recs = []; let row = [], field = '', inQ = false;
   for(let i = 0; i < text.length; i++){
@@ -1311,13 +1329,13 @@ function parseCsvTolerant(text){
       if(c === '"'){
         if(text[i+1] === '"'){ field += '"'; i++; continue; }
         const nx = text[i+1];
-        if(nx === ',' || nx === '\r' || nx === '\n' || nx === undefined){ inQ = false; continue; }
+        if(nx === delim || nx === '\r' || nx === '\n' || nx === undefined){ inQ = false; continue; }
         field += '"'; continue;   // stray quote -> literal
       }
       field += c; continue;
     }
     if(c === '"'){ inQ = true; continue; }
-    if(c === ','){ row.push(field); field = ''; continue; }
+    if(c === delim){ row.push(field); field = ''; continue; }
     if(c === '\r'){ continue; }
     if(c === '\n'){ row.push(field); recs.push(row); row = []; field = ''; continue; }
     field += c;
@@ -1336,8 +1354,9 @@ function readFile(file){
         if(/\.csv$/i.test(file.name)){
           const text = new TextDecoder('utf-8').decode(buf);
           const head = text.slice(0, 500);
+          const delim = sniffDelim(text);
           if(/\bStock Level\b/.test(head) || /\bAction Quantity\b/.test(head)){
-            const arr = parseCsvTolerant(text).filter(r => r.some(c => String(c).trim() !== ''));
+            const arr = parseCsvTolerant(text, delim).filter(r => r.some(c => String(c).trim() !== ''));
             const hdr = (arr[0]||[]).map(h => String(h).replace(/^﻿/,'').trim());
             const rows = arr.slice(1).map(r => { const o = {}; hdr.forEach((h,i) => o[h] = r[i] != null ? r[i] : null); return o; });
             const s = new Set(hdr);
@@ -1351,7 +1370,7 @@ function readFile(file){
           // that inside XLSX.read (the cell becomes serial 46303), so no read option gets the
           // true date back. Build the sheet from the text ourselves with every cell left as a
           // string: parseDate then sees "10/08/2026" and applies the day-first rule correctly.
-          const aoa = parseCsvTolerant(text).filter(r => r.some(c => String(c).trim() !== ''));
+          const aoa = parseCsvTolerant(text, delim).filter(r => r.some(c => String(c).trim() !== ''));
           if(aoa.length){
             csvSheet = XLSX.utils.aoa_to_sheet(aoa.map(r => r.map(c => c == null ? null : String(c))));
           }
@@ -2129,6 +2148,17 @@ function computeTikTok(){
 // the report itself states, and from the one the payments page shows.
 //   e.g. -120.33 product + 20.20 fees returned - 24.08 other = -124.21 actually out
 // Fall back to the components only when the total column is absent or empty.
+// Newer Amazon transaction exports carry a "Transaction status" of Released or Deferred.
+// Deferred money has not moved yet, so counting it overstates the day. Older exports have no
+// such column - those rows are already settled transactions, so they count.
+function amzReleased(r){
+  const st = fixText(r['Transaction status'] || r['transaction status'] || '');
+  return st === '' || /^released$/i.test(st);
+}
+function amzDeferred(r){
+  const st = fixText(r['Transaction status'] || r['transaction status'] || '');
+  return /^deferred$/i.test(st);
+}
 function amzRefundAmount(r, kind){
   const cm = v => cleanMoney(v);
   const totalCol = kind === 'txn2' ? r['Total (GBP)'] : r['total'];
@@ -2288,7 +2318,7 @@ function computeAmazon(A){
   // P&L (and the Dashboard Refunds/Profit KPIs) reflect real returns. Distributed across
   // ASIN rows by revenue share -> the total exactly equals the reported refunds (in range).
   let amzRefundRate = STATE.amzRefund, amzRefundActual = 0, hasActualRefunds = false;
-  let amzRefundUnattached = 0;
+  let amzRefundUnattached = 0, deferredRefunds = 0;
   const refundByDay = {};
   {
     const R2 = STATE.raw, cm = v => cleanMoney(v);
@@ -2304,10 +2334,12 @@ function computeAmazon(A){
     };
     if(R2[A.txn]) for(const r of R2[A.txn]){
       if(fixText(r['type']).toLowerCase() !== 'refund') continue;
+      if(amzDeferred(r)){ deferredRefunds += amzRefundAmount(r, 'txn'); continue; }
       take(parseDate(r['date/time']), amzRefundAmount(r, 'txn'));
     }
     if(R2[A.txn2]) for(const r of R2[A.txn2]){
       if(fixText(r['Transaction type']).toLowerCase() !== 'refund') continue;
+      if(amzDeferred(r)){ deferredRefunds += amzRefundAmount(r, 'txn2'); continue; }
       take(parseDate(r['Date']), amzRefundAmount(r, 'txn2'));
     }
     const totalGross = Object.values(agg).reduce((s,a)=>s+a.gross, 0);
@@ -2459,6 +2491,7 @@ function computeAmazon(A){
     // is spread by revenue share - and a day with refunds but no sales has no share to spread
     // across. Surfaced like eBay's refundOther so the money still reaches the KPIs.
     refundOther: amzRefundUnattached,
+    deferredRefunds,
     skuSplitAsins: Object.keys(skuSplit).length, ordersRowsUsed,
     splitRows: rows.filter(r=>r.splitBySku).length, partialSplitRows: rows.filter(r=>r.splitPartial).length,
     fbaUnits: rows.reduce((a,r)=>a+(r.fbaUnits||0),0)}};
@@ -3243,6 +3276,7 @@ function computeAmazonTxn(B){
     const grossInc = prodSales + prodTax + postage + gift + promo;   // buyer-paid inc VAT, net of promos
     const qty = cleanInt(r['quantity']) || 1;
     if(type === 'refund'){
+      if(!amzReleased(r)) continue;            // deferred money has not moved - excluded like the P&L
       const amt = amzRefundAmount(r, 'txn');   // same definition as the P&L, or the two disagree
       refundsList.push({channel:B.chName, date, order, sku:(sku + (name?' - '+name.substr(0,40):'')), amount:amt});
       refTotal += amt; addDaily(date, 0, 0, 0, amt);
@@ -3280,6 +3314,7 @@ function computeAmazonTxn(B){
     const prod = m(r['Total product charges']), promo = m(r['Total promotional rebates']);
     const grossInc = prod + promo;   // buyer-paid inc VAT (prod is negative on refunds)
     if(isRefund){
+      if(!amzReleased(r)) continue;             // deferred money has not moved - excluded like the P&L
       const amt = amzRefundAmount(r, 'txn2');   // same definition as the P&L, or the two disagree
       refundsList.push({channel:B.chName, date, order, sku:(name||order).substr(0,55), amount:amt});
       refTotal += amt; addDaily(date, 0, 0, 0, amt);
@@ -3406,6 +3441,7 @@ function diagnostics(){
   for(const ch of ['amazon','amazon2']){
     const x = STATE.extras[ch];
     if(x && x.refundOther > 0) L.push(`${CH_NAME[ch]}: ${fmtGBP(x.refundOther)} refunds fall on days with no sales in range, so there is no revenue to spread them across - counted in the refund KPIs but not against any ASIN.`);
+    if(x && x.deferredRefunds > 0) L.push(`${CH_NAME[ch]}: ${fmtGBP(x.deferredRefunds)} of refunds are marked Deferred in the transaction report and are EXCLUDED - that money has not moved yet. Only Released refunds are counted.`);
   }
   if(STATE.extras.ebay && STATE.extras.ebay.unjoinableListings > 0) L.push(`eBay: ${STATE.extras.ebay.unjoinableListings} Listings rows had an item ID Excel had converted to scientific notation (e.g. "3.56887E+11") that could not be rebuilt, so they were dropped in favour of the transaction report (which carries the same sales with intact IDs). Re-export the Sale sheet as .xlsx - or format the item ID column as Text - to use it fully.`);
   if(STATE.dateFrom || STATE.dateTo){
