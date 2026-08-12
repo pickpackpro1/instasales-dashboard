@@ -3297,7 +3297,7 @@ function computeAmazonTxn(B){
       cost:row.buying, oper:row.oper, tax:row.net_vat_due, charges:row.total_cost+row.net_vat_due,
       profit:row.net_profit_ex, net:row.margin_ex, gross: row.revenue_gross>0 ? (row.revenue_gross-row.buying)/row.revenue_gross*100 : null, noCost:!e};
     addPL(sku||name||order, name, row); addDaily(date, row.revenue_gross, qty, 1, 0);
-    txnOrders.push({channel:B.chName, date, hour:parseHour(raw), order, sku, name, qtyRaw:qty, rev:row.revenue_gross, refund:0, status:'Order', oecon});
+    txnOrders.push({channel:B.chName, date, hour:parseHour(raw), order, sku, name, qtyRaw:qty, rev:row.revenue_gross, refund:0, status: amzReleased(r) ? 'Order' : 'Order (Deferred)', oecon});
   }
   // Date-Range Transaction report (no SKU, one lumped "Amazon fees" column, date only)
   for(const r of (RTXN2 || [])){
@@ -3331,7 +3331,7 @@ function computeAmazonTxn(B){
       cost:row.buying, oper:row.oper, tax:row.net_vat_due, charges:row.total_cost+row.net_vat_due,
       profit:row.net_profit_ex, net:row.margin_ex, gross: row.revenue_gross>0 ? (row.revenue_gross-row.buying)/row.revenue_gross*100 : null, noCost:!e};
     addPL(name||order, name, row); addDaily(date, row.revenue_gross, 1, 1, 0);
-    txnOrders.push({channel:B.chName, date, hour:null, order, sku:'', name, qtyRaw:1, rev:row.revenue_gross, refund:0, status:'Order', oecon});
+    txnOrders.push({channel:B.chName, date, hour:null, order, sku:'', name, qtyRaw:1, rev:row.revenue_gross, refund:0, status: amzReleased(r) ? 'Order' : 'Order (Deferred)', oecon});
   }
   // finalize the aggregate P&L rows (refunds distributed across products by revenue share)
   const rows = []; const totRev = Object.values(plAgg).reduce((s,a)=>s+a.revenue_gross, 0);
@@ -3346,8 +3346,39 @@ function computeAmazonTxn(B){
   finalizeRows(rows);
   return {txnOrders, refundsList, rows, refundTotal:refTotal, daily:dailyT, fullSpan:{min:fullMin, max:fullMax}};
 }
+// Locked behaviour. Every case here is one that HAS broken and cost real reconciliation time,
+// so it is asserted on every load rather than trusted. A failure means an upload will now
+// silently misread something - it is reported at the top of the diagnostic, not buried.
+//   - date formats: an unparsed date drops the row from every filter
+//   - delimiter: Amazon ships TAB data under a .csv name; parsing it on commas fails outright
+//   - refund amount: the report's total column, not the product charge alone
+//   - released/deferred: deferred money has not moved and must not be counted
+function selfTest(){
+  const fails = [];
+  const eq = (label, got, want) => { if(String(got) !== String(want)) fails.push(`${label}: got ${got}, expected ${want}`); };
+  eq('date ISO',            parseDate('2026-08-10'),  '2026-08-10');
+  eq('date DD/MM/YYYY',     parseDate('10/08/2026'),  '2026-08-10');
+  eq('date DD-MM-YY',       parseDate('10-08-26'),    '2026-08-10');
+  eq('date DD-MM-YYYY',     parseDate('10-08-2026'),  '2026-08-10');
+  eq('date M/D/YY',         parseDate('8/10/26'),     '2026-08-10');
+  eq('date "10 Aug 2026"',  parseDate('10 Aug 2026'), '2026-08-10');
+  eq('delim tab',    sniffDelim('a\tb\tc\n1\t2\t3'), '\t');
+  eq('delim comma',  sniffDelim('a,b,c\n1,2,3'),     ',');
+  eq('delim semi',   sniffDelim('a;b;c\n1;2;3'),     ';');
+  eq('delim tab with comma inside a field', sniffDelim('Date\tName\n10-08-26\tFoam, 4 pack'), '\t');
+  const rTot = {'Total product charges':'-20.82','Total promotional rebates':'0','Total (GBP)':'-21.29'};
+  eq('refund uses Total (GBP)', amzRefundAmount(rTot,'txn2').toFixed(2), '21.29');
+  eq('refund falls back to components', amzRefundAmount({'Total product charges':'-20.82','Total promotional rebates':'0'},'txn2').toFixed(2), '20.82');
+  eq('released',        amzReleased({'Transaction status':'Released'}), 'true');
+  eq('deferred',        amzDeferred({'Transaction status':'Deferred'}), 'true');
+  eq('deferred is not released', amzReleased({'Transaction status':'Deferred'}), 'false');
+  eq('no status column counts as released', amzReleased({}), 'true');
+  return fails;
+}
 function diagnostics(){
   const L = ['PARSE & JOIN DIAGNOSTIC'];
+  const stFails = selfTest();
+  if(stFails.length) L.push(`⚠ SELF-TEST FAILED (${stFails.length}) - uploads may be misread, tell Claude:\n   ` + stFails.join('\n   ') + '\n');
   L.push(`Master cost sheet: ${STATE.master.count} product rows (tiktok ${Object.keys(STATE.master.tiktok.bySku).length} / amazon ${Object.keys(STATE.master.amazon.byAsin).length} / ebay ${Object.keys(STATE.master.ebay.byItem).length} / shopify ${Object.keys(STATE.master.shopify.bySku).length})`);
   // The master sheet can hold SEVERAL rows for the same product on the same platform with
   // DIFFERENT costs. buildMaster() keeps whichever was read last, so the P&L silently uses
