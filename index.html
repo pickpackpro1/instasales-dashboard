@@ -240,6 +240,15 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .kv{font-size:11.5px;color:var(--muted);margin-top:2px}
 .kv b{color:var(--text)}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:800;margin:3px 4px 0 0}
+/* Daily Analysis: section headings inside the written summary, and the footer strip under the
+   product-movement table. */
+.sec-head{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+  padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:8px}
+.dod-summary{display:flex;gap:22px;flex-wrap:wrap;padding:14px 4px 4px;border-top:1px solid var(--border);margin-top:12px}
+.dod-sum-item{display:flex;flex-direction:column;gap:2px}
+.dod-sum-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+.dod-sum-val{font-size:13.5px;font-weight:800}
+#daPmTable tbody tr:hover{background:#f6f9fc}
 /* Stock totals pin to the bottom of the scroll box - the whole point is the inventory total,
    which is otherwise 500 rows away. Each cell needs its own background or rows show through. */
 #stockTable tfoot td{position:sticky;bottom:0;background:#eef3f9;z-index:3;border-top:2px solid var(--rule-strong,#c3cdd9)}
@@ -669,6 +678,60 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <div class="table-wrap" style="max-height:640px"><table id="daTable">
         <thead></thead><tbody></tbody><tfoot></tfoot>
       </table></div>
+    </div>
+
+    <!-- ---- written summary for one day ---- -->
+    <div class="card hidden" id="daSummaryCard" style="margin-top:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span><span id="daSumHead">Daily Business Summary</span></h3>
+        <span style="flex:1"></span>
+        <span class="flabel">Day</span>
+        <select class="fsel" id="daDay" style="min-width:140px"></select>
+      </div>
+      <div class="kpi-strip" id="daSumKpis" style="margin:10px 0 14px"></div>
+      <div class="sec-head" style="margin-top:4px">📊 Overview</div>
+      <div id="daSumOverview" style="font-size:13.5px;line-height:1.65"></div>
+      <div class="sec-head" style="margin-top:16px;color:#a12a1e">🚨 Alerts &amp; Warnings</div>
+      <div id="daSumAlerts" style="font-size:13px;line-height:1.6"></div>
+      <div class="sec-head" style="margin-top:16px;color:#1c7c54">✅ What's Going Well</div>
+      <div id="daSumWell" style="font-size:13px;line-height:1.6"></div>
+    </div>
+
+    <!-- ---- product-by-product movement ---- -->
+    <div class="card" style="margin-top:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-ebay)"></span>Product-by-Product Movement</h3>
+        <span style="flex:1"></span>
+        <input type="search" id="daPmSearch" placeholder="Search SKU or title..." style="min-width:200px">
+        <div class="count" id="daPmCount"></div>
+      </div>
+      <div class="fbar" style="flex-wrap:wrap;gap:6px">
+        <span class="flabel">Filter</span>
+        <button class="btn da-pm-f" data-f="all">All</button>
+        <button class="btn secondary da-pm-f" data-f="excellent">⭐ Excellent</button>
+        <button class="btn secondary da-pm-f" data-f="profitable">✅ Profitable</button>
+        <button class="btn secondary da-pm-f" data-f="low">⚠ Low margin</button>
+        <button class="btn secondary da-pm-f" data-f="loss">🔴 Loss</button>
+        <span class="flabel" style="margin-left:10px">Sort</span>
+        <button class="btn da-pm-s" data-s="rev">Revenue</button>
+        <button class="btn secondary da-pm-s" data-s="profit">Profit</button>
+        <button class="btn secondary da-pm-s" data-s="margin">Margin %</button>
+        <button class="btn secondary da-pm-s" data-s="orders">Orders</button>
+        <button class="btn secondary da-pm-s" data-s="units">Units</button>
+        <button class="btn secondary da-pm-s" data-s="ads">Ad spend</button>
+        <button class="btn secondary da-pm-s" data-s="acos">ACoS</button>
+        <button class="btn" id="daPmDir" title="Toggle ascending / descending">▼ Desc</button>
+      </div>
+      <div class="sub-title">Each product with every day it moved, then its own total for the range. Same filters and channel scope as the table above.</div>
+      <div class="table-wrap" style="max-height:700px"><table id="daPmTable">
+        <thead><tr>
+          <th>Date</th><th class="num">Orders</th><th class="num">Units</th><th class="num">Revenue</th>
+          <th class="num">Ad Spend</th><th class="num">ACoS</th><th class="num">TACoS</th>
+          <th class="num">Profit</th><th class="num">Margin</th><th class="num">vs Prev</th><th>Status</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="dod-summary" id="daPmSummary"></div>
     </div>
   </div>
 
@@ -5166,12 +5229,29 @@ function daAllDates(){
 function daSeries(dates){
   const sf = STATE.dateFrom, st = STATE.dateTo;
   const out = [];
+  DA_SKU = {};                 // key -> {name, channel, days:[...]} built in the same pass
   try{
     for(const date of dates){
       STATE.dateFrom = date; STATE.dateTo = date;
       recompute();
-      const t = totalsOf(filteredRows());
+      const rowsToday = filteredRows();
+      for(const r of rowsToday){
+        if(!r.key) continue;
+        if(!(r.revenue_gross > 0 || r.units > 0 || r.ads > 0)) continue;   // nothing happened
+        const k = r.channel + '|' + r.key;
+        const e = DA_SKU[k] || (DA_SKU[k] = {key:r.key, name:r.name || r.key, channel:r.channel, days:[]});
+        if(!e.name && r.name) e.name = r.name;
+        // no ad spend means "not advertised", not 0% - finalizeRows returns a real 0 for tacos
+        // when ads are zero, which would read as a perfect result rather than an absence
+        const ad = r.ads || 0;
+        e.days.push({date, orders:r.orders_count||0, units:r.units||0,
+          rev:r.revenue_gross||0, revEx:r.revenue_ex||0, ads:ad, adSales:r.ad_sales||0,
+          profit:r.net_profit_ex||0, margin:r.margin_ex,
+          acos: ad > 0 ? r.acos : null, tacos: ad > 0 ? r.tacos : null});
+      }
+      const t = totalsOf(rowsToday);
       const chans = filteredChannels();
+      const activeSkus = rowsToday.filter(r => r.revenue_gross > 0 || r.units > 0).length;
       const refunds = (t.refunds || 0) + unattachedRefunds(chans);
       const rev = t.revenue_gross || 0, revEx = t.revenue_ex || 0;
       const ads = t.ads || 0;
@@ -5179,7 +5259,7 @@ function daSeries(dates){
       // TikTok, so reading that gave Amazon and eBay a permanently blank ACoS.
       const adSales = t.ad_sales || 0;
       out.push({
-        date,
+        date, activeSkus,
         orders: t.orders_count || 0,
         units: t.units || 0,
         rev, refunds, revEx,
@@ -5215,6 +5295,12 @@ function renderDaily(){
     document.getElementById('daKpis').innerHTML = '';
     document.getElementById('daNote').innerHTML = '';
     countEl.textContent = '';
+    document.getElementById('daSummaryCard').classList.add('hidden');
+    DA_SKU = {}; DA_LAST = [];
+    document.querySelector('#daPmTable tbody').innerHTML =
+      '<tr><td colspan="11" style="color:var(--muted);padding:18px;text-align:center">No dated data loaded.</td></tr>';
+    document.getElementById('daPmSummary').innerHTML = '';
+    document.getElementById('daPmCount').textContent = '';
     return;
   }
   let dates = all;
@@ -5306,8 +5392,243 @@ function renderDaily(){
 
   countEl.textContent = `${fmtNum(S.length)} of ${fmtNum(all.length)} day(s) · ${all[0]} → ${all[all.length-1]}`;
   DA_LAST = S;
+  // Both live off the same per-day pass that just ran, so they can never disagree with the
+  // table above them.
+  renderDailySummary(S);
+  renderDailyMovement();
 }
 let DA_LAST = [];
+
+// ---- Daily Analysis: per-SKU day rows, summary narrative, product movement ----
+let DA_SKU = {};                 // "channel|key" -> {key,name,channel,days:[...]}
+let DA_DAY = '';                 // the day the written summary describes ('' = latest in range)
+let DA_PM_FILTER = 'all';        // all | excellent | profitable | low | loss
+let DA_PM_SORT = 'rev';          // rev | profit | margin | orders | units | ads | acos
+let DA_PM_DESC = true;
+let DA_PM_Q = '';
+// Thresholds the wording and badges key off. Stated once so the prose, the badges and the
+// alerts can never drift apart, and so changing a target changes all three together.
+const DA_T = {excellent:15, low:8, acosTarget:25, acosBad:30, tacosTarget:15};
+
+function daSkuList(){ return Object.values(DA_SKU); }
+function daRoll(days){
+  const s = {orders:0, units:0, rev:0, revEx:0, ads:0, adSales:0, profit:0};
+  for(const d of days){ s.orders+=d.orders; s.units+=d.units; s.rev+=d.rev; s.revEx+=d.revEx; s.ads+=d.ads; s.adSales+=d.adSales; s.profit+=d.profit; }
+  s.margin = s.revEx > 0 ? s.profit/s.revEx*100 : null;
+  s.acos   = (s.ads > 0 && s.adSales > 0) ? s.ads/s.adSales*100 : null;
+  s.tacos  = (s.ads > 0 && s.rev > 0) ? s.ads/s.rev*100 : null;
+  s.dayCount = days.length;
+  return s;
+}
+function daBand(profit, margin){
+  if(profit < 0) return 'loss';
+  if(margin != null && margin >= DA_T.excellent) return 'excellent';
+  if(margin != null && margin < DA_T.low) return 'low';
+  return 'profitable';
+}
+function daBandBadge(band){
+  return {loss:'<span class="badge red">Loss</span>',
+          low:'<span class="badge amber" style="background:#fdf3df;color:#9a6a00">Low margin</span>',
+          excellent:'<span class="badge green">Excellent</span>',
+          profitable:'<span class="badge blue">Profitable</span>'}[band] || '';
+}
+const daPP = v => (v>=0?'+':'') + v.toFixed(1) + 'pp';
+const daPct1 = v => v==null ? '—' : v.toFixed(1) + '%';
+
+// ── Written summary for one day, against the day before it in the same range ──
+function renderDailySummary(S){
+  const card = document.getElementById('daSummaryCard');
+  const sel  = document.getElementById('daDay');
+  if(!S.length){ card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  if(sel.dataset.built !== S.map(d=>d.date).join(',')){
+    sel.innerHTML = S.map(d => `<option value="${d.date}">${d.date}</option>`).join('');
+    sel.dataset.built = S.map(d=>d.date).join(',');
+  }
+  let i = S.findIndex(d => d.date === DA_DAY);
+  if(i < 0){ i = S.length - 1; DA_DAY = S[i].date; }
+  sel.value = DA_DAY;
+  const d = S[i], prev = i > 0 ? S[i-1] : null;
+
+  // SKU rows for this day only
+  const skus = [];
+  for(const e of daSkuList()){
+    const row = e.days.find(x => x.date === d.date);
+    if(row) skus.push({name:e.name, key:e.key, channel:e.channel, ...row});
+  }
+  const losses = skus.filter(s => s.profit < 0).sort((a,b) => a.profit - b.profit);
+  const lowMargin = skus.filter(s => s.profit >= 0 && s.margin != null && s.margin < DA_T.low).sort((a,b) => a.margin - b.margin);
+  const excellent = skus.filter(s => s.margin != null && s.margin >= DA_T.excellent).sort((a,b) => b.margin - a.margin);
+  const highAcos = skus.filter(s => s.acos != null && s.acos > DA_T.acosBad).sort((a,b) => b.acos - a.acos);
+  const drag = losses.reduce((a,s) => a + s.profit, 0);
+  const topRev = skus.slice().sort((a,b) => b.rev - a.rev)[0];
+  const topPft = skus.slice().sort((a,b) => b.profit - a.profit)[0];
+  const profitable = skus.filter(s => s.profit > 0).length;
+
+  const dayLabel = m => m == null ? 'no-margin' : m < 0 ? 'a loss-making' : m < DA_T.low ? 'a low-margin' : m >= DA_T.excellent ? 'a strong' : 'a steady';
+  const acosWord = a => a == null ? '' : a > DA_T.acosBad ? '<b style="color:var(--red)">over limit</b>'
+    : a > DA_T.acosTarget ? '<b style="color:#9a6a00">approaching limit</b>' : '<b style="color:var(--green)">efficient</b>';
+  const tacosWord = t => t == null ? '' : t > DA_T.tacosTarget ? '<b style="color:var(--red)">above target</b>' : '<b style="color:var(--green)">healthy</b>';
+  const money = v => fmtGBP(v);
+  const chg = (cur, was) => {
+    if(was == null || !(Math.abs(was) > 0)) return '';
+    const p = (cur - was)/Math.abs(was)*100;
+    const c = p >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<b style="color:${c}">${p>=0?'+':''}${p.toFixed(1)}%</b>`;
+  };
+  const skuChips = (arr, fmt) => arr.length
+    ? `<div style="margin-top:6px;line-height:2">${arr.map(fmt).join(' <span style="color:var(--muted)">·</span> ')}</div>`
+    : '<div style="margin-top:4px;color:var(--muted)">none</div>';
+
+  // KPI chips across the top of the summary
+  const chip = (label, val, sub, cls) =>
+    `<div class="stat-tile" style="background:var(--pastel-4);min-width:120px"><div class="tl">${label}</div>
+      <div class="tv${cls?' '+cls:''}">${val}</div>${sub?`<div style="font-size:11px;color:var(--muted)">${sub}</div>`:''}</div>`;
+  const vs = (cur, was, pct) => {
+    if(was == null) return '';
+    const diff = cur - was;
+    const c = diff >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<span style="color:${c}">${diff>=0?'▲':'▼'} ${pct ? Math.abs(diff).toFixed(1)+'pp' : fmtGBP0(Math.abs(diff))}</span> vs prev`;
+  };
+  document.getElementById('daSumKpis').innerHTML =
+    chip('Revenue', fmtGBP0(d.rev), vs(d.rev, prev&&prev.rev)) +
+    chip('Profit', fmtGBP0(d.profit), vs(d.profit, prev&&prev.profit), d.profit>=0?'pos':'neg') +
+    chip('Margin', daPct1(d.margin), prev&&prev.margin!=null&&d.margin!=null ? vs(d.margin, prev.margin, true) : '') +
+    chip('Ad Spend', fmtGBP0(d.ads), vs(d.ads, prev&&prev.ads)) +
+    chip('ACoS', daPct1(d.acos), prev&&prev.acos!=null&&d.acos!=null ? vs(d.acos, prev.acos, true) : '') +
+    chip('TACoS', daPct1(d.tacos), prev&&prev.tacos!=null&&d.tacos!=null ? vs(d.tacos, prev.tacos, true) : '');
+  document.getElementById('daSumHead').innerHTML =
+    `<b>${d.date}</b> — Daily Business Summary <span style="font-weight:400;color:var(--muted)">${prev?`· vs ${prev.date} `:''}· ${fmtNum(d.activeSkus)} SKUs active</span>`;
+
+  const li = t => `<li style="margin-bottom:8px">${t}</li>`;
+  const overview = `<ul style="margin:0;padding-left:18px">` +
+    li(`<b>${d.date}</b> was ${dayLabel(d.margin)} day. ${money(d.rev)} of revenue across <b>${fmtNum(d.orders)}</b> orders returned a net profit of <b>${money(d.profit)}</b> at a margin of <b>${daPct1(d.margin)}</b>.` +
+       (losses.length
+         ? ` <b>${fmtNum(losses.length)}</b> SKU(s) are individually loss-making, dragging the portfolio down by <b style="color:var(--red)">${money(Math.abs(drag))}</b>.`
+         : ` No SKU ran at a loss.`) +
+       (lowMargin.length
+         ? ` A further <b>${fmtNum(lowMargin.length)}</b> are profitable but below ${DA_T.low}% margin, which points at pricing or cost pressure.`
+         : '')) +
+    (prev ? li(`Compared to <b>${prev.date}</b>: revenue ${chg(d.rev, prev.rev)} (${money(prev.rev)} → ${money(d.rev)}), profit ${chg(d.profit, prev.profit)} (${money(prev.profit)} → ${money(d.profit)})` +
+       (d.margin!=null && prev.margin!=null ? `, and margin moved <b>${daPP(d.margin-prev.margin)}</b> (${daPct1(prev.margin)} → ${daPct1(d.margin)})` : '') + `.`) : '') +
+    (d.ads > 0
+      ? li(`Ad spend was <b>${money(d.ads)}</b>${prev&&prev.ads>0?` (${chg(d.ads, prev.ads)} vs ${money(prev.ads)})`:''}, generating <b>${money(d.adSales)}</b> in attributed sales. ` +
+           `ACoS <b>${daPct1(d.acos)}</b> ${acosWord(d.acos)}${prev&&prev.acos!=null&&d.acos!=null?` — ${daPP(d.acos-prev.acos)} vs ${daPct1(prev.acos)}`:''}. ` +
+           `TACoS <b>${daPct1(d.tacos)}</b> ${tacosWord(d.tacos)}${prev&&prev.tacos!=null&&d.tacos!=null?` — ${daPP(d.tacos-prev.tacos)} vs ${daPct1(prev.tacos)}`:''}. ` +
+           `<span style="color:var(--muted)">Target ACoS &lt;${DA_T.acosTarget}%, TACoS &lt;${DA_T.tacosTarget}%.</span>`)
+      : li(`<span style="color:var(--muted)">No ad spend recorded on this day.</span>`)) +
+    li(`Of <b>${fmtNum(skus.length)}</b> active SKUs, <b>${fmtNum(profitable)}</b> were profitable, <b>${fmtNum(losses.length)}</b> ran at a loss, and <b>${fmtNum(excellent.length)}</b> achieved excellent margins (≥${DA_T.excellent}%).`) +
+    `</ul>`;
+  document.getElementById('daSumOverview').innerHTML = overview;
+
+  const alerts = (losses.length
+      ? `<div style="margin-bottom:12px"><b>${fmtNum(losses.length)} SKU(s) loss-making — total drag ${money(drag)}</b>` +
+        skuChips(losses, s => `<span><b>${esc(s.name.slice(0,42))}</b> <span style="color:var(--red)">(${money(s.profit)}${s.acos!=null?`, ACoS ${daPct1(s.acos)}`:''})</span></span>`) + `</div>` : '')
+    + (lowMargin.length
+      ? `<div style="margin-bottom:12px"><b>${fmtNum(lowMargin.length)} SKU(s) profitable but below ${DA_T.low}% margin</b>` +
+        skuChips(lowMargin, s => `<span><b>${esc(s.name.slice(0,42))}</b> <span style="color:#9a6a00">(${daPct1(s.margin)})</span></span>`) + `</div>` : '')
+    + (highAcos.length
+      ? `<div><b>${fmtNum(highAcos.length)} SKU(s) with ACoS above ${DA_T.acosBad}%</b> — bid reductions recommended.` +
+        skuChips(highAcos, s => `<span><b>${esc(s.name.slice(0,42))}</b> <span style="color:var(--red)">(${daPct1(s.acos)})</span></span>`) + `</div>` : '');
+  document.getElementById('daSumAlerts').innerHTML = alerts ||
+    '<div style="color:var(--muted)">Nothing to flag — no loss-making SKUs, none below target margin, and no ACoS above ' + DA_T.acosBad + '%.</div>';
+
+  const well = (d.tacos != null && d.tacos <= DA_T.tacosTarget
+      ? `<div style="margin-bottom:10px"><b>TACoS is healthy at ${daPct1(d.tacos)}</b> — ad spend is ${daPct1(d.tacos)} of total revenue, under the ${DA_T.tacosTarget}% target.${d.acos!=null?` ACoS is ${daPct1(d.acos)}.`:''}</div>` : '')
+    + (excellent.length
+      ? `<div style="margin-bottom:10px"><b>${fmtNum(excellent.length)} SKU(s) running at excellent margins (≥${DA_T.excellent}%)</b>` +
+        skuChips(excellent, s => `<span><b>${esc(s.name.slice(0,42))}</b> <span style="color:var(--green)">(${daPct1(s.margin)})</span></span>`) + `</div>` : '')
+    + (topRev ? `<div style="margin-bottom:6px"><b>Top revenue SKU:</b> ${esc(topRev.name.slice(0,60))} — ${money(topRev.rev)} across ${fmtNum(topRev.orders)} order(s)${topRev.profit>=0?' — and profitable too.':` — <span style="color:var(--red)">but it lost ${money(topRev.profit)}.</span>`}</div>` : '')
+    + (topPft ? `<div><b>Most profitable SKU:</b> ${esc(topPft.name.slice(0,60))} returned ${money(topPft.profit)} at a ${daPct1(topPft.margin)} margin.</div>` : '');
+  document.getElementById('daSumWell').innerHTML = well ||
+    '<div style="color:var(--muted)">No standout performers on this day.</div>';
+}
+
+// ── Product-by-product movement: every SKU, its day rows, and its period total ──
+function renderDailyMovement(){
+  const list = daSkuList().map(e => ({...e, tot: daRoll(e.days)}));
+  const bandOf = e => daBand(e.tot.profit, e.tot.margin);
+  let view = list.filter(e => {
+    if(DA_PM_FILTER !== 'all' && bandOf(e) !== DA_PM_FILTER) return false;
+    if(DA_PM_Q){
+      const hay = (e.name + ' ' + e.key).toLowerCase();
+      if(!hay.includes(DA_PM_Q)) return false;
+    }
+    return true;
+  });
+  const metric = {rev:e=>e.tot.rev, profit:e=>e.tot.profit, margin:e=>e.tot.margin,
+                  orders:e=>e.tot.orders, units:e=>e.tot.units, ads:e=>e.tot.ads, acos:e=>e.tot.acos};
+  const f = metric[DA_PM_SORT] || metric.rev;
+  view.sort((a,b) => {
+    const va = f(a), vb = f(b);
+    if(va == null && vb == null) return a.name.localeCompare(b.name);
+    if(va == null) return 1;
+    if(vb == null) return -1;
+    return va === vb ? a.name.localeCompare(b.name) : (DA_PM_DESC ? vb - va : va - vb);
+  });
+
+  const CAP = 300;
+  const shown = view.slice(0, CAP);
+  const cell = (v, cls) => `<td class="num"${cls?` style="${cls}"`:''}>${v}</td>`;
+  const dayRow = (r, prev) => {
+    const c = (r.rev - (prev ? prev.rev : 0));
+    const chgHtml = !prev || !(prev.rev > 0) ? '<span style="color:var(--muted)">—</span>'
+      : (() => { const p = c/prev.rev*100; return Math.abs(p) < 0.05 ? '<span style="color:var(--muted)">—</span>'
+          : `<span style="color:${p>0?'var(--green)':'var(--red)'}">${p>0?'▲':'▼'} ${Math.abs(p).toFixed(1)}%</span>`; })();
+    return `<tr>
+      <td style="padding-left:22px">${esc(r.date)}</td>
+      ${cell(fmtNum(r.orders))}${cell(fmtNum(r.units))}${cell(fmtGBP0(r.rev))}
+      ${cell(r.ads>0?fmtGBP0(r.ads):'—')}${cell(daPct1(r.acos))}${cell(daPct1(r.tacos))}
+      ${cell(fmtGBP0(r.profit), `color:${r.profit>=0?'var(--green)':'var(--red)'};font-weight:700`)}
+      ${cell(daPct1(r.margin), `color:${r.margin==null?'var(--muted)':r.margin<0?'var(--red)':r.margin<DA_T.low?'#9a6a00':'var(--green)'}`)}
+      ${cell(chgHtml)}
+      <td>${daBandBadge(daBand(r.profit, r.margin))}</td>
+    </tr>`;
+  };
+  const html = shown.map((e, idx) => {
+    const t = e.tot;
+    const head = `<tr class="sku-group-head-row"><td colspan="11" style="background:#eef3f9;font-weight:700;padding:8px 10px">
+      <span class="badge blue">${idx+1}</span> ${esc(e.name.slice(0,70))}
+      <span class="chip ${e.channel}">${CH_NAME[e.channel]||e.channel}</span>
+      <span style="font-weight:400;color:var(--muted);font-size:11.5px"> · ${fmtNum(t.dayCount)} day(s) active · Rev ${fmtGBP0(t.rev)} · Profit ${fmtGBP0(t.profit)}</span>
+    </td></tr>`;
+    const days = e.days.slice().sort((a,b) => a.date.localeCompare(b.date));
+    const body = days.map((r, i) => dayRow(r, i > 0 ? days[i-1] : null)).join('');
+    const tot = `<tr style="background:#f7fafc;font-weight:700;border-bottom:2px solid var(--border)">
+      <td style="padding-left:22px;font-style:italic">${esc(e.name.slice(0,34))} — TOTAL</td>
+      ${cell(fmtNum(t.orders))}${cell(fmtNum(t.units))}${cell(fmtGBP0(t.rev))}
+      ${cell(t.ads>0?fmtGBP0(t.ads):'—')}${cell(daPct1(t.acos))}${cell(daPct1(t.tacos))}
+      ${cell(fmtGBP0(t.profit), `color:${t.profit>=0?'var(--green)':'var(--red)'}`)}
+      ${cell(daPct1(t.margin))}${cell('')}
+      <td>${daBandBadge(bandOf(e))}</td>
+    </tr>`;
+    return head + body + tot;
+  }).join('');
+  document.querySelector('#daPmTable tbody').innerHTML = html ||
+    `<tr><td colspan="11" style="color:var(--muted);padding:18px;text-align:center">No SKUs match this filter.</td></tr>`;
+
+  // summary strip over the FILTERED set, so it always describes what is on screen
+  const all = list;
+  const prof = all.filter(e => e.tot.profit > 0).length;
+  const pRev = all.reduce((a,e) => a + e.tot.rev, 0);
+  const pPft = all.reduce((a,e) => a + e.tot.profit, 0);
+  const pAds = all.reduce((a,e) => a + e.tot.ads, 0);
+  const bestRev = all.slice().sort((a,b) => b.tot.rev - a.tot.rev)[0];
+  const bestPft = all.slice().sort((a,b) => b.tot.profit - a.tot.profit)[0];
+  const bestMgn = all.filter(e => e.tot.margin != null && e.tot.rev > 0).sort((a,b) => b.tot.margin - a.tot.margin)[0];
+  const item = (l, v) => `<div class="dod-sum-item"><span class="dod-sum-label">${l}</span><span class="dod-sum-val">${v}</span></div>`;
+  document.getElementById('daPmSummary').innerHTML =
+    item('Total SKUs', fmtNum(all.length)) +
+    item('Profitable SKUs', `${fmtNum(prof)} / ${fmtNum(all.length)}`) +
+    item('Period Revenue', fmtGBP0(pRev)) +
+    item('Period Profit', fmtGBP0(pPft)) +
+    item('Overall TACoS', pAds > 0 && pRev > 0 ? daPct1(pAds/pRev*100) : '—') +
+    item('Top Revenue SKU', bestRev ? `${esc(bestRev.name.slice(0,26))} — ${fmtGBP0(bestRev.tot.rev)}` : '—') +
+    item('Top Profit SKU', bestPft ? `${esc(bestPft.name.slice(0,26))} — ${fmtGBP0(bestPft.tot.profit)}` : '—') +
+    item('Best Margin SKU', bestMgn ? `${esc(bestMgn.name.slice(0,26))} — ${daPct1(bestMgn.tot.margin)}` : '—');
+  document.getElementById('daPmCount').textContent =
+    `${fmtNum(shown.length)}${view.length > CAP ? '+' : ''} of ${fmtNum(all.length)} SKUs`;
+}
 
 // ---- PLS ----
 function renderPLS(){
@@ -6616,6 +6937,30 @@ document.getElementById('daExport').addEventListener('click', () => {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Daily Analysis');
   XLSX.writeFile(wb, `InstaSales_Daily_Analysis_${rows[0].Date}_to_${rows[rows.length-1].Date}.xlsx`);
+});
+document.getElementById('daDay').addEventListener('change', e => { DA_DAY = e.target.value; renderDailySummary(DA_LAST); });
+// The movement table re-renders from DA_SKU, which the last day-pass already filled - no need
+// to re-run the engines just to re-sort or re-filter.
+document.querySelectorAll('.da-pm-f').forEach(b => b.addEventListener('click', () => {
+  DA_PM_FILTER = b.dataset.f;
+  document.querySelectorAll('.da-pm-f').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderDailyMovement();
+}));
+document.querySelectorAll('.da-pm-s').forEach(b => b.addEventListener('click', () => {
+  DA_PM_SORT = b.dataset.s;
+  document.querySelectorAll('.da-pm-s').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderDailyMovement();
+}));
+document.getElementById('daPmDir').addEventListener('click', e => {
+  DA_PM_DESC = !DA_PM_DESC;
+  e.target.textContent = DA_PM_DESC ? '▼ Desc' : '▲ Asc';
+  renderDailyMovement();
+});
+document.getElementById('daPmSearch').addEventListener('input', e => {
+  DA_PM_Q = (e.target.value || '').toLowerCase().trim();
+  renderDailyMovement();
 });
 // ---- Cost Manager controls ----
 ['cbAsAt','cbScope','cbSearch','cbPlat','cbFul'].forEach(id =>
