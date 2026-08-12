@@ -2270,22 +2270,43 @@ function computeAmazon(A){
   // P&L (and the Dashboard Refunds/Profit KPIs) reflect real returns. Distributed across
   // ASIN rows by revenue share -> the total exactly equals the reported refunds (in range).
   let amzRefundRate = STATE.amzRefund, amzRefundActual = 0, hasActualRefunds = false;
+  let amzRefundUnattached = 0;
+  const refundByDay = {};
   {
     const R2 = STATE.raw, cm = v => cleanMoney(v);
+    // Keep each refund on the DATE the transaction report gives it. The per-ASIN split below
+    // still spreads the total by revenue share (the report names no ASIN, so there is nothing
+    // better to go on), but the day a refund lands is stated outright and must be honoured -
+    // otherwise the trend and the saved history carry no refunds at all.
+    const take = (date, amt) => {
+      if(!date || !(amt > 0)) return;
+      hasActualRefunds = true;
+      refundByDay[date] = (refundByDay[date] || 0) + amt;
+      if(inR(date)) amzRefundActual += amt;
+    };
     if(R2[A.txn]) for(const r of R2[A.txn]){
       if(fixText(r['type']).toLowerCase() !== 'refund') continue;
-      if(!inR(parseDate(r['date/time']))) continue;
-      hasActualRefunds = true;
-      amzRefundActual += Math.abs(cm(r['product sales'])+cm(r['product sales tax'])+cm(r['postage credits'])+cm(r['gift wrap credits'])+cm(r['promotional rebates']));
+      take(parseDate(r['date/time']),
+        Math.abs(cm(r['product sales'])+cm(r['product sales tax'])+cm(r['postage credits'])+cm(r['gift wrap credits'])+cm(r['promotional rebates'])));
     }
     if(R2[A.txn2]) for(const r of R2[A.txn2]){
       if(fixText(r['Transaction type']).toLowerCase() !== 'refund') continue;
-      if(!inR(parseDate(r['Date']))) continue;
-      hasActualRefunds = true;
-      amzRefundActual += Math.abs(cm(r['Total product charges'])+cm(r['Total promotional rebates']));
+      take(parseDate(r['Date']),
+        Math.abs(cm(r['Total product charges'])+cm(r['Total promotional rebates'])));
     }
     const totalGross = Object.values(agg).reduce((s,a)=>s+a.gross, 0);
-    if(hasActualRefunds && totalGross > 0) amzRefundRate = amzRefundActual/totalGross;
+    if(amzRefundActual > 0 && totalGross > 0) amzRefundRate = amzRefundActual/totalGross;
+    else if(hasActualRefunds && amzRefundActual === 0) amzRefundRate = 0;
+    // With no revenue in range there is no share to distribute across, so the whole in-range
+    // refund would otherwise disappear from the P&L despite being real money out.
+    if(amzRefundActual > 0 && totalGross <= 0) amzRefundUnattached = amzRefundActual;
+  }
+  // A refund is booked on its own day even when nothing sold that day, so it still shows in
+  // the trend and reconciles against the transaction report rather than quietly vanishing.
+  for(const [d, amt] of Object.entries(refundByDay)){
+    if(!inR(d)) continue;
+    if(!daily[d]) daily[d] = {rev:0, units:0, refunds:0, orders:0};
+    daily[d].refunds += amt;
   }
   // ---- FBA / FBM split ----------------------------------------------------------------
   // The Business Report is ASIN-level: one ASIN sold as both FBA and FBM arrives as a single
@@ -2418,6 +2439,10 @@ function computeAmazon(A){
     waste.push({channel:A.chName, name: row.name || asin, ads:a.spend*adFactor, clicks:Math.round(a.clicks*adFactor)});
   }
   return {rows: finalizeRows(rows), extras:{waste, wasteSpend, estDays, daily, dayRows, undatedCount: undatedRows.length, fullSpan:{min:dMin, max:dMax}, dayCollisions, rangeExcludedCount, rangeExcludedNames:[...rangeExcludedNames], amzRefundActual: hasActualRefunds ? amzRefundActual : null, amzRefundRate,
+    // Refunds the per-ASIN split had nowhere to land. The report names no ASIN, so the total
+    // is spread by revenue share - and a day with refunds but no sales has no share to spread
+    // across. Surfaced like eBay's refundOther so the money still reaches the KPIs.
+    refundOther: amzRefundUnattached,
     skuSplitAsins: Object.keys(skuSplit).length, ordersRowsUsed,
     splitRows: rows.filter(r=>r.splitBySku).length, partialSplitRows: rows.filter(r=>r.splitPartial).length,
     fbaUnits: rows.reduce((a,r)=>a+(r.fbaUnits||0),0)}};
@@ -3362,6 +3387,10 @@ function diagnostics(){
     }
   }
   if(STATE.extras.ebay && STATE.extras.ebay.refundOther > 0) L.push(`eBay: ${fmtGBP(STATE.extras.ebay.refundOther)} refunds not matched to a listing in this report (older orders) - counted in refund KPIs.`);
+  for(const ch of ['amazon','amazon2']){
+    const x = STATE.extras[ch];
+    if(x && x.refundOther > 0) L.push(`${CH_NAME[ch]}: ${fmtGBP(x.refundOther)} refunds fall on days with no sales in range, so there is no revenue to spread them across - counted in the refund KPIs but not against any ASIN.`);
+  }
   if(STATE.extras.ebay && STATE.extras.ebay.unjoinableListings > 0) L.push(`eBay: ${STATE.extras.ebay.unjoinableListings} Listings rows had an item ID Excel had converted to scientific notation (e.g. "3.56887E+11") that could not be rebuilt, so they were dropped in favour of the transaction report (which carries the same sales with intact IDs). Re-export the Sale sheet as .xlsx - or format the item ID column as Text - to use it fully.`);
   if(STATE.dateFrom || STATE.dateTo){
     const az = STATE.extras.amazon;
@@ -3387,6 +3416,13 @@ function filteredChannels(){
   return loadedChannels().filter(chOn);
 }
 function filteredRows(){ return filteredChannels().flatMap(ch => STATE.channels[ch]); }
+// Refunds a channel reported but could not pin to one of its product rows - eBay's orders for
+// listings absent from the report, and Amazon refunds falling on a day with no sales to spread
+// them across. Real money out either way, so every refund KPI has to add them back.
+function unattachedRefunds(chans){
+  return (chans||[]).reduce((a, ch) =>
+    a + ((STATE.extras[ch] && STATE.extras[ch].refundOther) || 0), 0);
+}
 function opexFor(chans){
   return OPEX.reduce((a,o) => {
     if(o.ch === 'all') return a + (STATE.chFilter==='all' || chans.length>1 ? o.amt : 0);
@@ -3614,7 +3650,7 @@ function plForRange(from, to){
     recompute();
     const chans = filteredChannels();
     t = totalsOf(filteredRows());
-    extraRef = (chans.includes('ebay') && STATE.extras.ebay) ? (STATE.extras.ebay.refundOther||0) : 0;
+    extraRef = unattachedRefunds(chans);
   } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
   t.refunds += extraRef;
   return t;
@@ -3759,7 +3795,7 @@ function renderDashboard(){
     dAZ = (chans.includes('amazon') && STATE.extras.amazon && STATE.extras.amazon.daily) ? STATE.extras.amazon.daily : {};
     dAZ2 = (chans.includes('amazon2') && STATE.extras.amazon2 && STATE.extras.amazon2.daily) ? STATE.extras.amazon2.daily : {};
   }
-  const extraRefunds = (!useHist && chans.includes('ebay') && STATE.extras.ebay) ? STATE.extras.ebay.refundOther : 0;
+  const extraRefunds = useHist ? 0 : unattachedRefunds(chans);
   const opex = opexFor(useHist ? histCh : chans);
   const opexExcluded = opexExcludedFor(useHist ? histCh : chans);
   const kctx = {xref: extraRefunds, opex, opexExcluded};
@@ -3941,8 +3977,8 @@ function renderConsolidated(){
   for(const ch of chans) T[ch] = totalsOf(STATE.channels[ch]);
   const sum = k => chans.reduce((a,ch)=>a+(T[ch][k]||0),0);
   const totalRevEx = sum('revenue_ex'), totalProfit = sum('net_profit_ex'), totalAds = sum('ads'), totalRev = sum('revenue');
-  // eBay carries some refunds outside the per-listing rows (refundOther) - include them like the main Dashboard
-  const extraRef = (chans.includes('ebay') && STATE.extras.ebay && STATE.extras.ebay.refundOther) || 0;
+  // Refunds that sit outside the per-product rows - include them like the main Dashboard
+  const extraRef = unattachedRefunds(chans);
   const totalRefunds = sum('refunds') + extraRef;
   const cards = [
     {label:'Total Revenue (Inc VAT)', value:fmtGBP0(sum('revenue_gross')), sub:`${fmtNum(sum('units'))} units`},
