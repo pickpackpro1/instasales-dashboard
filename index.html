@@ -4525,8 +4525,11 @@ function renderCostBook(){
     const acctFilter = (famSel === 'amazon' || famSel === 'amazon2');
     const shownU = acctFilter ? (o.byCh[famSel] || 0) : o.units;
     const shownLive = acctFilter ? o.on.has(famSel) : o.live;
+    // Units stay out of the line - they still drive the sort, and sit on the hover title.
     const liveBit = shownLive
-      ? ' &middot; <span style="color:var(--green)">selling' + (shownU ? ' &middot; ' + fmtNum(Math.round(shownU)) + 'u' : '') + '</span>'
+      ? ' &middot; <span style="color:var(--green)"' +
+        (shownU ? ' title="' + fmtNum(Math.round(shownU)) + ' unit(s) in the loaded period"' : '') +
+        '>selling</span>'
       : '';
     return '<tr' + (o.live && noCost(o) ? ' style="background:#fff5f5"' : '') + '>' +
       '<td style="max-width:330px">' +
