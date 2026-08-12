@@ -480,13 +480,12 @@ input[type=range]{accent-color:var(--accent);width:150px}
               <option value="active">Only fully-active products</option>
               <option value="nosku">No SKU mapped yet</option>
             </select>
-            <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer;margin-left:2px"><input type="checkbox" id="skuMapAllDays"> Show full history</label>
             <span style="flex:1"></span>
             <div class="count" id="skuMapCount"></div>
           </div>
         </div>
         <div class="table-wrap" style="max-height:660px"><table id="skuMapTable">
-          <thead><tr><th>Product</th><th>Type</th><th>Channel</th><th>✅ Active SKUs (routed)</th><th>⛔ Inactive SKUs (un-routed)</th><th class="num" style="background:#fff8d6">Weekly TOTAL</th><th class="num">AVG/Day</th><th class="num" style="background:#fff8d6">TOTAL INVT</th><th class="num">Days Left</th></tr></thead>
+          <thead><tr><th>Product</th><th>Type</th><th>Channel</th><th>✅ Active SKUs (routed)</th><th>⛔ Inactive SKUs (un-routed)</th></tr></thead>
           <tbody></tbody>
         </table></div>
       </div>
@@ -495,7 +494,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <!-- ---- Weekly stock tracking section ---- -->
     <div id="skuStockView" style="margin-top:24px;border-top:2px solid var(--border);padding-top:18px">
       <h3 style="margin:4px 0 12px;font-size:16px"><span class="dot" style="background:var(--amber)"></span> 📦 Weekly Stock Tracking <span style="font-weight:400;color:var(--muted);font-size:13px">— forecast reordering by product name</span></h3>
-      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product name</b> and forecast reordering. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. You can also edit any cell directly.</div>
+      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the SKU Mapping table above, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. You can also edit any cell directly.</div>
       <div class="grid g4" id="stockTiles"></div>
       <div class="card" style="margin-bottom:14px;padding:12px 16px">
         <div class="fbar">
@@ -4284,32 +4283,11 @@ function renderSkuMgt(){
   });
 
   const chips = (arr, cls) => arr.length ? arr.map(s => `<span class="badge ${cls}" title="${esc(s)}">${esc(s.length>36?s.slice(0,36)+'…':s)}</span>`).join(' ') : '<span style="color:var(--muted)">—</span>';
-  // weekly stock tracking joined by item name (matches the stock section's product names)
-  const stockByLc = {}; for(const k in STOCK) stockByLc[k.toLowerCase().trim()] = STOCK[k];
-  const allStDates = stockAllDatesSorted();          // newest first — full retained history
-  const stWeek = allStDates.slice(0, 7);             // trailing 7 days drive the weekly maths
-  const showAllDays = !!(document.getElementById('skuMapAllDays')||{}).checked;
-  const dayCols = (showAllDays ? allStDates : stWeek).slice().reverse();   // display oldest→newest
-  const stThresh = Math.max(0, parseFloat((document.getElementById('stockThreshold')||{}).value) || 7);
-  const numS = v => v==null ? null : (isNaN(+v) ? null : +v);
-  // rebuild the header so the per-day columns match the current window (7 days, or full history)
-  const dayHdr = dayCols.map(d => `<th class="num" style="min-width:50px" title="${d}">${d.slice(5).replace('-','/')}</th>`).join('');
+  // Mapping only. Stock lives in its own section below - it was rendered in both places, so
+  // the same day columns and weekly maths appeared twice and this table was too wide to read.
   document.querySelector('#skuMapTable thead').innerHTML =
-    `<tr><th>Product</th><th>Type</th><th>Channel</th><th>✅ Active SKUs (routed)</th><th>⛔ Inactive SKUs (un-routed)</th>${dayHdr}<th class="num" style="background:#fff8d6">Weekly TOTAL</th><th class="num">AVG/Day</th><th class="num" style="background:#fff8d6">TOTAL INVT</th><th class="num">Days Left</th></tr>`;
-  const COLS = 9 + dayCols.length;
-  const EMPTY_STOCK = dayCols.map(()=>'<td></td>').join('') + '<td></td><td></td><td></td><td></td>';
-  const stockCells = p => {
-    const st = stockByLc[p.name.toLowerCase().trim()];
-    const dash = '<td class="num" style="color:var(--muted)">—</td>';
-    if(!st) return dayCols.map(()=>dash).join('') + dash + dash + dash + dash;
-    const dayTds = dayCols.map(d => { const v = numS(st.daily[d]); return `<td class="num">${v!=null?fmtNum(v):'<span style="color:var(--muted)">·</span>'}</td>`; }).join('');
-    const wk = stWeek.reduce((a,d)=>a+(numS(st.daily[d])||0),0);
-    const avg = wk/7, inv = numS(st.inventory);
-    const dl = (inv!=null && avg>0) ? inv/avg : (inv!=null && inv<=0 ? 0 : null);
-    const dlCell = dl==null ? '<span style="color:var(--muted)">—</span>'
-      : `<span class="pill ${dl<stThresh?'neg':'pos'}"${dl<stThresh?' style="background:#e8467c;color:#fff"':''}>${dl>999?'999+':dl.toFixed(1)}</span>`;
-    return dayTds + `<td class="num" style="background:#fff8d6;font-weight:700">${fmtNum(wk)}</td><td class="num">${avg.toFixed(1)}</td><td class="num" style="background:#fff8d6">${inv!=null?fmtNum(inv):'—'}</td><td class="num">${dlCell}</td>`;
-  };
+    `<tr><th>Product</th><th>Type</th><th>Channel</th><th>✅ Active SKUs (routed)</th><th>⛔ Inactive SKUs (un-routed)</th></tr>`;
+  const COLS = 5;
   const rows = [];
   let shown = 0;
   const CAP = 700;
@@ -4332,7 +4310,6 @@ function renderSkuMgt(){
         <td><span class="chip ${TYPE_CH_FROM_NAME(c)}">${esc(c)}</span></td>
         <td style="max-width:340px;white-space:normal">${chips(b.routed, 'green')}</td>
         <td style="max-width:340px;white-space:normal">${chips(b.unrouted, 'red')}</td>
-        ${i===0 ? stockCells(p) : EMPTY_STOCK}
       </tr>`);
       shown++;
     });
@@ -4343,7 +4320,6 @@ function renderSkuMgt(){
         <td></td><td></td>
         <td><span class="chip ${TYPE_CH_FROM_NAME(c)}" style="opacity:.45">${esc(c)}</span></td>
         <td colspan="2" style="color:#c0392b;font-weight:700">⛔ Not listed on ${esc(c)} — no SKU mapped</td>
-        ${EMPTY_STOCK}
       </tr>`);
       shown++;
     }
@@ -4986,7 +4962,21 @@ function renderStock(){
 
   const dayHdr = visDates.map(d => `<th class="num" style="min-width:56px">${d.slice(5).replace('-','/')}</th>`).join('');
   document.querySelector('#stockTable thead').innerHTML =
-    `<tr><th style="min-width:170px">Item</th>${dayHdr}<th class="num" style="background:#fff8d6">Weekly TOTAL</th><th class="num">AVG/Day</th><th class="num" style="background:#fff8d6">TOTAL INVT</th><th class="num">Days Left</th><th>Actions</th><th>China Alarm</th></tr>`;
+    `<tr><th style="min-width:170px">Product</th>${dayHdr}<th class="num" style="background:#fff8d6">Weekly TOTAL</th><th class="num">AVG/Day</th><th class="num" style="background:#fff8d6">TOTAL INVT</th><th class="num">Days Left</th><th>Actions</th><th>China Alarm</th></tr>`;
+  // Same product identity as the mapping table above: stock joins on the inventory-family
+  // name, so carry that table's variant note across and flag anything the mapping does not
+  // know about - a name here that matches nothing there will never line up with its SKUs.
+  const famInfo = {};
+  let haveMap = false;
+  {
+    const map = buildSkuMap();
+    haveMap = !!(map && map.products.length);
+    for(const p of (map ? map.products : [])){
+      const key = (p.family || p.name).toLowerCase().trim();
+      famInfo[key] = famInfo[key] || {variants:0};
+      famInfo[key].variants++;
+    }
+  }
 
   const cellIn = (name, field, day, val, w) => `<input data-sn="${esc(name)}" data-sf="${field}"${day?` data-sd="${day}"`:''} value="${val==null?'':val}" style="width:${w||52}px;padding:4px 5px;text-align:right;border:1px solid var(--border);border-radius:5px">`;
   const txtIn = (name, field, val) => `<input data-sn="${esc(name)}" data-sf="${field}" value="${esc(val||'')}" style="width:150px;padding:4px 6px;border:1px solid var(--border);border-radius:5px">`;
@@ -4997,8 +4987,15 @@ function renderStock(){
     const dl = c.daysLeft;
     const dlCell = dl == null ? '<span style="color:var(--muted)">—</span>'
       : `<span class="pill ${dl < threshold ? 'neg' : 'pos'}" style="${dl<threshold?'background:#e8467c;color:#fff':''}">${dl>999?'999+':dl.toFixed(1)}</span>`;
-    return `<tr>
-      <td style="font-weight:600;max-width:200px" title="${esc(n)}">${esc(n)}</td>
+    const fi = famInfo[n.toLowerCase().trim()];
+    const vnote = fi && fi.variants > 1
+      ? `<span style="color:var(--muted);font-weight:400;font-size:11px"> · ${fi.variants} variants</span>` : '';
+    // only meaningful once a mapping exists - with none loaded EVERY row is unmatched, which
+    // is noise rather than a finding
+    const unknown = (fi || !haveMap) ? '' :
+      `<div style="margin-top:4px"><span class="badge red" title="No product of this name in the SKU mapping above, so this stock line cannot be tied to its channel SKUs">⚠ Not in SKU mapping</span></div>`;
+    return `<tr${(fi || !haveMap) ? '' : ' class="row-missing"'}>
+      <td style="font-weight:700;max-width:220px" title="${esc(n)}">${esc(n)}${vnote}${unknown}</td>
       ${dayCells}
       <td class="num" style="background:#fff8d6;font-weight:700">${fmtNum(c.weekTotal)}</td>
       <td class="num">${c.avg.toFixed(1)}</td>
@@ -6532,7 +6529,6 @@ document.getElementById('feeSearch').addEventListener('input', renderFees);
 document.getElementById('skuMapSearch').addEventListener('input', renderSkuMgt);
 document.getElementById('skuMapChannel').addEventListener('change', renderSkuMgt);
 document.getElementById('skuMapStatus').addEventListener('change', renderSkuMgt);
-document.getElementById('skuMapAllDays').addEventListener('change', renderSkuMgt);
 // SKU Management renders BOTH the mapping and the weekly stock tracking on one page.
 function renderSkuMgtPage(){ renderSkuMgt(); renderStock(); }
 // stock imports (dedicated buttons so sales vs inventory is never ambiguous)
