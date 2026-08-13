@@ -615,7 +615,8 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <select class="fsel" id="prodPlat">
           <option value="all">All platforms</option>
           <option value="tiktok">TikTok</option>
-          <option value="amazon">Amazon</option>
+          <option value="amazon">Amazon 1 (Vemart)</option>
+          <option value="amazon2">Amazon 2 (Vefive)</option>
           <option value="ebay">eBay</option>
           <option value="shopify">Shopify</option>
         </select>
@@ -1402,6 +1403,18 @@ const COST_LBL   = {mkt_fee:'Marketplace Fee', affiliate:'Affiliate Com.', buyin
 const COST_COL   = {mkt_fee:'#2a78d6', affiliate:'#1baf7a', buying:'#eda100', shipping:'#008300', oper:'#4a3aa7', ads:'#e34948', shop_ads:'#e87ba4'};
 const CH_COL     = {tiktok:'#e87ba4', amazon:'#eb6834', amazon2:'#f5a623', ebay:'#2a78d6', shopify:'#1baf7a'};
 const CH_NAME    = {tiktok:'TikTok', amazon:'Amazon 1 (Vemart)', amazon2:'Amazon 2 (Vefive)', ebay:'eBay', shopify:'Shopify'};
+// A master-sheet platform string -> the channel it belongs to. The sheet names the two Amazon
+// accounts separately ("amazon-vemart" / "amazon-vefive"), so Vefive must be tested BEFORE the
+// generic amazon check - both strings contain "amazon". Collapsing them lost the account:
+// Vefive rows were labelled Vemart and priced off Vemart's sales.
+const chOfPlat = p => {
+  p = String(p || '').toLowerCase();
+  if(p.includes('vefive') || p.includes('amazon2') || p.includes('amazon 2')) return 'amazon2';
+  if(p.includes('amazon') || p.includes('vemart') || p.includes('amz')) return 'amazon';
+  if(p.includes('ebay')) return 'ebay';
+  if(p.includes('shopif')) return 'shopify';
+  return 'tiktok';
+};
 // Inline brand-mark SVGs (functional marketplace indicators, drawn in each brand's colours)
 const CH_LOGO = {
   amazon: `<svg viewBox="0 0 132 44" height="16" style="vertical-align:middle" xmlns="http://www.w3.org/2000/svg"><text x="1" y="29" font-family="Arial,Helvetica,sans-serif" font-size="30" font-weight="700" fill="#232F3E" letter-spacing="-1.5">amazon</text><path d="M20 34 C52 47 84 47 113 35" fill="none" stroke="#FF9900" stroke-width="4.5" stroke-linecap="round"/><path d="M113 35 l-9 0 M113 35 l-1 -8" fill="none" stroke="#FF9900" stroke-width="4.5" stroke-linecap="round"/></svg>`,
@@ -5938,16 +5951,17 @@ function renderProducts(){
   const q = (document.getElementById('prodSearch').value || '').toLowerCase();
   const pf = document.getElementById('prodPlat').value;
   let list = STATE.master.list;
-  if(pf !== 'all') list = list.filter(e => (e.plat||'').includes(pf === 'shopify' ? 'shopif' : pf));
+  if(pf !== 'all') list = list.filter(e => chOfPlat(e.plat) === pf);
   if(q) list = list.filter(e => (e.sku||'').toLowerCase().includes(q) || (e.asin||'').toLowerCase().includes(q) || (e.pid||'').includes(q) || (e.name||'').toLowerCase().includes(q));
   const CAPP = 300;
   document.getElementById('prodCount').textContent = `${Math.min(list.length, CAPP)} of ${list.length} products shown`;
   PROD_VIEW = list.slice(0, CAPP);
-  const chOf = p => p.includes('amazon') ? 'amazon' : p.includes('ebay') ? 'ebay' : p.includes('shopif') ? 'shopify' : 'tiktok';
+  const chOf = chOfPlat;
   // selling price: live sales average when the channel data is loaded, else the saved/built-in price
   const priceOf = e => {
     const ck = chOf(e.plat);
-    const key = ck === 'amazon' ? (e.asin || e.pid) : ck === 'ebay' ? e.pid : e.sku;
+    // both Amazon accounts key their sales rows on the ASIN, not the seller SKU
+    const key = (ck === 'amazon' || ck === 'amazon2') ? (e.asin || e.pid) : ck === 'ebay' ? e.pid : e.sku;
     const rows = STATE.channels[ck];
     if(rows){
       const r = rows.find(x => x.key === key);
@@ -5960,7 +5974,7 @@ function renderProducts(){
     const V = STATE.vat, vDiv = 1 + V.rate;
     const ck = chOf(e.plat);
     const revEx = V.revIncVAT ? P/vDiv : P;
-    const FB = {tiktok:STATE.ttRate, amazon:STATE.amzRef, ebay:EBAY_FVF_PCT, shopify:STATE.shopFee};
+    const FB = {tiktok:STATE.ttRate, amazon:STATE.amzRef, amazon2:STATE.amzRef, ebay:EBAY_FVF_PCT, shopify:STATE.shopFee};
     const rate = e.referral != null ? e.referral : FB[ck];
     let fee = P * rate;
     if(ck === 'tiktok') fee += P * ((e.aff != null ? e.aff : 0.15) + (e.shopads != null ? e.shopads : 0.02));
