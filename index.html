@@ -733,6 +733,61 @@ input[type=range]{accent-color:var(--accent);width:150px}
       </table></div>
       <div class="dod-summary" id="daPmSummary"></div>
     </div>
+
+    <!-- ---- product trend intelligence ---- -->
+    <div class="card" style="margin-top:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-tiktok)"></span>Product Trend Intelligence</h3>
+        <span style="flex:1"></span>
+        <input type="search" id="daTrSearch" placeholder="Search SKU or title..." style="min-width:200px">
+        <div class="count" id="daTrCount"></div>
+      </div>
+      <div class="fbar" style="flex-wrap:wrap;gap:6px">
+        <span class="flabel">Window</span>
+        <button class="btn secondary da-tr-q" data-days="7">7 days</button>
+        <button class="btn secondary da-tr-q" data-days="14">14 days</button>
+        <button class="btn secondary da-tr-q" data-days="30">30 days</button>
+        <button class="btn secondary da-tr-q" data-days="0">All</button>
+        <span class="flabel" style="margin-left:6px">Custom</span>
+        <input type="date" id="daTrFrom" style="width:148px">
+        <input type="date" id="daTrTo" style="width:148px">
+        <button class="btn" id="daTrApply">Apply</button>
+      </div>
+      <div class="fbar" style="flex-wrap:wrap;gap:6px">
+        <span class="flabel">Trend</span>
+        <button class="btn da-tr-f" data-f="all" data-label="All">All</button>
+        <button class="btn secondary da-tr-f" data-f="Growing" data-label="📈 Growing">📈 Growing</button>
+        <button class="btn secondary da-tr-f" data-f="Declining" data-label="📉 Declining">📉 Declining</button>
+        <button class="btn secondary da-tr-f" data-f="Flat" data-label="➡️ Flat">➡️ Flat</button>
+        <button class="btn secondary da-tr-f" data-f="New" data-label="🆕 New">🆕 New</button>
+        <button class="btn secondary da-tr-f" data-f="Dropped" data-label="⚠️ Dropped off">⚠️ Dropped off</button>
+        <span class="flabel" style="margin-left:10px">Sort</span>
+        <button class="btn da-tr-s" data-s="chg">Rev change</button>
+        <button class="btn secondary da-tr-s" data-s="latest">Latest rev</button>
+        <button class="btn secondary da-tr-s" data-s="total">Period total</button>
+        <button class="btn secondary da-tr-s" data-s="avg">Avg/day</button>
+        <button class="btn secondary da-tr-s" data-s="profit">Total profit</button>
+        <button class="btn secondary da-tr-s" data-s="active">Active days</button>
+        <button class="btn" id="daTrDir" title="Toggle high-to-low / low-to-high">▼ High to Low</button>
+      </div>
+      <div class="sub-title">
+        Each product judged against <b>its own</b> baseline: the latest day in the window versus its average
+        across the earlier days it actually sold on. Beyond &plusmn;15% is Growing or Declining, inside it is Flat.
+        <b>New</b> = nothing earlier in the window but selling on the latest day; <b>Dropped off</b> = nothing on the
+        latest day, whether it sold earlier in the window or only outside it. The window here is independent of the
+        range at the top of the page.
+      </div>
+      <div class="table-wrap" style="max-height:700px"><table id="daTrTable">
+        <thead><tr>
+          <th class="num">#</th><th>SKU / Product</th><th>Channel</th><th>Trend</th>
+          <th class="num">Rev change</th><th>7-day spark</th>
+          <th class="num">Latest rev</th><th class="num">Period total</th><th class="num">Avg/day</th>
+          <th class="num">Total profit</th><th class="num">Active days</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="dod-summary" id="daTrSummary"></div>
+    </div>
   </div>
 
   <!-- ============ SKU PERFORMANCE ============ -->
@@ -5301,6 +5356,10 @@ function renderDaily(){
       '<tr><td colspan="11" style="color:var(--muted);padding:18px;text-align:center">No dated data loaded.</td></tr>';
     document.getElementById('daPmSummary').innerHTML = '';
     document.getElementById('daPmCount').textContent = '';
+    document.querySelector('#daTrTable tbody').innerHTML =
+      '<tr><td colspan="11" style="color:var(--muted);padding:18px;text-align:center">No dated data loaded.</td></tr>';
+    document.getElementById('daTrSummary').innerHTML = '';
+    document.getElementById('daTrCount').textContent = '';
     return;
   }
   let dates = all;
@@ -5396,6 +5455,7 @@ function renderDaily(){
   // table above them.
   renderDailySummary(S);
   renderDailyMovement();
+  renderDailyTrends();
 }
 let DA_LAST = [];
 
@@ -5628,6 +5688,149 @@ function renderDailyMovement(){
     item('Best Margin SKU', bestMgn ? `${esc(bestMgn.name.slice(0,26))} — ${daPct1(bestMgn.tot.margin)}` : '—');
   document.getElementById('daPmCount').textContent =
     `${fmtNum(shown.length)}${view.length > CAP ? '+' : ''} of ${fmtNum(all.length)} SKUs`;
+}
+
+// ---- Product Trend Intelligence ----
+// Classifies each SKU by how its LATEST day compares with its own average across the earlier
+// days in the window - so a product is judged against its own baseline, not against the range
+// total. Runs off DA_SKU, which the day-pass already filled, so the window control here only
+// slices dates that are already computed and never re-runs the engines.
+let DA_TR_DAYS = 7;                    // 0 = the whole loaded range
+let DA_TR_FROM = '', DA_TR_TO = '';
+let DA_TR_FILTER = 'all';              // all | Growing | Declining | Flat | New | Dropped
+let DA_TR_SORT = 'chg';                // chg | latest | total | avg | profit | active
+let DA_TR_DESC = true;
+let DA_TR_Q = '';
+const DA_TR_BAND = 0.15;               // ±15% around the baseline counts as Flat
+
+function daTrendDates(){
+  const all = new Set();
+  for(const e of daSkuList()) for(const d of e.days) all.add(d.date);
+  let dates = [...all].sort();
+  if(DA_TR_FROM || DA_TR_TO) dates = dates.filter(d => (!DA_TR_FROM || d >= DA_TR_FROM) && (!DA_TR_TO || d <= DA_TR_TO));
+  else if(DA_TR_DAYS > 0) dates = dates.slice(-DA_TR_DAYS);
+  return dates;
+}
+function daTrends(dates){
+  if(!dates.length) return [];
+  const last = dates[dates.length-1];
+  const inWin = new Set(dates);
+  return daSkuList().map(e => {
+    const byDate = {};
+    for(const d of e.days) if(inWin.has(d.date)) byDate[d.date] = d;
+    const revOf = dt => (byDate[dt] ? byDate[dt].rev : 0);
+    const latestRev = revOf(last);
+    const prior = dates.slice(0, -1).map(revOf).filter(v => v > 0);
+    const prevAvg = prior.length ? prior.reduce((a,b) => a+b, 0)/prior.length : 0;
+    const prevHad = prior.length > 0, latestHas = latestRev > 0;
+    let trend;
+    if(!prevHad && latestHas) trend = 'New';
+    else if(!latestHas) trend = 'Dropped';       // covers "had sales then stopped" and "no sales at all"
+    else {
+      const chg = prevAvg > 0 ? (latestRev - prevAvg)/prevAvg : 0;
+      trend = chg > DA_TR_BAND ? 'Growing' : chg < -DA_TR_BAND ? 'Declining' : 'Flat';
+    }
+    const revChange = (trend === 'Dropped' || trend === 'New') ? null
+      : (prevAvg > 0 ? (latestRev - prevAvg)/prevAvg*100 : 0);
+    // New sorts to the top and Dropped to the bottom: neither has a comparable % but both
+    // matter more than a small movement either way.
+    const sortChg = trend === 'New' ? 1e9 : trend === 'Dropped' ? -1e9 : (revChange || 0);
+    const rows = dates.map(dt => byDate[dt]).filter(Boolean);
+    const roll = daRoll(rows);
+    const activeDays = dates.filter(dt => revOf(dt) > 0).length;
+    return {key:e.key, name:e.name, channel:e.channel, trend, revChange, sortChg,
+      latestRev, periodTotal:roll.rev, periodProfit:roll.profit, margin:roll.margin,
+      avgDay: activeDays > 0 ? roll.rev/activeDays : 0,
+      activeDays, totalDays:dates.length,
+      spark: dates.slice(-7).map(revOf)};
+  });
+}
+function daSpark(revs, w, h){
+  w = w || 84; h = h || 26;
+  if(!revs || !revs.length) return '';
+  const max = Math.max.apply(null, revs.concat([0.01]));
+  const n = revs.length, gap = 2;
+  const bw = Math.max(2, (w - gap*(n-1))/n);
+  const bars = revs.map((v, i) => {
+    const bh = v > 0 ? Math.max(2, (v/max)*(h-2)) : 0;
+    // the newest bar is solid; older ones fade back so the eye lands on the latest day
+    const op = 0.30 + 0.70*(i/Math.max(n-1,1));
+    const col = i === n-1 ? 'var(--blue,#2f6fd0)' : `rgba(47,111,208,${op.toFixed(2)})`;
+    return `<rect x="${(i*(bw+gap)).toFixed(1)}" y="${(h-bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="1" fill="${col}"/>`;
+  }).join('');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block">${bars}</svg>`;
+}
+const DA_TR_BADGE = {
+  Growing:  '<span class="badge green">📈 Growing</span>',
+  Declining:'<span class="badge red">📉 Declining</span>',
+  Flat:     '<span class="badge blue">➡️ Flat</span>',
+  New:      '<span class="badge" style="background:#e7d9fb;color:#5b2ea6">🆕 New</span>',
+  Dropped:  '<span class="badge amber" style="background:#fdf3df;color:#9a6a00">⚠️ Dropped off</span>'
+};
+function renderDailyTrends(){
+  const dates = daTrendDates();
+  const fromEl = document.getElementById('daTrFrom'), toEl = document.getElementById('daTrTo');
+  if(dates.length){ fromEl.value = dates[0]; toEl.value = dates[dates.length-1]; }
+  const all = daTrends(dates);
+  const counts = {all:all.length, Growing:0, Declining:0, Flat:0, New:0, Dropped:0};
+  for(const t of all) counts[t.trend]++;
+  document.querySelectorAll('.da-tr-f').forEach(b => {
+    const k = b.dataset.f;
+    const n = counts[k] != null ? counts[k] : 0;
+    const lab = b.dataset.label || b.textContent.replace(/\s*\d+$/,'').trim();
+    b.dataset.label = lab;
+    b.innerHTML = `${lab} <span class="badge grey" style="margin:0 0 0 4px">${fmtNum(n)}</span>`;
+  });
+
+  let view = all.filter(t => {
+    if(DA_TR_FILTER !== 'all' && t.trend !== DA_TR_FILTER) return false;
+    if(DA_TR_Q && !((t.name + ' ' + t.key).toLowerCase().includes(DA_TR_Q))) return false;
+    return true;
+  });
+  const metric = {chg:t=>t.sortChg, latest:t=>t.latestRev, total:t=>t.periodTotal,
+                  avg:t=>t.avgDay, profit:t=>t.periodProfit, active:t=>t.activeDays};
+  const f = metric[DA_TR_SORT] || metric.chg;
+  view.sort((a,b) => { const va = f(a), vb = f(b);
+    return va === vb ? a.name.localeCompare(b.name) : (DA_TR_DESC ? vb - va : va - vb); });
+
+  const CAP = 400;
+  const pctCell = t => t.revChange == null
+    ? '<span style="color:var(--muted)">—</span>'
+    : `<span style="color:${t.revChange>0?'var(--green)':t.revChange<0?'var(--red)':'var(--muted)'};font-weight:700">${t.revChange>0?'+':''}${t.revChange.toFixed(1)}%</span>`;
+  document.querySelector('#daTrTable tbody').innerHTML = view.slice(0, CAP).map((t, i) => `<tr>
+      <td class="num" style="color:var(--muted)">${i+1}</td>
+      <td style="max-width:260px">
+        <div style="font-weight:700;font-size:12px">${esc(t.key)}</div>
+        <div class="ptitle2" title="${esc(t.name)}">${esc(t.name.slice(0,54))}</div>
+      </td>
+      <td><span class="chip ${t.channel}">${CH_NAME[t.channel]||t.channel}</span></td>
+      <td>${DA_TR_BADGE[t.trend]||''}</td>
+      <td class="num">${pctCell(t)}</td>
+      <td>${daSpark(t.spark)}</td>
+      <td class="num">${fmtGBP0(t.latestRev)}</td>
+      <td class="num" style="font-weight:700">${fmtGBP0(t.periodTotal)}</td>
+      <td class="num">${fmtGBP0(t.avgDay)}</td>
+      <td class="num" style="color:${t.periodProfit>=0?'var(--green)':'var(--red)'};font-weight:700">${fmtGBP0(t.periodProfit)}</td>
+      <td class="num">${fmtNum(t.activeDays)} <span style="color:var(--muted)">/ ${fmtNum(t.totalDays)}</span></td>
+    </tr>`).join('') ||
+    `<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:18px">No products match this filter.</td></tr>`;
+
+  const pRev = all.reduce((a,t) => a + t.periodTotal, 0);
+  const pPft = all.reduce((a,t) => a + t.periodProfit, 0);
+  const marg = all.filter(t => t.margin != null && t.periodTotal > 0);
+  const avgMargin = marg.length ? marg.reduce((a,t) => a + t.margin, 0)/marg.length : null;
+  const item = (l, v, cls) => `<div class="dod-sum-item"><span class="dod-sum-label">${l}</span><span class="dod-sum-val${cls?' '+cls:''}">${v}</span></div>`;
+  document.getElementById('daTrSummary').innerHTML =
+    item('Period Revenue', fmtGBP0(pRev)) +
+    item('Period Profit', fmtGBP0(pPft), pPft>=0?'pos':'neg') +
+    item('Avg Margin', avgMargin==null?'—':daPct1(avgMargin)) +
+    item('📈 Growing', fmtNum(counts.Growing), 'pos') +
+    item('📉 Declining', fmtNum(counts.Declining), 'neg') +
+    item('⚠️ Dropped off', fmtNum(counts.Dropped)) +
+    item('🆕 New', fmtNum(counts.New)) +
+    item('Products shown', fmtNum(Math.min(view.length, CAP)));
+  document.getElementById('daTrCount').textContent =
+    `${fmtNum(Math.min(view.length, CAP))}${view.length>CAP?'+':''} of ${fmtNum(all.length)} products · ${dates.length ? dates[0]+' → '+dates[dates.length-1] : 'no days'}`;
 }
 
 // ---- PLS ----
@@ -6961,6 +7164,41 @@ document.getElementById('daPmDir').addEventListener('click', e => {
 document.getElementById('daPmSearch').addEventListener('input', e => {
   DA_PM_Q = (e.target.value || '').toLowerCase().trim();
   renderDailyMovement();
+});
+// Trend Intelligence: its own window over days DA_SKU already holds, so nothing re-computes.
+document.querySelectorAll('.da-tr-q').forEach(b => b.addEventListener('click', () => {
+  DA_TR_DAYS = +b.dataset.days; DA_TR_FROM = ''; DA_TR_TO = '';
+  document.querySelectorAll('.da-tr-q').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderDailyTrends();
+}));
+document.getElementById('daTrApply').addEventListener('click', () => {
+  const f = document.getElementById('daTrFrom').value, t = document.getElementById('daTrTo').value;
+  if(!f && !t){ showBanner('Pick a from and/or to date, or use one of the window buttons.', 'error'); return; }
+  DA_TR_FROM = f; DA_TR_TO = t;
+  document.querySelectorAll('.da-tr-q').forEach(x => x.classList.add('secondary'));
+  renderDailyTrends();
+});
+document.querySelectorAll('.da-tr-f').forEach(b => b.addEventListener('click', () => {
+  DA_TR_FILTER = b.dataset.f;
+  document.querySelectorAll('.da-tr-f').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderDailyTrends();
+}));
+document.querySelectorAll('.da-tr-s').forEach(b => b.addEventListener('click', () => {
+  DA_TR_SORT = b.dataset.s;
+  document.querySelectorAll('.da-tr-s').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderDailyTrends();
+}));
+document.getElementById('daTrDir').addEventListener('click', e => {
+  DA_TR_DESC = !DA_TR_DESC;
+  e.target.textContent = DA_TR_DESC ? '▼ High to Low' : '▲ Low to High';
+  renderDailyTrends();
+});
+document.getElementById('daTrSearch').addEventListener('input', e => {
+  DA_TR_Q = (e.target.value || '').toLowerCase().trim();
+  renderDailyTrends();
 });
 // ---- Cost Manager controls ----
 ['cbAsAt','cbScope','cbSearch','cbPlat','cbFul'].forEach(id =>
