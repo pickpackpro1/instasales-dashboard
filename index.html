@@ -2099,6 +2099,10 @@ function newRow(channel, key, name, id){
   return {channel, key, name: name||'', id: id||key,
     units:0, orders_count:0, revenue_gross:0, refunds:0, revenue:0,
     mkt_fee:0, affiliate:0, shop_ads:0, buying:0, shipping:0, oper:0, ads:0,
+    // eBay only: the regulatory operating fee and the per-order fixed fee, both already
+    // INSIDE mkt_fee. Carried separately so each can be read on its own without being
+    // charged twice.
+    reg_fee:0, fixed_fee:0,
     ad_sales:0, clicks:0, impressions:0, no_cost:false};
 }
 // Shipping and operational cost are charged ONCE PER ORDER (one order = one parcel), not
@@ -2132,7 +2136,9 @@ function finalizeRows(rows){
   return rows;
 }
 function totalsOf(rows){
-  const t = {units:0,orders_count:0,revenue_gross:0,refunds:0,revenue:0,mkt_fee:0,affiliate:0,shop_ads:0,buying:0,shipping:0,oper:0,ads:0,ad_sales:0,clicks:0,impressions:0,total_cost:0,net_profit:0,output_vat:0,revenue_ex:0,input_vat:0,total_cost_ex:0,net_profit_ex:0,net_vat_due:0};
+  // reg_fee and fixed_fee are a BREAKDOWN of mkt_fee, not extra costs - they are summed here
+  // so they can be shown as their own tiles, and are deliberately absent from total_cost.
+  const t = {units:0,orders_count:0,revenue_gross:0,refunds:0,revenue:0,mkt_fee:0,reg_fee:0,fixed_fee:0,affiliate:0,shop_ads:0,buying:0,shipping:0,oper:0,ads:0,ad_sales:0,clicks:0,impressions:0,total_cost:0,net_profit:0,output_vat:0,revenue_ex:0,input_vat:0,total_cost_ex:0,net_profit_ex:0,net_vat_due:0};
   for(const r of rows) for(const k of Object.keys(t)) t[k] += (r[k]||0);
   t.margin_ex = t.revenue_ex ? t.net_profit_ex/t.revenue_ex*100 : 0;
   t.acos = t.ad_sales>0 ? t.ads/t.ad_sales*100 : null;
@@ -2937,6 +2943,10 @@ function computeEbay(){
     if(refundByItem[item]) consumedRefunds.add(item);
     row.ads = a.adFees * scale;
     row.mkt_fee = Math.max(a.sellCosts - a.adFees, 0) * scale;
+    // The report names the regulatory fee outright. It does NOT break out the per-order fixed
+    // fee - eBay reports that inside Final value fees - so fixed_fee stays 0 on this path
+    // rather than being invented; the tile says so when that happens.
+    row.reg_fee = Math.abs(a.fees['Regulatory operating fee'] || 0) * scale;
     row.fee_detail = Object.entries(a.fees).filter(([,v]) => Math.abs(v) > 0.004).map(([l,v]) => [l, v*scale]);
     row.ad_detail = Object.entries(a.adsD).filter(([,v]) => Math.abs(v) > 0.004).map(([l,v]) => [l, v*scale]);
     const e = ebayCostFor(item, row.name);
@@ -2976,9 +2986,10 @@ function computeEbay(){
       // once per ORDER. The final value fee is the big one - leaving it out charged ~0.65%
       // on a sale that really costs ~13%, so these rows looked far more profitable than they are.
       const evRate = (e.referral != null) ? e.referral : EBAY_FVF_PCT;
+      row.reg_fee   = row.revenue_gross * (e.reg != null ? e.reg : EBAY_REG_PCT);
+      row.fixed_fee = (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER) * parcelsOf(row);
       row.mkt_fee = (row.revenue_gross - row.refunds) * (evRate || 0)
-                  + row.revenue_gross * (e.reg != null ? e.reg : EBAY_REG_PCT)
-                  + (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER) * parcelsOf(row);
+                  + row.reg_fee + row.fixed_fee;
     }
     const p2 = pl[item];
     if(p2){ row.ad_sales = p2.sales; row.clicks = Math.round(p2.clicks); row.impressions = Math.round(p2.impressions); }
@@ -4018,6 +4029,14 @@ const KPI_DEFS = {
   operational:{label:'Operational',          card:(t)=>({value:fmtGBP0(t.oper)})},
   affiliate:  {label:'Affiliate Com.',       card:(t)=>({value:fmtGBP0(t.affiliate)})},
   shopads:    {label:'Shop Ads Com.',        card:(t)=>({value:fmtGBP0(t.shop_ads)})},
+  // eBay fee breakdown. Both sit INSIDE Referral / Mkt Fee - they are shown separately, not
+  // added on top, so the sub-line says so rather than letting them read as extra cost.
+  // pence matter here - these are sub-1% fees, so whole-pound rounding would show "£1" for 53p
+  ebayreg:    {label:'Regulatory Fee',       card:(t)=>({value:fmtGBP(t.reg_fee), sub:'eBay · within Mkt Fee'})},
+  ebayfixed:  {label:'Fixed Fee',            card:(t)=>({
+                value: t.fixed_fee > 0 ? fmtGBP(t.fixed_fee) : '—',
+                sub: t.fixed_fee > 0 ? 'eBay · per order · within Mkt Fee'
+                                     : 'inside Final value fees on this report'})},
   ads:        {label:'Ad Spend',             card:(t)=>({value:fmtGBP0(t.ads)})},
   acos:       {label:'ACOS',                 card:(t)=>({value:fmtPct(t.acos)})},
   tacos:      {label:'TACOS',                card:(t)=>({value:fmtPct(t.tacos)})},
@@ -4030,7 +4049,7 @@ const KPI_DEFS = {
   orders:     {label:'Orders',               card:(t)=>({value:fmtNum(t.orders_count)})},
   opex:       {label:'Net after OpEx',       card:(t,c)=>({value:fmtGBP0(t.net_profit_ex-c.opex), sub:`OpEx ${fmtGBP0(c.opex)}/mo` + (c.opexExcluded ? ` · before ${fmtGBP0(c.opexExcluded)}/mo shared` : ''), valueCls:(t.net_profit_ex-c.opex)>=0?'pos':'neg'}), needs:c=>c.opex>0 || c.opexExcluded>0}
 };
-const KPI_ORDER = ['sales','refunds','cogs','referral','shipping','operational','affiliate','shopads','ads','acos','tacos','vat','grossprofit','profit','margin','payouts','units','orders','opex'];
+const KPI_ORDER = ['sales','refunds','cogs','referral','ebayreg','ebayfixed','shipping','operational','affiliate','shopads','ads','acos','tacos','vat','grossprofit','profit','margin','payouts','units','orders','opex'];
 const KPI_DEFAULT = ['sales','refunds','cogs','referral','ads','acos','tacos','vat','profit','margin'];
 function getEnabledKpis(){ const s = loadLS('mcpd_dash_kpis'); return (Array.isArray(s) && s.length) ? s.filter(k=>KPI_DEFS[k]) : KPI_DEFAULT.slice(); }
 function setEnabledKpis(arr){ try{ store.set('mcpd_dash_kpis', JSON.stringify(arr)); }catch(e){} cloudSaveGlobalSettings(); }
