@@ -2019,11 +2019,23 @@ function buildMaster(){
       if(!chan) continue;
       const e = cbAsMasterEntry(costBookAt(id, chan, refDate, fam), chan, rec.name);
       if(!e) continue;
-      e.sku = id; e.asin = fam === 'amazon' ? id : ''; e.pid = id; e.plat = fam;
-      if(fam === 'amazon'){ M.amazon.byAsin[id] = e; }
-      else if(fam === 'ebay'){ M.ebay.byItem[id] = e; }
-      else if(fam === 'shopify'){ M.shopify.bySku[id] = e; }
-      else { M.tiktok.bySku[id] = e; }
+      const map = fam === 'amazon' ? M.amazon.byAsin : fam === 'ebay' ? M.ebay.byItem
+                : fam === 'shopify' ? M.shopify.bySku : M.tiktok.bySku;
+      const prior = map[id];
+      // The book supplies COSTS, not identity. Overwriting the whole row renamed every seller
+      // SKU to its ASIN and stamped the family ('amazon') over the sheet's account, so both
+      // Amazon accounts collapsed into Vemart and the Vefive filter came back empty. Keep the
+      // sheet's sku / asin / pid / platform, and its name when the book has none.
+      if(prior){
+        e.sku  = prior.sku  || id;
+        e.asin = prior.asin || (fam === 'amazon' ? id : '');
+        e.pid  = prior.pid  || id;
+        e.plat = prior.plat || fam;
+        e.name = e.name || prior.name || '';
+      } else {
+        e.sku = id; e.asin = fam === 'amazon' ? id : ''; e.pid = id; e.plat = fam;
+      }
+      map[id] = e;
       overlaid++;
     }
     M.costBookCount = overlaid;
