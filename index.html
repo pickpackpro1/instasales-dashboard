@@ -1158,6 +1158,8 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <label><input type="checkbox" class="vat-cost" data-c="affiliate" checked> Affiliate commission</label>
     <label><input type="checkbox" class="vat-cost" data-c="shop_ads" checked> Shop Ads commission</label>
     <div style="color:var(--muted);font-size:11px;margin:3px 0 0 2px">TikTok's referral, affiliate and Shop Ads commissions are excluded automatically &mdash; they arrive net of VAT, so there is nothing to reclaim. TikTok ad spend is not excluded.</div>
+    <div class="gl" style="margin-top:10px">Figures reported ex-VAT (gross up to the real cash cost)</div>
+    <label><input type="checkbox" class="vat-gross" data-c="ads" checked> Ad spend <span style="color:var(--muted);font-size:11px">&mdash; ad reports state spend net; &times;1.2 gives what actually left the account</span></label>
     <div class="gl" style="margin-top:10px">Reclaim VAT on ex-VAT fees? (leave OFF if fees are billed without VAT)</div>
     <label><input type="checkbox" class="vat-fee" data-c="mkt_fee"> Referral / Marketplace fees</label>
     <label><input type="checkbox" class="vat-fee" data-c="ads"> Ads spend</label>
@@ -1354,7 +1356,10 @@ const STATE = {
     // is no VAT portion sitting inside them to reclaim - extracting one would invent a 1/6th
     // discount on every TikTok fee. Amazon and eBay fees carry VAT, so they are not listed.
     // TikTok AD SPEND is not here: that is invoiced with VAT like any other advertising.
-    noVatByChannel:{tiktok:['mkt_fee','affiliate','shop_ads']}},
+    noVatByChannel:{tiktok:['mkt_fee','affiliate','shop_ads']},
+    // Source figures that are stated EX-VAT and must be grossed up to the real cash cost
+    // before anything uses them. Ad reports are net; the marketplace fee reports are not.
+    exVatSource:{ads:true}},
   ttRate: 0.09, amzRef: 0.15, amzRefund: 0, shopFee: 0.03,
   dateFrom:'', dateTo:'',
   chFilter: 'all',
@@ -2138,6 +2143,15 @@ function finalizeRows(rows){
   const V = STATE.vat, vDiv = 1 + V.rate;
   const vatOf = g => g - g/vDiv;
   for(const r of rows){
+    // Ad spend arrives EX-VAT from the ad reports - Amazon and TikTok bill it net and add VAT
+    // on the invoice. The cash actually leaving the account is the grossed-up figure, so gross
+    // it up here BEFORE anything reads it; the VAT pass below then reclaims that VAT back out.
+    // Dividing the net figure by 1.2 (the previous behaviour) understated both spend and cost.
+    // Guarded so a second finalizeRows() pass over the same row cannot compound it.
+    if(!r.__grossedUp){
+      for(const k of COST_KEYS) if((V.exVatSource||{})[k] && r[k]) r[k] *= vDiv;
+      r.__grossedUp = true;
+    }
     r.revenue = r.revenue_gross - r.refunds;
     r.total_cost = r.mkt_fee + r.affiliate + r.shop_ads + r.buying + r.shipping + r.oper + r.ads;
     r.net_profit = r.revenue - r.total_cost;
@@ -7115,6 +7129,10 @@ document.getElementById('vatSlider').addEventListener('input', e => { STATE.vat.
 document.getElementById('revIncVat').addEventListener('change', e => { STATE.vat.revIncVAT = e.target.checked; refresh(); });
 document.querySelectorAll('.vat-cost').forEach(cb => cb.addEventListener('change', e => { STATE.vat.costsWithVAT[e.target.dataset.c] = e.target.checked; refresh(); }));
 document.querySelectorAll('.vat-fee').forEach(cb => cb.addEventListener('change', e => { STATE.vat.feesExVat[e.target.dataset.c] = e.target.checked; refresh(); }));
+document.querySelectorAll('.vat-gross').forEach(cb => cb.addEventListener('change', e => {
+  (STATE.vat.exVatSource = STATE.vat.exVatSource || {})[e.target.dataset.c] = e.target.checked;
+  recompute(); refresh();   // rebuild rows: the gross-up happens as they are finalized
+}));
 document.getElementById('ttRateSlider').addEventListener('input', e => { STATE.ttRate = parseFloat(e.target.value)/100; document.getElementById('ttRateLabel').textContent = (STATE.ttRate*100).toFixed(1)+'%'; refresh(); });
 document.getElementById('amzRefSlider').addEventListener('input', e => { STATE.amzRef = parseFloat(e.target.value)/100; document.getElementById('amzRefLabel').textContent = (STATE.amzRef*100).toFixed(1)+'%'; refresh(); });
 document.getElementById('amzRefundSlider').addEventListener('input', e => { STATE.amzRefund = parseFloat(e.target.value)/100; document.getElementById('amzRefundLabel').textContent = (STATE.amzRefund*100).toFixed(1)+'%'; refresh(); });
