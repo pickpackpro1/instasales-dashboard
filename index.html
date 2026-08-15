@@ -1153,6 +1153,11 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <label><input type="checkbox" class="vat-cost" data-c="buying" checked> Buying (COGS)</label>
     <label><input type="checkbox" class="vat-cost" data-c="oper" checked> Operational</label>
     <label><input type="checkbox" class="vat-cost" data-c="shipping" checked> Shipping</label>
+    <label><input type="checkbox" class="vat-cost" data-c="mkt_fee" checked> Referral / Marketplace fees <span style="color:var(--muted);font-size:11px">(incl. eBay fixed &amp; regulatory)</span></label>
+    <label><input type="checkbox" class="vat-cost" data-c="ads" checked> Ads spend</label>
+    <label><input type="checkbox" class="vat-cost" data-c="affiliate" checked> Affiliate commission</label>
+    <label><input type="checkbox" class="vat-cost" data-c="shop_ads" checked> Shop Ads commission</label>
+    <div style="color:var(--muted);font-size:11px;margin:3px 0 0 2px">TikTok's referral, affiliate and Shop Ads commissions are excluded automatically &mdash; they arrive net of VAT, so there is nothing to reclaim. TikTok ad spend is not excluded.</div>
     <div class="gl" style="margin-top:10px">Reclaim VAT on ex-VAT fees? (leave OFF if fees are billed without VAT)</div>
     <label><input type="checkbox" class="vat-fee" data-c="mkt_fee"> Referral / Marketplace fees</label>
     <label><input type="checkbox" class="vat-fee" data-c="ads"> Ads spend</label>
@@ -1343,8 +1348,13 @@ const STATE = {
   //   on top (Option 2). Default OFF = Option 1: fees are ex-VAT and simply omitted from the VAT
   //   calc (no reclaim) - profit is identical either way, only the VAT-due figure differs.
   vat: {rate:0.20, revIncVAT:true,
-    costsWithVAT:{buying:true,oper:true,shipping:true,mkt_fee:false,affiliate:false,shop_ads:false,ads:false},
-    feesExVat:{mkt_fee:false,affiliate:false,shop_ads:false,ads:false}},
+    costsWithVAT:{buying:true,oper:true,shipping:true,mkt_fee:true,affiliate:true,shop_ads:true,ads:true},
+    feesExVat:{mkt_fee:false,affiliate:false,shop_ads:false,ads:false},
+    // Per-channel exceptions. TikTok's commission figures already arrive net of VAT, so there
+    // is no VAT portion sitting inside them to reclaim - extracting one would invent a 1/6th
+    // discount on every TikTok fee. Amazon and eBay fees carry VAT, so they are not listed.
+    // TikTok AD SPEND is not here: that is invoiced with VAT like any other advertising.
+    noVatByChannel:{tiktok:['mkt_fee','affiliate','shop_ads']}},
   ttRate: 0.09, amzRef: 0.15, amzRefund: 0, shopFee: 0.03,
   dateFrom:'', dateTo:'',
   chFilter: 'all',
@@ -1391,6 +1401,21 @@ const histHasData = () => HIST.snapshots.length > 0 || Object.keys(HIST.daily).l
 
 // ================= colors =================
 const COST_KEYS  = ['mkt_fee','affiliate','buying','shipping','oper','ads','shop_ads'];
+// Is this cost VAT-INCLUSIVE on this channel? Global setting, minus any per-channel exception.
+// Everything that reads costsWithVAT for a KNOWN channel must go through here, or TikTok's
+// commissions get a VAT reclaim they never paid.
+function vatIncFor(ch, k){
+  const V = STATE.vat;
+  if(!V.costsWithVAT[k]) return false;
+  const skip = (V.noVatByChannel || {})[ch];
+  return !(skip && skip.indexOf(k) >= 0);
+}
+function vatFeeExFor(ch, k){
+  const V = STATE.vat;
+  if(!(V.feesExVat || {})[k]) return false;
+  const skip = (V.noVatByChannel || {})[ch];
+  return !(skip && skip.indexOf(k) >= 0);
+}
 // eBay's standard charges, applied whenever the master sheet doesn't override them per
 // product (regulatory_pct / fixed_fee_per_unit). The fixed fee is charged ONCE PER ORDER,
 // not per unit. Note these are only ESTIMATES used when no Listings Sales Report row exists
@@ -2118,11 +2143,16 @@ function finalizeRows(rows){
     r.net_profit = r.revenue - r.total_cost;
     r.output_vat = V.revIncVAT ? vatOf(r.revenue) : 0;
     r.revenue_ex = r.revenue - r.output_vat;
-    const fx = V.feesExVat || {};
     let costVat = 0, feeVat = 0;
+    r.vat_rec = {};                                    // per-cost reclaim, so the P&L can itemise it
     for(const k of COST_KEYS){
-      if(V.costsWithVAT[k]) costVat += vatOf(r[k]);   // VAT-INCLUSIVE cost -> reclaim the VAT portion (also lowers ex-VAT cost)
-      else if(fx[k]) feeVat += r[k] * V.rate;          // VAT-EXCLUSIVE fee (referral/ads) -> VAT charged on top is reclaimed (VAT return only)
+      if(vatIncFor(r.channel, k)){                     // VAT-INCLUSIVE cost -> reclaim the VAT portion (also lowers ex-VAT cost)
+        const v = vatOf(r[k]);
+        if(v){ costVat += v; r.vat_rec[k] = (r.vat_rec[k]||0) + v; }
+      } else if(vatFeeExFor(r.channel, k)){            // VAT-EXCLUSIVE fee -> VAT charged on top is reclaimed (VAT return only)
+        const v = r[k] * V.rate;
+        if(v){ feeVat += v; r.vat_rec[k] = (r.vat_rec[k]||0) + v; }
+      }
     }
     r.input_vat = costVat + feeVat;
     r.total_cost_ex = r.total_cost - costVat;          // ex-VAT fees are already net, so only the inc-VAT reclaim lowers the ex-VAT cost
@@ -2140,6 +2170,9 @@ function totalsOf(rows){
   // so they can be shown as their own tiles, and are deliberately absent from total_cost.
   const t = {units:0,orders_count:0,revenue_gross:0,refunds:0,revenue:0,mkt_fee:0,reg_fee:0,fixed_fee:0,affiliate:0,shop_ads:0,buying:0,shipping:0,oper:0,ads:0,ad_sales:0,clicks:0,impressions:0,total_cost:0,net_profit:0,output_vat:0,revenue_ex:0,input_vat:0,total_cost_ex:0,net_profit_ex:0,net_vat_due:0};
   for(const r of rows) for(const k of Object.keys(t)) t[k] += (r[k]||0);
+  // per-cost VAT reclaim, kept out of the numeric loop above since it is a nested object
+  t.vat_rec = {};
+  for(const r of rows) if(r.vat_rec) for(const k in r.vat_rec) t.vat_rec[k] = (t.vat_rec[k]||0) + r.vat_rec[k];
   t.margin_ex = t.revenue_ex ? t.net_profit_ex/t.revenue_ex*100 : 0;
   t.acos = t.ad_sales>0 ? t.ads/t.ad_sales*100 : null;
   t.tacos = t.revenue>0 ? t.ads/t.revenue*100 : null;
@@ -3949,8 +3982,20 @@ function openPlDrawer(from, to, title){
   const V = STATE.vat, vd = 1 + V.rate, vatOf = g => g - g/vd;
   const vsub = (l,v) => `<div class="pls-row sub"><span>${l}</span><span class="amt" style="color:${v<0?'var(--red)':'var(--green)'}">${v<0?'-':'+'}${fmtGBP(Math.abs(v))}</span></div>`;
   const vatLines = [vsub('Output VAT charged on sales', -t.output_vat)];
-  [['buying','Buying (COGS)'],['oper','Operational'],['shipping','Shipping']].forEach(([k,lbl]) => { if(V.costsWithVAT[k] && t[k]>0.004) vatLines.push(vsub('VAT reclaimed on '+lbl, vatOf(t[k]))); });
-  [['mkt_fee','Referral / Marketplace Fee'],['ads','Ad Spend'],['affiliate','Affiliate Com.'],['shop_ads','Shop Ads Com.']].forEach(([k,lbl]) => { if((V.feesExVat||{})[k] && t[k]>0.004) vatLines.push(vsub('VAT reclaimable on '+lbl+' (ex-VAT)', t[k]*V.rate)); });
+  // Itemise from what was ACTUALLY reclaimed row by row, not from the global settings - a
+  // channel exception (TikTok's commissions) means the reclaim is less than rate x total, and
+  // recomputing from totals here would show a bigger figure than the VAT due reflects.
+  const REC_LBL = {buying:'Buying (COGS)', oper:'Operational', shipping:'Shipping',
+    mkt_fee:'Referral / Marketplace Fee', ads:'Ad Spend', affiliate:'Affiliate Com.', shop_ads:'Shop Ads Com.'};
+  for(const k of ['buying','oper','shipping','mkt_fee','ads','affiliate','shop_ads']){
+    const v = (t.vat_rec || {})[k] || 0;
+    if(v > 0.004) vatLines.push(vsub('VAT reclaimed on ' + REC_LBL[k], v));
+  }
+  {
+    const ex = (STATE.vat.noVatByChannel || {}).tiktok;
+    if(ex && ex.length && (t.mkt_fee > 0.004 || t.affiliate > 0.004 || t.shop_ads > 0.004))
+      vatLines.push(`<div class="pls-row sub" style="color:var(--muted);font-size:11px"><span>TikTok commissions arrive net of VAT — nothing to reclaim on them</span><span></span></div>`);
+  }
   const vatDueColor = t.net_vat_due>=0 ? 'var(--red)' : 'var(--green)';
   const vatBlock =
       `<div class="pls-row" id="plsVatHead" style="cursor:pointer"><span id="plsVatLabel">▸ VAT / Tax Liability</span>${money(-t.net_vat_due, t.net_vat_due>=0?'neg':'pos')}</div>`
@@ -5886,7 +5931,9 @@ function renderPLS(){
   const opexCh = ch => OPEX.filter(o=>o.ch===ch).reduce((a,o)=>a+o.amt,0);
   const opexAll = OPEX.filter(o=>o.ch==='all').reduce((a,o)=>a+o.amt,0);
   const V = STATE.vat, vDiv = 1+V.rate;
-  const exFor = (t,k) => V.costsWithVAT[k] ? t[k]/vDiv : t[k];
+  // per CHANNEL: TikTok's commissions carry no VAT to strip, so the ex-VAT line for them
+  // is the fee itself, not the fee over 1.2
+  const exFor = (t,c,k) => vatIncFor(c,k) ? t[k]/vDiv : t[k];
   const head = `<tr><th>Line</th>${chans.map(c=>`<th class="num">${CH_NAME[c]}</th>`).join('')}<th class="num">Total</th></tr>`;
   const row = (label, fn, opts={}) => {
     const vals = chans.map(c => fn(T[c], c));
@@ -5901,14 +5948,14 @@ function renderPLS(){
     row('− Refunds', t=>-t.refunds),
     row('− Output VAT', t=>-t.output_vat),
     row('= Revenue (Ex VAT)', t=>t.revenue_ex, {bold:true}),
-    row('− Marketplace fees', t=>-exFor(t,'mkt_fee'), {indent:true}),
-    row('− Affiliate commission', t=>-exFor(t,'affiliate'), {indent:true}),
-    row('− Shop Ads commission', t=>-exFor(t,'shop_ads'), {indent:true}),
-    row('− Buying (COGS)', t=>-exFor(t,'buying'), {indent:true}),
-    row('− Shipping', t=>-exFor(t,'shipping'), {indent:true}),
-    row('− Operational', t=>-exFor(t,'oper'), {indent:true}),
-    row('= Gross Profit before ads', t=>t.revenue_ex - COST_KEYS.filter(k=>k!=='ads').reduce((a,k)=>a+exFor(t,k),0), {bold:true, signed:true}),
-    row('− Ad spend', t=>-exFor(t,'ads'), {indent:true}),
+    row('− Marketplace fees', (t,c)=>-exFor(t,c,'mkt_fee'), {indent:true}),
+    row('− Affiliate commission', (t,c)=>-exFor(t,c,'affiliate'), {indent:true}),
+    row('− Shop Ads commission', (t,c)=>-exFor(t,c,'shop_ads'), {indent:true}),
+    row('− Buying (COGS)', (t,c)=>-exFor(t,c,'buying'), {indent:true}),
+    row('− Shipping', (t,c)=>-exFor(t,c,'shipping'), {indent:true}),
+    row('− Operational', (t,c)=>-exFor(t,c,'oper'), {indent:true}),
+    row('= Gross Profit before ads', (t,c)=>t.revenue_ex - COST_KEYS.filter(k=>k!=='ads').reduce((a,k)=>a+exFor(t,c,k),0), {bold:true, signed:true}),
+    row('− Ad spend', (t,c)=>-exFor(t,c,'ads'), {indent:true}),
     row('= Net Profit (Ex VAT)', t=>t.net_profit_ex, {bold:true, signed:true}),
     row('− OpEx (channel)', (t,c)=>-opexCh(c), {indent:true}),
   ];
@@ -6010,8 +6057,8 @@ function renderProducts(){
     let fee = P * rate;
     if(ck === 'tiktok') fee += P * ((e.aff != null ? e.aff : 0.15) + (e.shopads != null ? e.shopads : 0.02));
     if(ck === 'ebay')   fee += P * (e.reg != null ? e.reg : EBAY_REG_PCT) + (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER);
-    fee *= (V.costsWithVAT.mkt_fee ? 1/vDiv : 1);
-    const cEx = (v, k) => V.costsWithVAT[k] ? v/vDiv : v;
+    fee *= (vatIncFor(ck, 'mkt_fee') ? 1/vDiv : 1);
+    const cEx = (v, k) => vatIncFor(ck, k) ? v/vDiv : v;
     const buyEx = cEx(e.buying, 'buying');
     const costs = buyEx + cEx(e.oper, 'oper') + cEx(e.shipping, 'shipping');
     const profit = revEx - fee - costs;
@@ -6119,7 +6166,7 @@ function breakevenPrice(r){
   if(!r.units) return null;
   const V = STATE.vat, vDiv = 1+V.rate;
   const feeRate = (r.revenue_gross - r.refunds) > 0 ? r.mkt_fee/(r.revenue_gross - r.refunds) : 0;
-  const otherCostEx = COST_KEYS.filter(k=>k!=='mkt_fee').reduce((a,k)=> a + (V.costsWithVAT[k] ? r[k]/vDiv : r[k]), 0)/r.units;
+  const otherCostEx = COST_KEYS.filter(k=>k!=='mkt_fee').reduce((a,k)=> a + (vatIncFor(r.channel,k) ? r[k]/vDiv : r[k]), 0)/r.units;
   const denom = (V.revIncVAT ? 1/vDiv : 1) - feeRate;
   return denom > 0 ? otherCostEx/denom : null;
 }
@@ -6274,8 +6321,8 @@ function skuRowHTML(r, i, opt){
   const V = STATE.vat, vDiv = 1 + V.rate, vatOf = g => g - g/vDiv;
   const taxDetail = nz([
     ['Output VAT on sales', -r.output_vat],
-    ...COST_KEYS.filter(k => V.costsWithVAT[k]).map(k => [`VAT reclaimed on ${COST_LBL[k]}`, vatOf(r[k])]),
-    ...COST_KEYS.filter(k => (V.feesExVat||{})[k]).map(k => [`VAT reclaimed on ${COST_LBL[k]} (ex-VAT fee)`, r[k]*V.rate])
+    // straight from what this row actually reclaimed, so a channel exception shows correctly
+    ...COST_KEYS.filter(k => (r.vat_rec||{})[k]).map(k => [`VAT reclaimed on ${COST_LBL[k]}`, r.vat_rec[k]])
   ]);
   const expLine = (sign, label, val, valColor, items, bold) => {
     const has = items && items.length;
@@ -6582,7 +6629,7 @@ function renderEconomics(){
   const price = r.revenue_gross/u;
   const V = STATE.vat, vDiv = 1+V.rate;
   const feeRate = (r.revenue_gross - r.refunds) > 0 ? r.mkt_fee/(r.revenue_gross - r.refunds) : 0;
-  const otherCostEx = COST_KEYS.filter(k=>k!=='mkt_fee').reduce((a,k)=> a + (V.costsWithVAT[k] ? r[k]/vDiv : r[k]), 0)/u;
+  const otherCostEx = COST_KEYS.filter(k=>k!=='mkt_fee').reduce((a,k)=> a + (vatIncFor(r.channel,k) ? r[k]/vDiv : r[k]), 0)/u;
   const denom = (V.revIncVAT ? 1/vDiv : 1) - feeRate;
   const breakeven = denom > 0 ? otherCostEx/denom : null;
   const lines = [
