@@ -1157,9 +1157,9 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <label><input type="checkbox" class="vat-cost" data-c="ads" checked> Ads spend</label>
     <label><input type="checkbox" class="vat-cost" data-c="affiliate" checked> Affiliate commission</label>
     <label><input type="checkbox" class="vat-cost" data-c="shop_ads" checked> Shop Ads commission</label>
-    <div style="color:var(--muted);font-size:11px;margin:3px 0 0 2px">TikTok's referral, affiliate and Shop Ads commissions are excluded automatically &mdash; they arrive net of VAT, so there is nothing to reclaim. TikTok ad spend is not excluded.</div>
+    <div style="color:var(--muted);font-size:11px;margin:3px 0 0 2px"><b>TikTok is excluded from all of this automatically</b> &mdash; its commissions and its ad spend arrive net of VAT, so there is nothing to reclaim and nothing to gross up. These settings apply to Amazon (Vemart &amp; Vefive), eBay and Shopify.</div>
     <div class="gl" style="margin-top:10px">Figures reported ex-VAT (gross up to the real cash cost)</div>
-    <label><input type="checkbox" class="vat-gross" data-c="ads" checked> Ad spend <span style="color:var(--muted);font-size:11px">&mdash; ad reports state spend net; &times;1.2 gives what actually left the account</span></label>
+    <label><input type="checkbox" class="vat-gross" data-c="ads" checked> Ad spend <span style="color:var(--muted);font-size:11px">&mdash; ad reports state spend net; &times;1.2 gives what actually left the account (Amazon &amp; eBay only)</span></label>
     <div class="gl" style="margin-top:10px">Reclaim VAT on ex-VAT fees? (leave OFF if fees are billed without VAT)</div>
     <label><input type="checkbox" class="vat-fee" data-c="mkt_fee"> Referral / Marketplace fees</label>
     <label><input type="checkbox" class="vat-fee" data-c="ads"> Ads spend</label>
@@ -1356,7 +1356,10 @@ const STATE = {
     // is no VAT portion sitting inside them to reclaim - extracting one would invent a 1/6th
     // discount on every TikTok fee. Amazon and eBay fees carry VAT, so they are not listed.
     // TikTok AD SPEND is not here: that is invoiced with VAT like any other advertising.
-    noVatByChannel:{tiktok:['mkt_fee','affiliate','shop_ads']},
+    // TikTok is excluded from VAT treatment entirely - its commissions AND its ad spend arrive
+    // net of VAT with nothing to reclaim. Amazon (both accounts), eBay and Shopify get the
+    // full treatment: fees and ads are handled exactly like COGS.
+    noVatByChannel:{tiktok:['mkt_fee','affiliate','shop_ads','ads']},
     // Source figures that are stated EX-VAT and must be grossed up to the real cash cost
     // before anything uses them. Ad reports are net; the marketplace fee reports are not.
     exVatSource:{ads:true}},
@@ -1418,6 +1421,15 @@ function vatIncFor(ch, k){
 function vatFeeExFor(ch, k){
   const V = STATE.vat;
   if(!(V.feesExVat || {})[k]) return false;
+  const skip = (V.noVatByChannel || {})[ch];
+  return !(skip && skip.indexOf(k) >= 0);
+}
+// Should this figure be grossed up to its VAT-inclusive cash value? Only where the source is
+// stated ex-VAT AND the channel is not excluded - grossing up a TikTok figure that carries no
+// VAT would invent a 20% cost that was never charged.
+function vatGrossUpFor(ch, k){
+  const V = STATE.vat;
+  if(!(V.exVatSource || {})[k]) return false;
   const skip = (V.noVatByChannel || {})[ch];
   return !(skip && skip.indexOf(k) >= 0);
 }
@@ -2155,7 +2167,7 @@ function finalizeRows(rows){
     // Dividing the net figure by 1.2 (the previous behaviour) understated both spend and cost.
     // Guarded so a second finalizeRows() pass over the same row cannot compound it.
     if(!r.__grossedUp){
-      for(const k of COST_KEYS) if((V.exVatSource||{})[k] && r[k]) r[k] *= vDiv;
+      for(const k of COST_KEYS) if(r[k] && vatGrossUpFor(r.channel, k)) r[k] *= vDiv;
       r.__grossedUp = true;
     }
     r.revenue = r.revenue_gross - r.refunds;
