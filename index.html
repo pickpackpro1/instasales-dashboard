@@ -1159,7 +1159,8 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <label><input type="checkbox" class="vat-cost" data-c="shop_ads" checked> Shop Ads commission</label>
     <div style="color:var(--muted);font-size:11px;margin:3px 0 0 2px"><b>TikTok is excluded from all of this automatically</b> &mdash; its commissions and its ad spend arrive net of VAT, so there is nothing to reclaim and nothing to gross up. These settings apply to Amazon (Vemart &amp; Vefive), eBay and Shopify.</div>
     <div class="gl" style="margin-top:10px">Figures reported ex-VAT (gross up to the real cash cost)</div>
-    <label><input type="checkbox" class="vat-gross" data-c="ads" checked> Ad spend <span style="color:var(--muted);font-size:11px">&mdash; ad reports state spend net; &times;1.2 gives what actually left the account (Amazon &amp; eBay only)</span></label>
+    <label><input type="checkbox" class="vat-gross" data-c="ads" checked> Ad spend <span style="color:var(--muted);font-size:11px">&mdash; ad reports state spend net; &times;1.2 gives what actually left the account</span></label>
+    <label><input type="checkbox" class="vat-gross" data-c="mkt_fee" checked> Referral / Marketplace fees <span style="color:var(--muted);font-size:11px">&mdash; reports state the fee net; Amazon &amp; eBay add VAT on the invoice</span></label>
     <div class="gl" style="margin-top:10px">Reclaim VAT on ex-VAT fees? (leave OFF if fees are billed without VAT)</div>
     <label><input type="checkbox" class="vat-fee" data-c="mkt_fee"> Referral / Marketplace fees</label>
     <label><input type="checkbox" class="vat-fee" data-c="ads"> Ads spend</label>
@@ -1360,9 +1361,12 @@ const STATE = {
     // net of VAT with nothing to reclaim. Amazon (both accounts), eBay and Shopify get the
     // full treatment: fees and ads are handled exactly like COGS.
     noVatByChannel:{tiktok:['mkt_fee','affiliate','shop_ads','ads']},
-    // Source figures that are stated EX-VAT and must be grossed up to the real cash cost
-    // before anything uses them. Ad reports are net; the marketplace fee reports are not.
-    exVatSource:{ads:true}},
+    // Source figures stated EX-VAT, grossed up to the real cash cost before anything uses
+    // them; the VAT pass below then reclaims that VAT back out, so the ex-VAT cost lands on
+    // the figure the report stated. Confirmed against Amazon and eBay fee invoices: both
+    // charge VAT on referral and advertising, and both are reclaimable.
+    // Per-channel exclusions in noVatByChannel still apply, so TikTok is untouched.
+    exVatSource:{ads:true, mkt_fee:true}},
   ttRate: 0.09, amzRef: 0.15, amzRefund: 0, shopFee: 0.03,
   dateFrom:'', dateTo:'',
   chFilter: 'all',
