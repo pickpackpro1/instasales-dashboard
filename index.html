@@ -1426,9 +1426,15 @@ function vatFeeExFor(ch, k){
 // not per unit. Note these are only ESTIMATES used when no Listings Sales Report row exists
 // for an item - that report states the real fees (final value + regulatory + the fixed fee)
 // and is always preferred, so these are never added on top of it.
-const EBAY_REG_PCT = 0.0035;          // 0.35% regulatory operating fee
+// Measured from the real Listings Sales Reports (8 days to 14 Jul 2026, £5,897 of sales) rather
+// than the published headline rates, which did not match what eBay actually charged:
+//   regulatory  0.4408% of gross, dead steady day to day  (was assumed 0.35%)
+//   final value 10.87%  of gross, blended across the range (was assumed 13%)
+// Both are FALLBACKS only: a per-product rate in the master sheet wins, and when the Listings
+// report is loaded eBay's own figures replace the estimate entirely.
+const EBAY_REG_PCT = 0.0044;          // 0.44% regulatory operating fee
 const EBAY_FIXED_PER_ORDER = 0.30;    // £0.30 fixed fee per order
-const EBAY_FVF_PCT = 0.13;            // final value fee, only when the master has no referral %
+const EBAY_FVF_PCT = 0.1087;          // final value fee, only when the master has no referral %
 const COST_LBL   = {mkt_fee:'Marketplace Fee', affiliate:'Affiliate Com.', buying:'Buying (COGS)', shipping:'Shipping', oper:'Operational', ads:'Ads Spend', shop_ads:'Shop Ads Com.'};
 const COST_COL   = {mkt_fee:'#2a78d6', affiliate:'#1baf7a', buying:'#eda100', shipping:'#008300', oper:'#4a3aa7', ads:'#e34948', shop_ads:'#e87ba4'};
 const CH_COL     = {tiktok:'#e87ba4', amazon:'#eb6834', amazon2:'#f5a623', ebay:'#2a78d6', shopify:'#1baf7a'};
@@ -3030,8 +3036,8 @@ function computeEbay(){
       row.oper = parcelsOf(row) * e.oper;
       // No Listings-report fee breakdown for this item, so estimate eBay's charges:
       // final value fee (the master's referral %) + regulatory % of revenue + the fixed fee
-      // once per ORDER. The final value fee is the big one - leaving it out charged ~0.65%
-      // on a sale that really costs ~13%, so these rows looked far more profitable than they are.
+      // once per ORDER. The final value fee is the big one - leaving it out charged ~0.8%
+      // on a sale that really costs ~11%, so these rows looked far more profitable than they are.
       const evRate = (e.referral != null) ? e.referral : EBAY_FVF_PCT;
       row.reg_fee   = row.revenue_gross * (e.reg != null ? e.reg : EBAY_REG_PCT);
       row.fixed_fee = (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER) * parcelsOf(row);
