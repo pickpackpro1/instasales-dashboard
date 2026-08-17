@@ -1861,13 +1861,14 @@ function fileDaySet(type, rows){
   }
   return set;
 }
-// Types that legitimately carry no dates at all - a period total or a reference sheet. They can
-// never be "missing for a day", so they are reported apart rather than as a red cross.
-const UNDATED_TYPES = new Set(['master','sku_map','amz_ads','amz2_ads','tt_ads','ebay_pl','dc_stock_level','dc_stock_txn']);
+// Whether a type is dated is decided by the FILE, never assumed: the daily ad sheets, eBay
+// Sale sheets and PPC reports are all stamped with a day from their filename, so hardcoding
+// them as undated hid a real "did I upload today's ads?" answer behind a grey dash. A file
+// with no dates in it still falls through to the undated branch on its own.
 function coverageFor(day){
-  const out = {};   // type -> {days:Set, files:[{name,n,hit}]}
+  const out = {};   // type -> {files:[{name,n,hit,span}], hit, anyDates}
   for(const [type, files] of Object.entries(STATE.fileRows || {})){
-    const e = out[type] = {files:[], hit:false, undated:UNDATED_TYPES.has(type), anyDates:false};
+    const e = out[type] = {files:[], hit:false, anyDates:false};
     for(const [name, rows] of Object.entries(files)){
       const set = fileDaySet(type, rows);
       if(set.size) e.anyDates = true;
@@ -1908,7 +1909,7 @@ function renderCoverage(){
       const label = TYPE_LABEL[t] || t;
       if(!c) { absent++; return `<div class="cov-row cov-none"><span class="cov-ic">○</span>
         <span class="cov-lbl">${esc(label)}</span><span class="cov-note">not loaded at all</span></div>`; }
-      if(c.undated || !c.anyDates){
+      if(!c.anyDates){
         undated++;
         const n = c.files.reduce((a,f)=>a+f.n,0);
         return `<div class="cov-row cov-undated"><span class="cov-ic">–</span>
