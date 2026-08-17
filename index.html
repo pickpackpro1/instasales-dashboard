@@ -240,6 +240,20 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .kv{font-size:11.5px;color:var(--muted);margin-top:2px}
 .kv b{color:var(--text)}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:800;margin:3px 4px 0 0}
+/* WorkSpace day-coverage check: one column per upload zone, so it reads like the drop zones
+   above it rather than as one long list. */
+.cov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-top:4px}
+.cov-zone{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card,#fff)}
+.cov-zone-t{font-weight:800;font-size:12px;margin-bottom:6px;color:var(--muted)}
+.cov-row{display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px;line-height:1.45}
+.cov-ic{width:14px;flex-shrink:0;font-weight:800;text-align:center}
+.cov-lbl{font-weight:600;flex-shrink:0}
+.cov-note{color:var(--muted);font-size:11px;word-break:break-word}
+.cov-ok .cov-ic{color:var(--green)}
+.cov-miss .cov-ic{color:var(--red)}
+.cov-miss .cov-lbl{color:var(--red)}
+.cov-none .cov-ic,.cov-undated .cov-ic{color:var(--muted)}
+.cov-none .cov-lbl{color:var(--muted)}
 /* Daily Analysis: section headings inside the written summary, and the footer strip under the
    product-movement table. */
 .sec-head{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
@@ -1081,6 +1095,22 @@ input[type=range]{accent-color:var(--accent);width:150px}
     </div>
     <div class="card" style="margin-top:14px">
       <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span>📅 Check a day's reports</h3>
+        <input type="date" id="wsCoverDate" style="width:160px">
+        <button class="btn secondary" id="wsCoverPrev" title="Previous day">‹</button>
+        <button class="btn secondary" id="wsCoverNext" title="Next day">›</button>
+        <span style="flex:1"></span>
+        <div id="wsCoverSum"></div>
+      </div>
+      <div class="sub-title">
+        Pick a date to see which reports actually contain data for it. This reads <b>inside</b> each file rather
+        than when it was uploaded, so a file dropped today that holds last week's data is judged on the week it
+        covers. Worth a look before trusting a day's profit.
+      </div>
+      <div id="wsCoverBody" class="cov-grid"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="toolbar">
         <h3 style="margin:0"><span class="dot" style="background:var(--green)"></span>Loaded Reports</h3>
         <button class="btn danger" id="filesClear">Remove all files</button>
       </div>
@@ -1816,7 +1846,106 @@ function fileMeta(type, rows){
   else if(type==='shop_orders'){ for(const r of rows){ if(r['Total'] != null && String(r['Total']).trim() !== '') value += cleanMoney(r['Total']); } vl='Rev '; }
   return {dates, value, vl};
 }
+// ---- Report coverage for one day ----
+// Answers "have I uploaded everything for this date?" by asking each loaded file which days it
+// actually contains, rather than when it was uploaded - a file dropped today can hold last
+// week's data, and that is the thing worth checking before trusting a day's P&L.
+// Two kinds of file: dated rows carry __day (daily Amazon/eBay exports, dated from the sheet
+// or filename), and order-level exports carry a real date column (FILE_DATE_COLS).
+function fileDaySet(type, rows){
+  const set = new Set();
+  const cols = FILE_DATE_COLS[type];
+  for(const r of rows){
+    if(r.__day){ set.add(r.__day); continue; }
+    if(cols){ for(const c of cols){ const d = parseDate(r[c]); if(d){ set.add(d); break; } } }
+  }
+  return set;
+}
+// Types that legitimately carry no dates at all - a period total or a reference sheet. They can
+// never be "missing for a day", so they are reported apart rather than as a red cross.
+const UNDATED_TYPES = new Set(['master','sku_map','amz_ads','amz2_ads','tt_ads','ebay_pl','dc_stock_level','dc_stock_txn']);
+function coverageFor(day){
+  const out = {};   // type -> {days:Set, files:[{name,n,hit}]}
+  for(const [type, files] of Object.entries(STATE.fileRows || {})){
+    const e = out[type] = {files:[], hit:false, undated:UNDATED_TYPES.has(type), anyDates:false};
+    for(const [name, rows] of Object.entries(files)){
+      const set = fileDaySet(type, rows);
+      if(set.size) e.anyDates = true;
+      const hit = set.has(day);
+      if(hit) e.hit = true;
+      e.files.push({name, n:rows.length, hit, span: set.size ? [...set].sort() : null});
+    }
+  }
+  return out;
+}
+function renderCoverage(){
+  const box = document.getElementById('wsCoverBody');
+  if(!box) return;
+  const inp = document.getElementById('wsCoverDate');
+  // default to the newest day anything covers, which is the day most likely being checked
+  if(!inp.value){
+    let mx = '';
+    for(const [type, files] of Object.entries(STATE.fileRows || {}))
+      for(const rows of Object.values(files))
+        for(const d of fileDaySet(type, rows)) if(d > mx) mx = d;
+    inp.value = mx || todayISO();
+  }
+  const day = inp.value;
+  const cov = coverageFor(day);
+  // The expected list IS the checklist already on this page, so the two can never drift apart.
+  const zones = [...document.querySelectorAll('.up-zone')].map(z => ({
+    title: (z.querySelector('.up-title')||{}).textContent || '',
+    types: [...z.querySelectorAll('.fs-item[data-t]')].map(el => el.dataset.t)
+  })).filter(z => z.types.length);
+
+  // "loaded but does not cover this day" and "never loaded" are different problems: the first
+  // is a wrong or forgotten file for THIS date, the second is usually a report type not used
+  // at all. Counting them together made every day look broken.
+  let have = 0, missing = 0, undated = 0, absent = 0;
+  const html = zones.map(z => {
+    const rows = z.types.map(t => {
+      const c = cov[t];
+      const label = TYPE_LABEL[t] || t;
+      if(!c) { absent++; return `<div class="cov-row cov-none"><span class="cov-ic">○</span>
+        <span class="cov-lbl">${esc(label)}</span><span class="cov-note">not loaded at all</span></div>`; }
+      if(c.undated || !c.anyDates){
+        undated++;
+        const n = c.files.reduce((a,f)=>a+f.n,0);
+        return `<div class="cov-row cov-undated"><span class="cov-ic">–</span>
+          <span class="cov-lbl">${esc(label)}</span>
+          <span class="cov-note">loaded &middot; ${fmtNum(n)} rows &middot; no dates inside, covers the whole period</span></div>`;
+      }
+      if(c.hit){
+        have++;
+        const hits = c.files.filter(f => f.hit);
+        const n = hits.reduce((a,f)=>a+f.n,0);
+        return `<div class="cov-row cov-ok"><span class="cov-ic">✓</span>
+          <span class="cov-lbl">${esc(label)}</span>
+          <span class="cov-note">${hits.map(f=>esc(f.name.split('/').pop())).join(', ')} &middot; ${fmtNum(n)} rows</span></div>`;
+      }
+      missing++;
+      // say what IS covered, so a wrong-file-for-the-day is obvious rather than just absent
+      const all = [...new Set(c.files.flatMap(f => f.span||[]))].sort();
+      const span = all.length ? `has ${all[0]}${all.length>1?' → '+all[all.length-1]:''}` : 'no dates found';
+      return `<div class="cov-row cov-miss"><span class="cov-ic">✕</span>
+        <span class="cov-lbl">${esc(label)}</span>
+        <span class="cov-note">nothing for ${day} &middot; ${span}</span></div>`;
+    }).join('');
+    return `<div class="cov-zone"><div class="cov-zone-t">${esc(z.title)}</div>${rows}</div>`;
+  }).join('');
+
+  document.getElementById('wsCoverSum').innerHTML =
+    `<span class="badge green">✓ ${fmtNum(have)} cover this day</span> ` +
+    (missing ? `<span class="badge red">✕ ${fmtNum(missing)} loaded but not this day</span> ` : '') +
+    (undated ? `<span class="badge grey">– ${fmtNum(undated)} undated</span> ` : '') +
+    (absent  ? `<span class="badge grey">○ ${fmtNum(absent)} never loaded</span>` : '') +
+    (missing ? ` <span style="color:var(--red);font-weight:700;margin-left:6px">A loaded report does not cover ${day}.</span>`
+             : ` <span style="color:var(--green);font-weight:700;margin-left:6px">Every report you use covers ${day}.</span>`);
+  box.innerHTML = html || '<div style="color:var(--muted)">No files loaded yet.</div>';
+}
+
 function renderLoadedReports(){
+  renderCoverage();   // same trigger points: whenever the file list changes, so does coverage
   const boxes = ['loadedReports','loadedReports2'].map(id => document.getElementById(id)).filter(Boolean);
   if(!boxes.length) return;
   const items = [];
@@ -7347,6 +7476,18 @@ document.getElementById('cbNewChan').addEventListener('change', e => {
 // import is a point-in-time price list - re-importing next month after a supplier change adds
 // new versions and leaves the old ones (and every past report) untouched.
 document.getElementById('wsGoCostBook').addEventListener('click', () => showPage('costbook'));
+document.getElementById('wsCoverDate').addEventListener('change', renderCoverage);
+{
+  const shift = n => {
+    const el = document.getElementById('wsCoverDate');
+    const d = new Date((el.value || todayISO()) + 'T12:00:00');   // midday: no DST edge cases
+    d.setDate(d.getDate() + n);
+    el.value = d.toISOString().slice(0,10);
+    renderCoverage();
+  };
+  document.getElementById('wsCoverPrev').addEventListener('click', () => shift(-1));
+  document.getElementById('wsCoverNext').addEventListener('click', () => shift(1));
+}
 document.getElementById('cbImport').addEventListener('click', () => document.getElementById('cbImportFile').click());
 document.getElementById('cbImportFile').addEventListener('change', async e => {
   const file = e.target.files && e.target.files[0];
