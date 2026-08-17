@@ -240,6 +240,11 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .kv{font-size:11.5px;color:var(--muted);margin-top:2px}
 .kv b{color:var(--text)}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:800;margin:3px 4px 0 0}
+/* Daily tracker: the date acts as a section header the way it does in the hand-kept sheet,
+   with each day's Total closing the block. */
+#dctTable tr.dct-date td{background:#17375e;color:#fff;font-weight:800;font-size:12px;letter-spacing:.03em;padding:6px 10px}
+#dctTable tr.dct-total td{background:#eef3f9;font-weight:800;border-bottom:2px solid var(--border)}
+#dctTable tfoot td{position:sticky;bottom:0;background:#dfe9f5;font-weight:800;border-top:2px solid var(--rule-strong,#c3cdd9)}
 /* WorkSpace day-coverage check: one column per upload zone, so it reads like the drop zones
    above it rather than as one long list. */
 .cov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-top:4px}
@@ -451,6 +456,38 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <div class="grid g2">
       <div class="card"><h3><span class="dot" style="background:var(--green)"></span>Top 10 Profit Makers (Ex VAT)</h3><div class="rank-list" id="conTop"></div></div>
       <div class="card"><h3><span class="dot" style="background:var(--red)"></span>Top 10 Loss Makers (Ex VAT)</h3><div class="rank-list" id="conBottom"></div></div>
+    </div>
+
+    <!-- ---- daily channel tracker ---- -->
+    <div class="card" style="margin-top:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span>📆 Daily Tracker by Channel</h3>
+        <button class="btn secondary dct-q" data-days="7">7 days</button>
+        <button class="btn secondary dct-q" data-days="14">14 days</button>
+        <button class="btn secondary dct-q" data-days="30">30 days</button>
+        <button class="btn secondary dct-q" data-days="0">All</button>
+        <span class="flabel" style="margin-left:6px">Custom</span>
+        <input type="date" id="dctFrom" style="width:146px">
+        <input type="date" id="dctTo" style="width:146px">
+        <button class="btn" id="dctApply">Apply</button>
+        <span style="flex:1"></span>
+        <button class="btn secondary" id="dctExport">⬇️ Export</button>
+        <div class="count" id="dctCount"></div>
+      </div>
+      <div class="sub-title">
+        Revenue, profit, orders and margin per channel for each day, newest first, with a Total per day —
+        the same shape as the sheet you keep by hand. Each day is a <b>real P&amp;L for that date</b>, not a share
+        of the period, so margin is the day's own. Ignores the channel and date filters at the top so the whole
+        picture stays visible.
+      </div>
+      <div class="table-wrap" style="max-height:640px"><table id="dctTable">
+        <thead><tr>
+          <th>Sales Channel</th><th class="num">Revenue</th><th class="num">Profit</th>
+          <th class="num">No of orders</th><th class="num">Units</th><th class="num">Margin</th>
+        </tr></thead>
+        <tbody id="dctBody"></tbody>
+        <tfoot id="dctFoot"></tfoot>
+      </table></div>
     </div>
   </div>
 
@@ -3963,7 +4000,7 @@ function renderPage(){
   }
   document.querySelectorAll('.empty-note').forEach(n => n.remove());
   try{
-    ({dashboard:renderDashboard, consolidated:renderConsolidated, orders:renderOrders, refunds:renderRefunds,
+    ({dashboard:renderDashboard, consolidated:()=>{renderConsolidated(); renderDailyTracker();}, orders:renderOrders, refunds:renderRefunds,
       inventory:renderInventory, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
       economics:renderEconomics, fees:renderFees, reports:renderReports, opex:renderOpex, advertising:renderAds,
       grow:renderGrow, tasks:renderTasks, workspace:renderLoadedReports, products:renderProducts, skumgt:renderSkuMgtPage,
@@ -5515,6 +5552,103 @@ function renderInventory(){
       <td class="num">${warn?`<span class="pill neg">${coverTxt} wk ⚠</span>`:coverTxt+' wk'}</td></tr>`;
   }).join('');
 }
+
+// ---- Daily channel tracker ----
+// The day-by-day, channel-by-channel table kept by hand in Excel: Revenue, Profit, Orders and
+// Margin per channel, with a Total line per day. Each day is a real P&L for that date - the
+// range is pinned to it and the engines re-run - so a day here matches the Dashboard exactly
+// when you set the same single-day filter, and margin is the day's own margin.
+let DCT_DAYS = 7;                 // 0 = every day loaded
+let DCT_FROM = '', DCT_TO = '';
+function dctSeries(dates){
+  const sf = STATE.dateFrom, st = STATE.dateTo;
+  const out = [];
+  try{
+    for(const date of dates){
+      STATE.dateFrom = date; STATE.dateTo = date;
+      recompute();
+      const byCh = {};
+      for(const ch of ALL_CH){
+        const rows = STATE.channels[ch];
+        if(!rows) continue;
+        const t = totalsOf(rows);
+        const refunds = (t.refunds||0) + ((STATE.extras[ch]||{}).refundOther||0);
+        byCh[ch] = {rev:t.revenue_gross||0, revEx:t.revenue_ex||0, profit:t.net_profit_ex||0,
+                    orders:t.orders_count||0, units:t.units||0, refunds};
+      }
+      out.push({date, byCh});
+    }
+  } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
+  return out;
+}
+function renderDailyTracker(){
+  const body = document.getElementById('dctBody');
+  if(!body) return;
+  const all = daAllDates();
+  const cntEl = document.getElementById('dctCount');
+  if(!all.length){
+    body.innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:16px">No dated sales data loaded.</td></tr>';
+    cntEl.textContent = ''; document.getElementById('dctFoot').innerHTML = '';
+    return;
+  }
+  let dates = all;
+  if(DCT_FROM || DCT_TO) dates = all.filter(d => (!DCT_FROM || d >= DCT_FROM) && (!DCT_TO || d <= DCT_TO));
+  else if(DCT_DAYS > 0) dates = all.slice(-DCT_DAYS);
+  if(!dates.length) dates = all.slice(-1);
+  const fEl = document.getElementById('dctFrom'), tEl = document.getElementById('dctTo');
+  fEl.value = dates[0]; tEl.value = dates[dates.length-1];
+
+  const S = dctSeries(dates).reverse();          // newest day first, like the sheet
+  // Every channel that traded on ANY day in view, so the same rows appear each day and a blank
+  // line is visibly "sold nothing" rather than the channel silently vanishing from that day.
+  const live = ALL_CH.filter(ch => S.some(d => d.byCh[ch]));
+  const pct = (p, r) => r > 0 ? p/r*100 : null;
+  const money0 = v => fmtGBP0(v);
+
+  let html = '';
+  const gt = {rev:0, revEx:0, profit:0, orders:0};
+  for(const d of S){
+    html += `<tr class="dct-date"><td colspan="6">${esc(d.date)}</td></tr>`;
+    const tot = {rev:0, revEx:0, profit:0, orders:0};
+    for(const ch of live){
+      const v = d.byCh[ch];
+      if(v){ tot.rev+=v.rev; tot.revEx+=v.revEx; tot.profit+=v.profit; tot.orders+=v.orders; }
+      const m = v ? pct(v.profit, v.revEx) : null;
+      html += `<tr>
+        <td><span class="chip ${ch}">${CH_NAME[ch]}</span></td>
+        <td class="num">${v ? money0(v.rev) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="num" style="${v && v.profit<0 ? 'color:var(--red);font-weight:700' : v ? 'color:var(--green);font-weight:700' : ''}">${v ? money0(v.profit) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="num">${v ? fmtNum(v.orders) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="num">${v ? fmtNum(v.units) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="num" style="${m!=null && m<0 ? 'color:var(--red)' : ''}">${m==null?'<span style="color:var(--muted)">—</span>':fmtPct(m)}</td>
+      </tr>`;
+    }
+    gt.rev+=tot.rev; gt.revEx+=tot.revEx; gt.profit+=tot.profit; gt.orders+=tot.orders;
+    const tm = pct(tot.profit, tot.revEx);
+    html += `<tr class="dct-total">
+      <td>Total</td>
+      <td class="num">${money0(tot.rev)}</td>
+      <td class="num" style="color:${tot.profit>=0?'var(--green)':'var(--red)'}">${money0(tot.profit)}</td>
+      <td class="num">${fmtNum(tot.orders)}</td>
+      <td class="num"></td>
+      <td class="num">${tm==null?'—':fmtPct(tm)}</td>
+    </tr>`;
+  }
+  body.innerHTML = html;
+
+  const gm = pct(gt.profit, gt.revEx);
+  document.getElementById('dctFoot').innerHTML = `<tr>
+    <td style="font-weight:800">${fmtNum(S.length)} day(s)</td>
+    <td class="num">${money0(gt.rev)}</td>
+    <td class="num" style="color:${gt.profit>=0?'var(--green)':'var(--red)'}">${money0(gt.profit)}</td>
+    <td class="num">${fmtNum(gt.orders)}</td>
+    <td class="num"></td>
+    <td class="num">${gm==null?'—':fmtPct(gm)}</td>
+  </tr>`;
+  cntEl.textContent = `${fmtNum(S.length)} of ${fmtNum(all.length)} day(s) · ${all[0]} → ${all[all.length-1]}`;
+  DCT_LAST = S;
+}
+let DCT_LAST = [];
 
 // ---- Daily Analysis ----
 // One real P&L per day rather than a period total split by revenue share, so a day's margin is
@@ -7377,6 +7511,40 @@ document.getElementById('gDateClear').addEventListener('click', () => applyDateF
 const spReset = () => { STATE.sp.page = 0; renderSkuPerf(); };
 document.getElementById('spPlatform').addEventListener('change', e => { STATE.sp.platform = e.target.value; spReset(); });
 document.getElementById('spReport').addEventListener('change', e => { STATE.sp.report = e.target.value; spReset(); });
+// ---- Daily tracker (Consolidated) controls ----
+document.querySelectorAll('.dct-q').forEach(b => b.addEventListener('click', () => {
+  DCT_DAYS = +b.dataset.days; DCT_FROM = ''; DCT_TO = '';
+  document.querySelectorAll('.dct-q').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderDailyTracker();
+}));
+document.getElementById('dctApply').addEventListener('click', () => {
+  const f = document.getElementById('dctFrom').value, t = document.getElementById('dctTo').value;
+  if(!f && !t){ showBanner('Pick a from and/or to date, or use one of the range buttons.', 'error'); return; }
+  DCT_FROM = f; DCT_TO = t;
+  document.querySelectorAll('.dct-q').forEach(x => x.classList.add('secondary'));
+  renderDailyTracker();
+});
+document.getElementById('dctExport').addEventListener('click', () => {
+  if(!DCT_LAST.length){ showBanner('Nothing to export yet.', 'error'); return; }
+  const rows = [];
+  for(const d of DCT_LAST){
+    const tot = {rev:0, revEx:0, profit:0, orders:0};
+    for(const ch of ALL_CH){
+      const v = d.byCh[ch]; if(!v) continue;
+      tot.rev+=v.rev; tot.revEx+=v.revEx; tot.profit+=v.profit; tot.orders+=v.orders;
+      rows.push({Date:d.date, 'Sales Channel':CH_NAME[ch], Revenue:+v.rev.toFixed(2),
+        Profit:+v.profit.toFixed(2), 'No of orders':v.orders, Units:v.units,
+        'Margin %': v.revEx>0 ? +(v.profit/v.revEx*100).toFixed(2) : ''});
+    }
+    rows.push({Date:d.date, 'Sales Channel':'Total', Revenue:+tot.rev.toFixed(2),
+      Profit:+tot.profit.toFixed(2), 'No of orders':tot.orders, Units:'',
+      'Margin %': tot.revEx>0 ? +(tot.profit/tot.revEx*100).toFixed(2) : ''});
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Daily Tracker');
+  XLSX.writeFile(wb, `InstaSales_Daily_Tracker_${DCT_LAST[DCT_LAST.length-1].date}_to_${DCT_LAST[0].date}.xlsx`);
+});
 // ---- Daily Analysis controls ----
 document.querySelectorAll('.da-q').forEach(b => b.addEventListener('click', () => {
   DA_DAYS = +b.dataset.days; DA_FROM = ''; DA_TO = '';
