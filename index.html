@@ -3604,6 +3604,9 @@ function computeAmazonTxn(B){
     row.mkt_fee=a.mkt_fee; row.shipping=a.shipping; row.buying=a.buying; row.oper=a.oper;
     row.refunds = totRev>0 ? refTotal*a.revenue_gross/totRev : 0;
     row.no_cost=a.no_cost;
+    // plAgg was filled from rows that finalizeRows() had ALREADY grossed up, so these totals
+    // carry the VAT. Marking them stops the pass below multiplying by 1.2 a second time.
+    row.__grossedUp = true;
     rows.push(row);
   }
   finalizeRows(rows);
