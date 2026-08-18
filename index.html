@@ -347,7 +347,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <button class="nav-item" data-page="inventory"><span class="ic">📦</span>Inventory</button>
     <button class="nav-item" data-page="skumgt"><span class="ic">🧩</span>SKU Management</button>
     <button class="nav-item" data-page="pls"><span class="ic">📄</span>PLS</button>
-    <button class="nav-item" data-page="products"><span class="ic">💲</span>Master Products</button>
+    <button class="nav-item" data-page="products"><span class="ic">💲</span>Product ROIs</button>
     <button class="nav-item" data-page="costbook"><span class="ic">🗓️</span>Cost Manager</button>
     <button class="nav-item has-sub" data-group="analyticsG"><span class="ic">📈</span>Analytics<span class="chev">▶</span></button>
     <div class="submenu" id="analyticsG">
@@ -666,7 +666,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
   <div class="page" id="page-products">
     <div class="card" style="margin-bottom:14px">
       <div class="toolbar">
-        <h3 style="margin:0"><span class="dot"></span>Master Product Sheet</h3>
+        <h3 style="margin:0"><span class="dot"></span>Product ROIs</h3>
         <select class="fsel" id="prodPlat">
           <option value="all">All platforms</option>
           <option value="tiktok">TikTok</option>
@@ -682,7 +682,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <div class="sub-title">Edit any value and it saves instantly &mdash; Profit/ROI/Margin per unit recalculate live. <b>Buying, Operational, Shipping and Referral write straight into Cost Manager</b>, dated the day your loaded reports are costed against, so the change drives the P&amp;L and past reports keep the cost that applied at the time. Everything else (selling price, the eBay and TikTok rates) is stored on the product itself. Selling £ comes from your sales files when loaded, or type it here.</div>
       <div id="costGaps"></div>
       <div class="table-wrap" style="max-height:620px"><table id="prodTable">
-        <thead><tr><th>Platform</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="What the fee actually costs at the selling price, VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
+        <thead><tr><th>Platform</th><th title="An Amazon ASIN is two offers - FBM and FBA - and they cost different amounts, so each has its own row">Fulfilment</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="What the fee actually costs at the selling price, VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
         <tbody></tbody>
       </table></div>
     </div>
@@ -993,7 +993,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <label style="display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer"><input type="checkbox" id="rsMaster" checked> Master products (including the built-in sheet)</label>
         <button class="btn danger" id="rsGo">Remove selected data</button>
       </div>
-      <div class="sub-title" style="margin-top:8px">Master products stay empty until you drop a master Excel or add products in the Master Products menu - the built-in sheet will not come back by itself.</div>
+      <div class="sub-title" style="margin-top:8px">Master products stay empty until you drop a master Excel or add products in the Product ROIs menu - the built-in sheet will not come back by itself.</div>
     </div>
     <div class="card">
       <h3><span class="dot" style="background:var(--amber)"></span>Parse &amp; Join Diagnostics</h3>
@@ -1119,7 +1119,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <div class="table-wrap" style="max-height:none"><table>
         <thead><tr><th>Platform</th><th>Report</th><th></th><th>Where to download it</th><th>What it adds</th></tr></thead>
         <tbody>
-          <tr><td><span class="chip" style="background:#8a96b0">Shared</span></td><td><b>Master cost data</b></td><td><span class="pill pos">Built-in</span></td><td>Nothing to download - manage costs, fees and selling prices in the <b>Master Products</b> menu. (Dropping a master Excel is optional and replaces the built-in data.)</td><td>COGS, referral/affiliate/shop-ads/regulatory fees per SKU → all profit maths</td></tr>
+          <tr><td><span class="chip" style="background:#8a96b0">Shared</span></td><td><b>Master cost data</b></td><td><span class="pill pos">Built-in</span></td><td>Nothing to download - manage costs, fees and selling prices in the <b>Product ROIs</b> menu. (Dropping a master Excel is optional and replaces the built-in data.)</td><td>COGS, referral/affiliate/shop-ads/regulatory fees per SKU → all profit maths</td></tr>
           <tr><td><span class="chip tiktok">TikTok</span></td><td>All Orders export</td><td><span class="pill pos">Required</span></td><td>Seller Center → Orders → Export</td><td>Sales, refunds, dates (exact date filtering)</td></tr>
           <tr><td><span class="chip tiktok">TikTok</span></td><td>Affiliate orders</td><td><span class="pill zero">Optional</span></td><td>Seller Center → Affiliate → Orders → Export</td><td>Affiliate + Shop Ads commissions</td></tr>
           <tr><td><span class="chip tiktok">TikTok</span></td><td>Ads export</td><td><span class="pill zero">Optional</span></td><td>Ads Manager → Reports (Product or Campaign data)</td><td>Ad spend, ACOS / TACOS</td></tr>
@@ -3991,7 +3991,7 @@ function kpiCard(c){
 }
 
 // ================= pages =================
-const PAGE_TITLES = {dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Master Products', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
+const PAGE_TITLES = {dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Product ROIs', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
 const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','inventory','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily']);
 
 function showPage(id){
@@ -4639,7 +4639,7 @@ function renderOrders(){
       + (e.oper>0.005 ? drow('Operating', '-'+fmtGBP(e.oper), clr(-1)) : '')
       + drow(`${e.tax>=0?'Tax Liability':'Tax Claimable'} (@${vatPct}%)`, (e.tax>=0?'-':'+')+fmtGBP(Math.abs(e.tax)), clr(e.tax>=0?-1:1))
       + `<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px">${drow('Est Profit', fmtGBP(e.profit), clr(e.profit))}</div>`
-      + (e.noCost ? '<div style="color:var(--amber);font-size:11px;margin-top:3px">⚠ No cost data — add it in Master Products for accurate profit.</div>' : '');
+      + (e.noCost ? '<div style="color:var(--amber);font-size:11px;margin-top:3px">⚠ No cost data — add it in Product ROIs for accurate profit.</div>' : '');
     return `<tr>
       <td style="min-width:150px;vertical-align:top"><div>${o.channel?`<span class="chip ${o.channel}">${CH_NAME[o.channel]}</span>`:''} ${stBadge}</div>
         <div style="font-weight:600;margin-top:3px">${esc(o.order||'-')}</div>
@@ -6302,7 +6302,7 @@ function renderPLS(){
   table.querySelector('tbody').innerHTML = tb.join('');
 }
 
-// ---- Master Products (editable cost sheet) ----
+// ---- Product ROIs (editable cost sheet) ----
 let PROD_VIEW = [];
 function masterEditTargets(e){
   return STATE.raw.master.filter(r => {
@@ -6323,7 +6323,7 @@ function syncMasterStore(){
   }
 }
 // Actionable list of SELLING products that need cost data (missing from master, or a £0 cost
-// column). Shown at the top of Master Products so gaps are obvious and fixable in place.
+// column). Shown at the top of Product ROIs so gaps are obvious and fixable in place.
 function renderCostGaps(){
   const el = document.getElementById('costGaps'); if(!el) return;
   const missing = [], blank = [];
@@ -6353,7 +6353,7 @@ function renderProducts(){
   renderCostGaps();
   const tb = document.querySelector('#prodTable tbody');
   if(!STATE.raw.master.length){
-    tb.innerHTML = '<tr><td colspan="18" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="19" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
     document.getElementById('prodCount').textContent = '';
     return;
   }
@@ -6363,10 +6363,36 @@ function renderProducts(){
   let list = STATE.master.list;
   if(pf !== 'all') list = list.filter(e => chOfPlat(e.plat) === pf);
   if(q) list = list.filter(e => (e.sku||'').toLowerCase().includes(q) || (e.asin||'').toLowerCase().includes(q) || (e.pid||'').includes(q) || (e.name||'').toLowerCase().includes(q));
-  const CAPP = 300;
-  document.getElementById('prodCount').textContent = `${Math.min(list.length, CAPP)} of ${list.length} products shown`;
-  PROD_VIEW = list.slice(0, CAPP);
+  // An Amazon ASIN is two OFFERS - FBM and FBA - and they cost different amounts, so each gets
+  // its own row reading its own Cost Book channel. Every other platform has a single offer.
+  const offers = [];
+  for(const e of list){
+    const ck = chOfPlat(e.plat);
+    const fam = ck === 'amazon2' ? 'amazon' : ck;
+    if(fam === 'amazon') offers.push({e, chan:'fbm'}, {e, chan:'fba'});
+    else offers.push({e, chan: cbCurrentChan(fam, fam === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid))});
+  }
+  const CAPP = 600;
+  document.getElementById('prodCount').textContent = `${Math.min(offers.length, CAPP)} of ${offers.length} offers · ${list.length} products`;
+  PROD_VIEW = offers.slice(0, CAPP);
   const chOf = chOfPlat;
+  // The costs shown for a row are the ones its OWN channel holds. Without this an ASIN's FBA
+  // row would repeat the FBM figures and look like a duplicate.
+  const costFor = (e, chan) => {
+    const ck = chOfPlat(e.plat);
+    const fam = ck === 'amazon2' ? 'amazon' : ck;
+    const id = fam === 'amazon' ? (e.asin || e.pid || e.sku) : fam === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid);
+    const v = id ? costBookAt(id, chan, costRefDate(), fam) : null;
+    if(!v) return {buying:e.buying, oper:e.oper, shipping:e.shipping, referral:e.referral, fromBook:false};
+    return {
+      buying:   v.buy  != null ? +v.buy  : e.buying,
+      oper:     v.oper != null ? +v.oper : e.oper,
+      // on an FBA offer the "shipping" slot holds Amazon's fulfilment fee
+      shipping: chan === 'fba' ? (v.fee != null ? +v.fee : 0) : (v.ship != null ? +v.ship : e.shipping),
+      referral: (v.ref == null || v.ref === '') ? e.referral : (+v.ref > 1 ? +v.ref/100 : +v.ref),
+      fromBook: true
+    };
+  };
   // selling price: live sales average when the channel data is loaded, else the saved/built-in price
   const priceOf = e => {
     const ck = chOf(e.plat);
@@ -6379,13 +6405,15 @@ function renderProducts(){
     }
     return (e.selling_price != null && e.selling_price > 0) ? e.selling_price : null;
   };
-  const prodEcon = (e, P) => {
+  // c = that offer's costs (its own Cost Book channel), so FBA and FBM price out separately.
+  const prodEcon = (e, P, c) => {
     if(P == null || !(P > 0)) return null;
+    c = c || e;
     const V = STATE.vat, vDiv = 1 + V.rate;
     const ck = chOf(e.plat);
     const revEx = V.revIncVAT ? P/vDiv : P;
     const FB = {tiktok:STATE.ttRate, amazon:STATE.amzRef, amazon2:STATE.amzRef, ebay:EBAY_FVF_PCT, shopify:STATE.shopFee};
-    const rate = e.referral != null ? e.referral : FB[ck];
+    const rate = c.referral != null ? c.referral : FB[ck];
     // The rate is applied to the selling price the same way the engine does it, then the same
     // VAT route is followed: gross up where the fee is quoted net (Amazon, eBay), leave it
     // where it is already inclusive (TikTok), and reclaim the VAT portion either way. Both
@@ -6396,27 +6424,35 @@ function renderProducts(){
     if(vatGrossUpFor(ck, 'mkt_fee')) feeGross *= vDiv;         // quoted net -> what is actually charged
     const feeEx = vatIncFor(ck, 'mkt_fee') ? feeGross/vDiv : feeGross;
     const cEx = (v, k) => vatIncFor(ck, k) ? v/vDiv : v;
-    const buyEx = cEx(e.buying, 'buying');
-    const costs = buyEx + cEx(e.oper, 'oper') + cEx(e.shipping, 'shipping');
+    const buyEx = cEx(c.buying, 'buying');
+    const costs = buyEx + cEx(c.oper, 'oper') + cEx(c.shipping, 'shipping');
     const profit = revEx - feeEx - costs;
     return {profit, roi: buyEx > 0 ? profit/buyEx*100 : null, margin: revEx > 0 ? profit/revEx*100 : null,
             feeGross, feeEx, feeVat: feeGross - feeEx};
   };
   const pill = (v, fmt) => `<span class="pill ${v > 0.005 ? 'pos' : v < -0.005 ? 'neg' : 'zero'}">${fmt(v)}</span>`;
   const numIn = (i, f, v, step) => `<input type="number" data-i="${i}" data-f="${f}" value="${(v != null && v !== '') ? +(+v).toFixed(2) : ''}" step="${step}" min="0" style="width:82px;padding:5px 8px;text-align:right">`;
-  tb.innerHTML = PROD_VIEW.map((e, i) => {
+  tb.innerHTML = PROD_VIEW.map((o, i) => {
+    const e = o.e, chan = o.chan;
     const P = priceOf(e);
-    const ec = prodEcon(e, P);
+    const c = costFor(e, chan);
+    const ec = prodEcon(e, P, c);
+    const fam = chOf(e.plat) === 'amazon2' ? 'amazon' : chOf(e.plat);
+    const isFba = chan === 'fba';
+    const tag = fam === 'amazon'
+      ? `<span class="badge ${isFba?'purple':'blue'}">#${isFba?'FBA':'FBM'}</span>`
+      : `<span class="fchan-fixed">${esc(cbChanLabel(fam, chan))}</span>`;
     return `<tr>
     <td><span class="chip ${chOf(e.plat)}">${CH_NAME[chOf(e.plat)]}</span></td>
+    <td>${tag}</td>
     <td title="${esc(e.sku)}">${esc((e.sku||'').substr(0,26))}</td>
     <td>${esc(e.asin || e.pid || '')}</td>
     <td title="${esc(e.name)}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc((e.name||'').substr(0,34))}</td>
     <td class="num" style="background:#eef6fd">${numIn(i,'price', P != null ? P : '', '0.01')}</td>
-    <td class="num">${numIn(i,'buy',e.buying,'0.01')}</td>
-    <td class="num">${numIn(i,'oper',e.oper,'0.01')}</td>
-    <td class="num">${numIn(i,'ship',e.shipping,'0.01')}</td>
-    <td class="num">${numIn(i,'ref', e.referral != null ? e.referral*100 : '', '0.1')}</td>
+    <td class="num">${numIn(i,'buy',c.buying,'0.01')}</td>
+    <td class="num">${numIn(i,'oper',c.oper,'0.01')}</td>
+    <td class="num"${isFba?' title="FBA fulfilment fee"':''}>${numIn(i,'ship',c.shipping,'0.01')}</td>
+    <td class="num">${numIn(i,'ref', c.referral != null ? c.referral*100 : '', '0.1')}</td>
     <td class="num" style="background:#eef6fd">${ec ? fmtGBP(ec.feeGross) : '<span style="color:var(--muted)">&mdash;</span>'}</td>
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'aff', (e.aff != null ? e.aff : 0.15)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'sads', (e.shopads != null ? e.shopads : 0.02)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
@@ -6429,7 +6465,8 @@ function renderProducts(){
   </tr>`;
   }).join('');
   tb.querySelectorAll('input[data-f]').forEach(inp => inp.addEventListener('change', () => {
-    const e = PROD_VIEW[parseInt(inp.dataset.i)];
+    const o = PROD_VIEW[parseInt(inp.dataset.i)];
+    const e = o.e, rowChan = o.chan;
     const f = inp.dataset.f;
     let v = parseFloat(inp.value);
     if(isNaN(v) || v < 0) v = 0;
@@ -6457,7 +6494,9 @@ function renderProducts(){
       const id = fam === 'amazon' ? (e.asin || e.pid || e.sku) : fam === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid);
       if(id){
         const when = costRefDate();
-        cbSetCost(fam, id, cbCurrentChan(fam, id), CB_FIELD[f], val, when, e.name);
+        // FBA stores its fulfilment fee under 'fee', FBM its own postage under 'ship'
+        const bookField = (f === 'ship' && rowChan === 'fba') ? 'fee' : CB_FIELD[f];
+        cbSetCost(fam, id, rowChan, bookField, val, when, e.name);
         toBook = ` Cost Manager updated, effective ${when}.`;
       }
     }
@@ -6468,7 +6507,7 @@ function renderProducts(){
     showBanner('Saved - profit, ROI and margin recalculated.' + toBook, 'success');
   }));
   tb.querySelectorAll('[data-pdel]').forEach(b => b.addEventListener('click', () => {
-    const e = PROD_VIEW[parseInt(b.dataset.pdel)];
+    const e = PROD_VIEW[parseInt(b.dataset.pdel)].e;
     if(!confirm(`Delete "${e.sku || e.asin || e.pid}" (${e.plat}) from the master sheet?`)) return;
     const targets = new Set(masterEditTargets(e));
     STATE.raw.master = STATE.raw.master.filter(r => !targets.has(r));
@@ -7033,7 +7072,7 @@ function renderReports(){
   let masterInfo = 'No master products saved yet.';
   try{
     const m = JSON.parse(store.get(lsKey(LS_MASTER)));
-    if(m && m.cleared) masterInfo = 'Master products were cleared - drop a master Excel or add products in the Master Products menu.';
+    if(m && m.cleared) masterInfo = 'Master products were cleared - drop a master Excel or add products in the Product ROIs menu.';
     else if(m && m.rows && m.rows.length) masterInfo = `Master products: ${m.rows.length} saved on ${m.savedAt} (auto-restored on open).`;
   }catch(e){}
   document.getElementById('histSummary').textContent = (histHasData()
