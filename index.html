@@ -679,7 +679,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <button class="btn danger" id="prodClearAll">🗑 Clear all products</button>
         <div class="count" id="prodCount"></div>
       </div>
-      <div class="sub-title">Your master sheet is <b>built in</b> - all products load automatically, no upload needed. Edit any value and it saves instantly; Profit/ROI/Margin per unit recalculate live. Selling £ comes from your sales files when loaded (or is editable here). Re-dropping a master Excel replaces everything.</div>
+      <div class="sub-title">Edit any value and it saves instantly &mdash; Profit/ROI/Margin per unit recalculate live. <b>Buying, Operational, Shipping and Referral write straight into Cost Manager</b>, dated the day your loaded reports are costed against, so the change drives the P&amp;L and past reports keep the cost that applied at the time. Everything else (selling price, the eBay and TikTok rates) is stored on the product itself. Selling £ comes from your sales files when loaded, or type it here.</div>
       <div id="costGaps"></div>
       <div class="table-wrap" style="max-height:620px"><table id="prodTable">
         <thead><tr><th>Platform</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="What the fee actually costs at the selling price, VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
@@ -2255,11 +2255,21 @@ function buildMaster(){
       // Amazon accounts collapsed into Vemart and the Vefive filter came back empty. Keep the
       // sheet's sku / asin / pid / platform, and its name when the book has none.
       if(prior){
-        e.sku  = prior.sku  || id;
-        e.asin = prior.asin || (fam === 'amazon' ? id : '');
-        e.pid  = prior.pid  || id;
+        // Verbatim, including blanks. Filling an empty productid with the ASIN broke the
+        // sheet-row lookup that edits write through, so a Selling £ change saved nowhere.
+        e.sku  = prior.sku;
+        e.asin = prior.asin;
+        e.pid  = prior.pid;
         e.plat = prior.plat || fam;
         e.name = e.name || prior.name || '';
+        // Fields the book has no concept of: the selling price, and the per-product eBay /
+        // TikTok rates. Dropping them blanked Selling £ (and with it Profit/ROI/Margin) on
+        // every product the book covers, and silently reverted those rates to the defaults.
+        e.selling_price = prior.selling_price;
+        e.aff = prior.aff; e.shopads = prior.shopads; e.reg = prior.reg; e.fixedu = prior.fixedu;
+        e.chan = prior.chan;
+        // a version with no referral % of its own must not wipe the sheet's rate
+        if(e.referral == null) e.referral = prior.referral;
       } else {
         e.sku = id; e.asin = fam === 'amazon' ? id : ''; e.pid = id; e.plat = fam;
       }
@@ -4899,6 +4909,26 @@ const cbFam = plat => {
   return 'tiktok';
 };
 const cbId = (fam, id) => fam + '|' + String(id==null?'':id).trim().toUpperCase();
+// Write one cost field into the version in force on `date`, creating that version if the day
+// does not already have one. This is the ONLY way costs should be set: the Cost Book overlays
+// the master sheet in buildMaster(), so writing a cost anywhere else is overwritten on the
+// next rebuild and looks like the edit did not save.
+function cbSetCost(fam, id, chan, field, val, date, name){
+  const k = cbId(fam, id);
+  const rec = COSTBOOK[k] || (COSTBOOK[k] = {name:name||'', fbm:[], fba:[]});
+  if(!rec.name && name) rec.name = name;
+  rec[chan] = cbSorted(rec[chan]);
+  let v = null;
+  for(const x of rec[chan]) if(!x.from || x.from <= date) v = x;
+  if(!v || v.from !== date){                     // editing on a new date starts a new version
+    v = Object.assign({}, v || {}, {from: date});
+    rec[chan].push(v);
+    rec[chan] = cbSorted(rec[chan]);
+  }
+  if(val == null) delete v[field]; else v[field] = val;
+  saveCostBook();
+  return v;
+}
 // Earlier versions of the book keyed Amazon rows on the bare ASIN. Fold those into the
 // platform-scoped form once, so nothing entered before this change is lost.
 function migrateCostBook(){
@@ -5127,18 +5157,8 @@ function renderCostBook(){
     const raw = el.value.trim();
     const val = raw === '' ? null : (field === 'ref' ? (+raw > 1 ? +raw/100 : +raw) : +raw);
     const k = cbId(fam, id);
-    const rec = COSTBOOK[k] || (COSTBOOK[k] = {name:'', fbm:[], fba:[]});
-    if(!rec.name){ const f = all.find(x => x.fam===fam && x.id===id); if(f) rec.name = f.name||''; }
-    rec[chan] = cbSorted(rec[chan]);
-    let v = null;
-    for(const x of rec[chan]) if(!x.from || x.from <= asAt) v = x;
-    if(!v || v.from !== asAt){                       // editing on a new date starts a new version
-      v = Object.assign({}, v || {}, {from: asAt});
-      rec[chan].push(v);
-      rec[chan] = cbSorted(rec[chan]);
-    }
-    if(val == null) delete v[field]; else v[field] = val;
-    saveCostBook();
+    const known = all.find(x => x.fam===fam && x.id===id);
+    cbSetCost(fam, id, chan, field, val, asAt, known ? known.name : '');
     if(STATE.raw.master.length || Object.keys(COSTBOOK).length) STATE.master = buildMaster();
     if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
     renderCostBook();
@@ -6425,9 +6445,27 @@ function renderProducts(){
     else if(f==='reg') e.reg = val;
     else if(f==='fixed') e.fixedu = val;
     else e.referral = val;
+    // Costs live in the Cost Book, which overlays the sheet in buildMaster(). Writing only to
+    // the sheet meant the overlay put the old figure straight back on the next rebuild and the
+    // edit appeared not to save. Mirror cost edits into the book, dated the same day the
+    // loaded reports are costed against, so this page and Cost Manager stay one source.
+    const CB_FIELD = {buy:'buy', oper:'oper', ship:'ship', ref:'ref'};
+    let toBook = '';
+    if(CB_FIELD[f]){
+      const ck = chOfPlat(e.plat);
+      const fam = ck === 'amazon2' ? 'amazon' : ck;
+      const id = fam === 'amazon' ? (e.asin || e.pid || e.sku) : fam === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid);
+      if(id){
+        const when = costRefDate();
+        cbSetCost(fam, id, cbCurrentChan(fam, id), CB_FIELD[f], val, when, e.name);
+        toBook = ` Cost Manager updated, effective ${when}.`;
+      }
+    }
     syncMasterStore();
+    STATE.master = buildMaster();
+    if(loadedChannels().length){ recompute(); diagnostics(); }
     renderProducts();   // refresh the computed Profit / ROI / Margin columns
-    showBanner('Saved - profit, ROI and margin recalculated.', 'success');
+    showBanner('Saved - profit, ROI and margin recalculated.' + toBook, 'success');
   }));
   tb.querySelectorAll('[data-pdel]').forEach(b => b.addEventListener('click', () => {
     const e = PROD_VIEW[parseInt(b.dataset.pdel)];
