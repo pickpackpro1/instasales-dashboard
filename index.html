@@ -682,7 +682,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <div class="sub-title">Your master sheet is <b>built in</b> - all products load automatically, no upload needed. Edit any value and it saves instantly; Profit/ROI/Margin per unit recalculate live. Selling £ comes from your sales files when loaded (or is editable here). Re-dropping a master Excel replaces everything.</div>
       <div id="costGaps"></div>
       <div class="table-wrap" style="max-height:620px"><table id="prodTable">
-        <thead><tr><th>Platform</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
+        <thead><tr><th>Platform</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="What the fee actually costs at the selling price, VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
         <tbody></tbody>
       </table></div>
     </div>
@@ -1228,7 +1228,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <label><input type="checkbox" class="vat-cost" data-c="ads" checked> Ads spend</label>
     <label><input type="checkbox" class="vat-cost" data-c="affiliate" checked> Affiliate commission</label>
     <label><input type="checkbox" class="vat-cost" data-c="shop_ads" checked> Shop Ads commission</label>
-    <div style="color:var(--muted);font-size:11px;margin:3px 0 0 2px"><b>TikTok is excluded from all of this automatically</b> &mdash; its commissions and its ad spend arrive net of VAT, so there is nothing to reclaim and nothing to gross up. These settings apply to Amazon (Vemart &amp; Vefive), eBay and Shopify.</div>
+    <div style="color:var(--muted);font-size:11px;margin:3px 0 0 2px"><b>TikTok commissions skip the gross-up only.</b> Its 9% referral, 15% affiliate and 2% shop-ads figures are already VAT-inclusive, so they are not multiplied by 1.2 &mdash; but the VAT inside them <b>is</b> reclaimed, same as everywhere else. Amazon (Vemart &amp; Vefive) and eBay quote their fees net, so those are grossed up first. Ad spend is invoiced net on every channel.</div>
     <div class="gl" style="margin-top:10px">Figures reported ex-VAT (gross up to the real cash cost)</div>
     <label><input type="checkbox" class="vat-gross" data-c="ads" checked> Ad spend <span style="color:var(--muted);font-size:11px">&mdash; ad reports state spend net; &times;1.2 gives what actually left the account</span></label>
     <label><input type="checkbox" class="vat-gross" data-c="mkt_fee" checked> Referral / Marketplace fees <span style="color:var(--muted);font-size:11px">&mdash; reports state the fee net; Amazon &amp; eBay add VAT on the invoice</span></label>
@@ -1435,20 +1435,20 @@ const STATE = {
   vat: {rate:0.20, revIncVAT:true,
     costsWithVAT:{buying:true,oper:true,shipping:true,mkt_fee:true,affiliate:true,shop_ads:true,ads:true},
     feesExVat:{mkt_fee:false,affiliate:false,shop_ads:false,ads:false},
-    // Per-channel exceptions. TikTok's commission figures already arrive net of VAT, so there
-    // is no VAT portion sitting inside them to reclaim - extracting one would invent a 1/6th
-    // discount on every TikTok fee. Amazon and eBay fees carry VAT, so they are not listed.
-    // TikTok AD SPEND is not here: that is invoiced with VAT like any other advertising.
-    // TikTok is excluded from VAT treatment entirely - its commissions AND its ad spend arrive
-    // net of VAT with nothing to reclaim. Amazon (both accounts), eBay and Shopify get the
-    // full treatment: fees and ads are handled exactly like COGS.
-    noVatByChannel:{tiktok:['mkt_fee','affiliate','shop_ads','ads']},
-    // Source figures stated EX-VAT, grossed up to the real cash cost before anything uses
-    // them; the VAT pass below then reclaims that VAT back out, so the ex-VAT cost lands on
-    // the figure the report stated. Confirmed against Amazon and eBay fee invoices: both
-    // charge VAT on referral and advertising, and both are reclaimable.
-    // Per-channel exclusions in noVatByChannel still apply, so TikTok is untouched.
-    exVatSource:{ads:true, mkt_fee:true}},
+    // Two different questions per channel, and they must not be confused:
+    //   alreadyGross - the reported figure ALREADY includes VAT, so do not gross it up.
+    //   costsWithVAT - there is a VAT portion inside it to reclaim.
+    // TikTok states its commissions VAT-inclusive (9% referral, 15% affiliate, 2% shop ads are
+    // what you are actually charged), so they skip the gross-up but the VAT inside them IS
+    // reclaimable. Amazon and eBay state their fees NET, so those are grossed up first and the
+    // VAT reclaimed after - both land on the same ex-VAT cost by different routes.
+    // TikTok AD SPEND is not listed: like all advertising it is invoiced net plus VAT.
+    alreadyGross:{tiktok:['mkt_fee','affiliate','shop_ads']},
+    // Source figures stated EX-VAT, grossed up to the real cash cost before anything reads
+    // them; the VAT pass then reclaims it back out, so the ex-VAT cost lands on the figure the
+    // report stated. Confirmed against the Amazon and eBay fee invoices - both charge VAT on
+    // referral and advertising, and both are reclaimable.
+    exVatSource:{ads:true, mkt_fee:true, affiliate:true, shop_ads:true}},
   ttRate: 0.09, amzRef: 0.15, amzRefund: 0, shopFee: 0.03,
   dateFrom:'', dateTo:'',
   chFilter: 'all',
@@ -1495,29 +1495,23 @@ const histHasData = () => HIST.snapshots.length > 0 || Object.keys(HIST.daily).l
 
 // ================= colors =================
 const COST_KEYS  = ['mkt_fee','affiliate','buying','shipping','oper','ads','shop_ads'];
-// Is this cost VAT-INCLUSIVE on this channel? Global setting, minus any per-channel exception.
-// Everything that reads costsWithVAT for a KNOWN channel must go through here, or TikTok's
-// commissions get a VAT reclaim they never paid.
+// Is there a VAT portion inside this cost to reclaim? True wherever the setting says so - a
+// figure that is already gross (TikTok's commissions) still carries reclaimable VAT, it just
+// does not need grossing up first.
 function vatIncFor(ch, k){
-  const V = STATE.vat;
-  if(!V.costsWithVAT[k]) return false;
-  const skip = (V.noVatByChannel || {})[ch];
-  return !(skip && skip.indexOf(k) >= 0);
+  return !!STATE.vat.costsWithVAT[k];
 }
 function vatFeeExFor(ch, k){
-  const V = STATE.vat;
-  if(!(V.feesExVat || {})[k]) return false;
-  const skip = (V.noVatByChannel || {})[ch];
-  return !(skip && skip.indexOf(k) >= 0);
+  return !!(STATE.vat.feesExVat || {})[k];
 }
 // Should this figure be grossed up to its VAT-inclusive cash value? Only where the source is
-// stated ex-VAT AND the channel is not excluded - grossing up a TikTok figure that carries no
-// VAT would invent a 20% cost that was never charged.
+// stated ex-VAT AND this channel does not already report it gross. Grossing up a figure that
+// already includes VAT would invent a 20% cost that was never charged.
 function vatGrossUpFor(ch, k){
   const V = STATE.vat;
   if(!(V.exVatSource || {})[k]) return false;
-  const skip = (V.noVatByChannel || {})[ch];
-  return !(skip && skip.indexOf(k) >= 0);
+  const gross = (V.alreadyGross || {})[ch];
+  return !(gross && gross.indexOf(k) >= 0);
 }
 // eBay's standard charges, applied whenever the master sheet doesn't override them per
 // product (regulatory_pct / fixed_fee_per_unit). The fixed fee is charged ONCE PER ORDER,
@@ -4203,9 +4197,9 @@ function openPlDrawer(from, to, title){
   const V = STATE.vat, vd = 1 + V.rate, vatOf = g => g - g/vd;
   const vsub = (l,v) => `<div class="pls-row sub"><span>${l}</span><span class="amt" style="color:${v<0?'var(--red)':'var(--green)'}">${v<0?'-':'+'}${fmtGBP(Math.abs(v))}</span></div>`;
   const vatLines = [vsub('Output VAT charged on sales', -t.output_vat)];
-  // Itemise from what was ACTUALLY reclaimed row by row, not from the global settings - a
-  // channel exception (TikTok's commissions) means the reclaim is less than rate x total, and
-  // recomputing from totals here would show a bigger figure than the VAT due reflects.
+  // Itemise from what was ACTUALLY reclaimed row by row, not from the global settings -
+  // channels reach the same ex-VAT cost by different routes (grossed up first, or already
+  // gross), so recomputing rate x total here would not match the VAT actually due.
   const REC_LBL = {buying:'Buying (COGS)', oper:'Operational', shipping:'Shipping',
     mkt_fee:'Referral / Marketplace Fee', ads:'Ad Spend', affiliate:'Affiliate Com.', shop_ads:'Shop Ads Com.'};
   for(const k of ['buying','oper','shipping','mkt_fee','ads','affiliate','shop_ads']){
@@ -4213,9 +4207,9 @@ function openPlDrawer(from, to, title){
     if(v > 0.004) vatLines.push(vsub('VAT reclaimed on ' + REC_LBL[k], v));
   }
   {
-    const ex = (STATE.vat.noVatByChannel || {}).tiktok;
-    if(ex && ex.length && (t.mkt_fee > 0.004 || t.affiliate > 0.004 || t.shop_ads > 0.004))
-      vatLines.push(`<div class="pls-row sub" style="color:var(--muted);font-size:11px"><span>TikTok commissions arrive net of VAT — nothing to reclaim on them</span><span></span></div>`);
+    const g = (STATE.vat.alreadyGross || {}).tiktok;
+    if(g && g.length && (t.mkt_fee > 0.004 || t.affiliate > 0.004 || t.shop_ads > 0.004))
+      vatLines.push(`<div class="pls-row sub" style="color:var(--muted);font-size:11px"><span>TikTok commissions are already VAT-inclusive — reclaimed from the stated figure, not grossed up first</span><span></span></div>`);
   }
   const vatDueColor = t.net_vat_due>=0 ? 'var(--red)' : 'var(--green)';
   const vatBlock =
@@ -6249,8 +6243,8 @@ function renderPLS(){
   const opexCh = ch => OPEX.filter(o=>o.ch===ch).reduce((a,o)=>a+o.amt,0);
   const opexAll = OPEX.filter(o=>o.ch==='all').reduce((a,o)=>a+o.amt,0);
   const V = STATE.vat, vDiv = 1+V.rate;
-  // per CHANNEL: TikTok's commissions carry no VAT to strip, so the ex-VAT line for them
-  // is the fee itself, not the fee over 1.2
+  // per CHANNEL: every channel reclaims, but they arrive differently - a figure already gross
+  // (TikTok) is divided straight down, one quoted net was grossed up first
   const exFor = (t,c,k) => vatIncFor(c,k) ? t[k]/vDiv : t[k];
   const head = `<tr><th>Line</th>${chans.map(c=>`<th class="num">${CH_NAME[c]}</th>`).join('')}<th class="num">Total</th></tr>`;
   const row = (label, fn, opts={}) => {
@@ -6339,7 +6333,7 @@ function renderProducts(){
   renderCostGaps();
   const tb = document.querySelector('#prodTable tbody');
   if(!STATE.raw.master.length){
-    tb.innerHTML = '<tr><td colspan="17" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="18" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
     document.getElementById('prodCount').textContent = '';
     return;
   }
@@ -6372,15 +6366,21 @@ function renderProducts(){
     const revEx = V.revIncVAT ? P/vDiv : P;
     const FB = {tiktok:STATE.ttRate, amazon:STATE.amzRef, amazon2:STATE.amzRef, ebay:EBAY_FVF_PCT, shopify:STATE.shopFee};
     const rate = e.referral != null ? e.referral : FB[ck];
-    let fee = P * rate;
-    if(ck === 'tiktok') fee += P * ((e.aff != null ? e.aff : 0.15) + (e.shopads != null ? e.shopads : 0.02));
-    if(ck === 'ebay')   fee += P * (e.reg != null ? e.reg : EBAY_REG_PCT) + (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER);
-    fee *= (vatIncFor(ck, 'mkt_fee') ? 1/vDiv : 1);
+    // The rate is applied to the selling price the same way the engine does it, then the same
+    // VAT route is followed: gross up where the fee is quoted net (Amazon, eBay), leave it
+    // where it is already inclusive (TikTok), and reclaim the VAT portion either way. Both
+    // routes land on the same ex-VAT cost, which is what profit is measured against.
+    let feeGross = P * rate;
+    if(ck === 'tiktok') feeGross += P * ((e.aff != null ? e.aff : 0.15) + (e.shopads != null ? e.shopads : 0.02));
+    if(ck === 'ebay')   feeGross += P * (e.reg != null ? e.reg : EBAY_REG_PCT) + (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER);
+    if(vatGrossUpFor(ck, 'mkt_fee')) feeGross *= vDiv;         // quoted net -> what is actually charged
+    const feeEx = vatIncFor(ck, 'mkt_fee') ? feeGross/vDiv : feeGross;
     const cEx = (v, k) => vatIncFor(ck, k) ? v/vDiv : v;
     const buyEx = cEx(e.buying, 'buying');
     const costs = buyEx + cEx(e.oper, 'oper') + cEx(e.shipping, 'shipping');
-    const profit = revEx - fee - costs;
-    return {profit, roi: buyEx > 0 ? profit/buyEx*100 : null, margin: revEx > 0 ? profit/revEx*100 : null};
+    const profit = revEx - feeEx - costs;
+    return {profit, roi: buyEx > 0 ? profit/buyEx*100 : null, margin: revEx > 0 ? profit/revEx*100 : null,
+            feeGross, feeEx, feeVat: feeGross - feeEx};
   };
   const pill = (v, fmt) => `<span class="pill ${v > 0.005 ? 'pos' : v < -0.005 ? 'neg' : 'zero'}">${fmt(v)}</span>`;
   const numIn = (i, f, v, step) => `<input type="number" data-i="${i}" data-f="${f}" value="${(v != null && v !== '') ? +(+v).toFixed(2) : ''}" step="${step}" min="0" style="width:82px;padding:5px 8px;text-align:right">`;
@@ -6397,6 +6397,7 @@ function renderProducts(){
     <td class="num">${numIn(i,'oper',e.oper,'0.01')}</td>
     <td class="num">${numIn(i,'ship',e.shipping,'0.01')}</td>
     <td class="num">${numIn(i,'ref', e.referral != null ? e.referral*100 : '', '0.1')}</td>
+    <td class="num" style="background:#eef6fd">${ec ? fmtGBP(ec.feeGross) : '<span style="color:var(--muted)">&mdash;</span>'}</td>
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'aff', (e.aff != null ? e.aff : 0.15)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'sads', (e.shopads != null ? e.shopads : 0.02)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'reg', (e.reg != null ? e.reg : EBAY_REG_PCT)*100, '0.05') : '<span style="color:var(--muted)">–</span>'}</td>
