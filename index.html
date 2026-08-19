@@ -6554,6 +6554,8 @@ function renderProducts(){
     const targets = new Set(masterEditTargets(e));
     STATE.raw.master = STATE.raw.master.filter(r => !targets.has(r));
     syncMasterStore();
+    STATE.master = buildMaster();          // same reason as adding: the list is built from here
+    if(loadedChannels().length){ recompute(); diagnostics(); }
     renderProducts();
     showBanner('Product removed from master sheet.', 'success');
   }));
@@ -6576,7 +6578,9 @@ document.getElementById('npAdd').addEventListener('click', () => {
   STATE.raw.master.push({
     'Name': document.getElementById('npName').value.trim(),
     'platform': plat, 'sku': sku,
-    'asin': plat === 'amazon' ? id : '',
+    // both Amazon accounts key on the ASIN; testing only 'amazon' left every Vefive product
+    // without one, so it was keyed on productid and never matched its sales rows
+    'asin': (plat === 'amazon' || plat === 'amazon2') ? id : '',
     'productid': id,
     'buying_cost_per_unit': parseFloat(document.getElementById('npBuy').value) || 0,
     'operational_cost_per_unit': parseFloat(document.getElementById('npOper').value) || 0,
@@ -6585,8 +6589,17 @@ document.getElementById('npAdd').addEventListener('click', () => {
   });
   for(const eid of ['npSku','npId','npName','npBuy','npOper','npShip','npRef']) document.getElementById(eid).value = '';
   syncMasterStore();
+  // renderProducts() only builds the master when there ISN'T one, so without this the new row
+  // sat in the sheet and never reached the list - it saved, synced, and stayed invisible.
+  STATE.master = buildMaster();
+  if(loadedChannels().length){ recompute(); diagnostics(); }
+  // a platform filter set to something else would hide the product that was just added
+  const pf = document.getElementById('prodPlat');
+  const added = chOfPlat(plat);
+  if(pf.value !== 'all' && pf.value !== added) pf.value = added;
+  document.getElementById('prodSearch').value = '';
   renderProducts();
-  showBanner('Product added to master sheet.', 'success');
+  showBanner(`Product added${sku ? ' - ' + sku : ''}. Costs are held in Cost Manager from here.`, 'success');
 });
 
 // ---- SKU Performance (WhatSales-style analytic rows) ----
