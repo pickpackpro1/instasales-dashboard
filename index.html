@@ -1535,6 +1535,38 @@ const CH_NAME    = {tiktok:'TikTok', amazon:'Amazon 1 (Vemart)', amazon2:'Amazon
 // accounts separately ("amazon-vemart" / "amazon-vefive"), so Vefive must be tested BEFORE the
 // generic amazon check - both strings contain "amazon". Collapsing them lost the account:
 // Vefive rows were labelled Vemart and priced off Vemart's sales.
+// Seller SKUs for a channel key. An Amazon ASIN can carry more than one - an FBM and an FBA
+// offer are different SKUs on the same ASIN - so this returns all of them. Indexed once per
+// master build; rebuilding per row would be O(rows x master).
+let _skuIdx = null, _skuIdxFor = null;
+function sellerSkusFor(channel, key){
+  const raw = STATE.raw.master || [];
+  if(!key || !raw.length) return [];
+  // Indexed off the RAW sheet, not M.list: the built master keys Amazon on the ASIN, so an
+  // ASIN listed both FBM and FBA keeps only one of its two rows there and the other SKU would
+  // be invisible. Rebuilt only when the sheet itself changes.
+  if(_skuIdxFor !== raw){
+    _skuIdxFor = raw; _skuIdx = {};
+    for(const r of raw){
+      const sku = fixText(r['sku']);
+      if(!sku) continue;
+      const fam = cbFam(fixText(r['platform']));
+      const id = fam === 'amazon' ? (fixText(r['asin']) || fixText(r['productid']))
+               : fam === 'ebay'   ? (fixText(r['productid']) || sku)
+               : sku;
+      if(!id) continue;
+      const k = fam + '|' + String(id).trim().toUpperCase();
+      (_skuIdx[k] = _skuIdx[k] || []);
+      if(!_skuIdx[k].includes(sku)) _skuIdx[k].push(sku);
+    }
+  }
+  const fam = (channel === 'amazon2') ? 'amazon' : channel;
+  const hit = _skuIdx[fam + '|' + String(key).trim().toUpperCase()] || [];
+  // a key that IS the sku (TikTok, Shopify) needs no second line
+  return hit.filter(x => String(x).trim().toUpperCase() !== String(key).trim().toUpperCase());
+}
+// What the channel's join key actually IS, so the row does not label an ASIN as a SKU.
+const ID_LBL = {amazon:'ASIN', amazon2:'ASIN', ebay:'Item ID', tiktok:'SKU', shopify:'SKU'};
 const chOfPlat = p => {
   p = String(p || '').toLowerCase();
   if(p.includes('vefive') || p.includes('amazon2') || p.includes('amazon 2')) return 'amazon2';
@@ -5960,14 +5992,8 @@ function renderDailySummary(S){
   // The seller SKU, not the ASIN: that is what is recognisable at a glance and what gets
   // typed into Seller Central. Falls back to the key when the master has no SKU for it.
   const skuOf = x => {
-    const M = STATE.master;
-    if(!M) return x.key || '';
-    const ch = x.channel;
-    const e = (ch === 'amazon' || ch === 'amazon2') ? M.amazon.byAsin[x.key]
-            : ch === 'ebay'    ? M.ebay.byItem[x.key]
-            : ch === 'shopify' ? M.shopify.bySku[x.key]
-            : M.tiktok.bySku[x.key];
-    return (e && e.sku) ? e.sku : (x.key || '');
+    const sk = sellerSkusFor(x.channel, x.key);
+    return sk.length ? sk[0] : (x.key || '');
   };
   // One line, read at a glance: SKU plus the single number that matters for that list. The
   // product name and the id stay on hover so a row can still be identified without widening it.
@@ -6771,7 +6797,14 @@ function skuRowHTML(r, i, opt){
           ${stock != null ? `<span class="badge green">Stock: ${fmtNum(stock)}</span>` : ''}
           ${stockDays != null ? `<span class="badge ${stockDays<14?'red':'grey'}">Stock ending in ${stockDays>99?'99+':stockDays.toFixed(1)} days</span>` : ''}
         </div>
-        <div class="kv">${isParent?'Parent ASIN':'SKU'}: <b>${esc(r.key)}</b></div>
+        <div class="kv">${isParent ? 'Parent ASIN' : ID_LBL[r.channel] || 'SKU'}: <b>${esc(r.key)}</b></div>
+        ${(() => {
+          // the channel SKU(s) behind that id - what the listing is called in Seller Central.
+          // An ASIN selling both FBM and FBA has two, and both are worth seeing.
+          if(isParent) return '';
+          const sk = sellerSkusFor(r.channel, r.key);
+          return sk.length ? `<div class="kv">SKU: <b>${esc(sk.join(', '))}</b></div>` : '';
+        })()}
         <div class="kv">${isParent?'Avg Selling Price':'Selling Price'}: <b>${price!=null?fmtGBP(price):'-'}</b></div>
         <div class="kv">${isParent?'Avg COGS':'COGS'}: <b>${unitCogs!=null?fmtGBP(unitCogs):'-'}</b></div>
       </div>
