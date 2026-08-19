@@ -244,16 +244,6 @@ input[type=range]{accent-color:var(--accent);width:150px}
 .kv{font-size:11.5px;color:var(--muted);margin-top:2px}
 .kv b{color:var(--text)}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:800;margin:3px 4px 0 0}
-/* Daily Analysis SKU tables: dense, scannable, and capped so a 75-row loss list scrolls
-   inside its own box instead of pushing the rest of the summary off screen. */
-.da-sku-wrap{max-height:300px;margin-top:6px;border:1px solid var(--border);border-radius:8px}
-.da-sku-tbl{width:100%;border-collapse:collapse;font-size:12px}
-.da-sku-tbl thead th{position:sticky;top:0;background:#f2f6fb;z-index:1;text-align:left;font-size:10.5px;
-  text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:6px 8px;border-bottom:1px solid var(--border)}
-.da-sku-tbl thead th.num{text-align:right}
-.da-sku-tbl tbody td{padding:5px 8px;border-bottom:1px solid #eef2f7;vertical-align:top}
-.da-sku-tbl tbody td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.da-sku-tbl tbody tr:hover{background:#f6f9fc}
 /* Daily tracker: the date acts as a section header the way it does in the hand-kept sheet,
    with each day's Total closing the block. */
 #dctTable tr.dct-date td{background:#17375e;color:#fff;font-weight:800;font-size:12px;letter-spacing:.03em;padding:6px 10px}
@@ -5967,21 +5957,25 @@ function renderDailySummary(S){
     const c = p >= 0 ? 'var(--green)' : 'var(--red)';
     return `<b style="color:${c}">${p>=0?'+':''}${p.toFixed(1)}%</b>`;
   };
-  // A scannable table rather than a run-on list. 75 loss-makers as comma-separated prose is a
-  // wall of text you cannot read down; leading with the SKU makes each row actionable, since
-  // that is what you search for in Seller Central or in Cost Manager.
-  const skuTable = (arr, cols) => {
-    if(!arr.length) return '<div style="margin-top:4px;color:var(--muted)">none</div>';
-    const head = '<tr><th style="width:34px" class="num">#</th><th>SKU / ASIN</th><th>Product</th>'
-      + cols.map(c => `<th class="num">${c.h}</th>`).join('') + '</tr>';
-    const body = arr.map((s,i) => `<tr>
-      <td class="num" style="color:var(--muted)">${i+1}</td>
-      <td style="font-weight:700;white-space:nowrap">${esc(s.key||'')}<div style="font-weight:400"><span class="chip ${s.channel}" style="font-size:9.5px;padding:1px 5px">${CH_NAME[s.channel]||s.channel}</span></div></td>
-      <td title="${esc(s.name||'')}" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.name||'')}</td>
-      ${cols.map(c => `<td class="num" style="${c.style||''}">${c.v(s)}</td>`).join('')}
-    </tr>`).join('');
-    return `<div class="table-wrap da-sku-wrap"><table class="da-sku-tbl"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  // The seller SKU, not the ASIN: that is what is recognisable at a glance and what gets
+  // typed into Seller Central. Falls back to the key when the master has no SKU for it.
+  const skuOf = x => {
+    const M = STATE.master;
+    if(!M) return x.key || '';
+    const ch = x.channel;
+    const e = (ch === 'amazon' || ch === 'amazon2') ? M.amazon.byAsin[x.key]
+            : ch === 'ebay'    ? M.ebay.byItem[x.key]
+            : ch === 'shopify' ? M.shopify.bySku[x.key]
+            : M.tiktok.bySku[x.key];
+    return (e && e.sku) ? e.sku : (x.key || '');
   };
+  // One line, read at a glance: SKU plus the single number that matters for that list. The
+  // product name and the id stay on hover so a row can still be identified without widening it.
+  const skuChips = (arr, val, colour) => arr.length
+    ? `<div style="margin-top:6px;line-height:1.95">` + arr.map(x =>
+        `<span title="${esc((x.key||'') + (x.name ? ' · ' + x.name : ''))}"><b>${esc(skuOf(x))}</b> <span style="color:${colour}">(${val(x)})</span></span>`
+      ).join(' <span style="color:var(--muted)">·</span> ') + `</div>`
+    : '<div style="margin-top:4px;color:var(--muted)">none</div>';
 
   // KPI chips across the top of the summary
   const chip = (label, val, sub, cls) =>
@@ -6025,27 +6019,14 @@ function renderDailySummary(S){
   document.getElementById('daSumOverview').innerHTML = overview;
 
   const alerts = (losses.length
-      ? `<div style="margin-bottom:12px"><b>${fmtNum(losses.length)} SKU(s) loss-making — total drag ${money(drag)}</b>` +
-        skuTable(losses, [
-          {h:'Loss',    style:'color:var(--red);font-weight:700', v:s=>money(s.profit)},
-          {h:'Margin',  style:'color:var(--red)',                 v:s=>daPct1(s.margin)},
-          {h:'ACoS',    v:s=>daPct1(s.acos)},
-          {h:'Units',   v:s=>fmtNum(s.units)},
-          {h:'Revenue', v:s=>money(s.rev)}]) + `</div>` : '')
+      ? `<div style="margin-bottom:12px"><b>${fmtNum(losses.length)} SKU(s) loss-making — total drag ${money(Math.abs(drag))}</b>` +
+        skuChips(losses, x => money(Math.abs(x.profit)), 'var(--red)') + `</div>` : '')
     + (lowMargin.length
       ? `<div style="margin-bottom:12px"><b>${fmtNum(lowMargin.length)} SKU(s) profitable but below ${DA_T.low}% margin</b>` +
-        skuTable(lowMargin, [
-          {h:'Margin',  style:'color:#9a6a00;font-weight:700', v:s=>daPct1(s.margin)},
-          {h:'Profit',  v:s=>money(s.profit)},
-          {h:'Units',   v:s=>fmtNum(s.units)},
-          {h:'Revenue', v:s=>money(s.rev)}]) + `</div>` : '')
+        skuChips(lowMargin, x => daPct1(x.margin), '#9a6a00') + `</div>` : '')
     + (highAcos.length
       ? `<div><b>${fmtNum(highAcos.length)} SKU(s) with ACoS above ${DA_T.acosBad}%</b> — bid reductions recommended.` +
-        skuTable(highAcos, [
-          {h:'ACoS',     style:'color:var(--red);font-weight:700', v:s=>daPct1(s.acos)},
-          {h:'Ad spend', v:s=>money(s.ads)},
-          {h:'Ad sales', v:s=>money(s.adSales)},
-          {h:'Profit',   style:'font-weight:700', v:s=>money(s.profit)}]) + `</div>` : '');
+        skuChips(highAcos, x => daPct1(x.acos), 'var(--red)') + `</div>` : '');
   document.getElementById('daSumAlerts').innerHTML = alerts ||
     '<div style="color:var(--muted)">Nothing to flag — no loss-making SKUs, none below target margin, and no ACoS above ' + DA_T.acosBad + '%.</div>';
 
@@ -6053,13 +6034,9 @@ function renderDailySummary(S){
       ? `<div style="margin-bottom:10px"><b>TACoS is healthy at ${daPct1(d.tacos)}</b> — ad spend is ${daPct1(d.tacos)} of total revenue, under the ${DA_T.tacosTarget}% target.${d.acos!=null?` ACoS is ${daPct1(d.acos)}.`:''}</div>` : '')
     + (excellent.length
       ? `<div style="margin-bottom:10px"><b>${fmtNum(excellent.length)} SKU(s) running at excellent margins (≥${DA_T.excellent}%)</b>` +
-        skuTable(excellent, [
-          {h:'Margin',  style:'color:var(--green);font-weight:700', v:s=>daPct1(s.margin)},
-          {h:'Profit',  style:'color:var(--green)', v:s=>money(s.profit)},
-          {h:'Units',   v:s=>fmtNum(s.units)},
-          {h:'Revenue', v:s=>money(s.rev)}]) + `</div>` : '')
-    + (topRev ? `<div style="margin-bottom:6px"><b>Top revenue SKU:</b> <b>${esc(topRev.key||'')}</b> — ${esc((topRev.name||'').slice(0,60))} — ${money(topRev.rev)} across ${fmtNum(topRev.orders)} order(s)${topRev.profit>=0?' — and profitable too.':` — <span style="color:var(--red)">but it lost ${money(Math.abs(topRev.profit))}.</span>`}</div>` : '')
-    + (topPft ? `<div><b>Most profitable SKU:</b> <b>${esc(topPft.key||'')}</b> — ${esc((topPft.name||'').slice(0,60))} returned ${money(topPft.profit)} at a ${daPct1(topPft.margin)} margin.</div>` : '');
+        skuChips(excellent, x => daPct1(x.margin), 'var(--green)') + `</div>` : '')
+    + (topRev ? `<div style="margin-bottom:6px"><b>Top revenue SKU:</b> <b>${esc(skuOf(topRev))}</b> <span style="color:var(--muted)">${esc((topRev.name||'').slice(0,52))}</span> — ${money(topRev.rev)} across ${fmtNum(topRev.orders)} order(s)${topRev.profit>=0?' — and profitable too.':` — <span style="color:var(--red)">but it lost ${money(Math.abs(topRev.profit))}.</span>`}</div>` : '')
+    + (topPft ? `<div><b>Most profitable SKU:</b> <b>${esc(skuOf(topPft))}</b> <span style="color:var(--muted)">${esc((topPft.name||'').slice(0,52))}</span> returned ${money(topPft.profit)} at a ${daPct1(topPft.margin)} margin.</div>` : '');
   document.getElementById('daSumWell').innerHTML = well ||
     '<div style="color:var(--muted)">No standout performers on this day.</div>';
 }
