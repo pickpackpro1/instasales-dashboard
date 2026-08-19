@@ -661,6 +661,33 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <button class="btn" id="cbAddVersion">Add version</button>
       </div>
     </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3><span class="dot" style="background:var(--green)"></span>Add a product</h3>
+      <div class="sub-title">For something not in your reports yet &mdash; a new listing, or a product you buy but have not sold on this account. It becomes a dated cost like any other, so it is already correct the day its first sale lands.</div>
+      <div class="fbar" style="flex-wrap:wrap;gap:8px;margin-top:8px">
+        <select class="fsel" id="cbNewPlat">
+          <option value="amazon">Amazon 1 (Vemart)</option>
+          <option value="amazon2">Amazon 2 (Vefive)</option>
+          <option value="tiktok">TikTok</option>
+          <option value="ebay">eBay</option>
+          <option value="shopify">Shopify</option>
+        </select>
+        <select class="fsel" id="cbNewPlatChan" title="Which offer these costs are for"></select>
+        <input type="text" id="cbNewId" placeholder="ASIN / Item ID / SKU" style="min-width:190px">
+        <input type="text" id="cbNewName" placeholder="Product name" style="min-width:220px">
+        <input type="text" id="cbNewSellerSku" placeholder="Seller SKU (optional)" style="min-width:170px">
+      </div>
+      <div class="fbar" style="flex-wrap:wrap;gap:8px;margin-top:6px">
+        <span class="flabel">Costs effective from</span>
+        <input type="date" id="cbNewPFrom" style="width:150px">
+        <input type="number" step="0.01" id="cbNewPBuy" placeholder="COGS £" style="width:110px">
+        <input type="number" step="0.01" id="cbNewPShip" placeholder="Ship £ / FBA fee £" style="width:160px">
+        <input type="number" step="0.01" id="cbNewPOper" placeholder="Oper £" style="width:110px">
+        <input type="number" step="0.01" id="cbNewPRef" placeholder="Referral %" style="width:120px">
+        <button class="btn" id="cbAddProduct">Add product</button>
+      </div>
+    </div>
   </div>
 
   <div class="page" id="page-products">
@@ -7964,6 +7991,69 @@ document.getElementById('cbAddVersion').addEventListener('click', () => {
   renderCostBook();
   renderCostHistory();
   showBanner(`Added ${fam==='amazon'?chan.toUpperCase():fam.toUpperCase()} cost for ${id}, effective ${from}. Earlier reports keep the previous cost.`, 'success');
+});
+// Fulfilment options follow the platform, since FBM/FBA mean nothing on eBay.
+function cbSyncNewPlatChan(){
+  const plat = document.getElementById('cbNewPlat').value;
+  const fam = cbFam(plat);
+  const sel = document.getElementById('cbNewPlatChan');
+  const opts = cbChanList(fam);
+  sel.innerHTML = opts.map(([k, short, long]) =>
+    `<option value="${k}">${esc(short === long ? short : short + ' - ' + long)}</option>`).join('');
+  sel.style.display = opts.length > 1 ? '' : 'none';
+  document.getElementById('cbNewPShip').placeholder = sel.value === 'fba' ? 'FBA fee £' : 'Ship £';
+}
+document.getElementById('cbNewPlat').addEventListener('change', cbSyncNewPlatChan);
+document.getElementById('cbNewPlatChan').addEventListener('change', e => {
+  document.getElementById('cbNewPShip').placeholder = e.target.value === 'fba' ? 'FBA fee £' : 'Ship £';
+});
+cbSyncNewPlatChan();
+document.getElementById('cbAddProduct').addEventListener('click', () => {
+  const plat = document.getElementById('cbNewPlat').value;
+  const fam  = cbFam(plat);
+  const chan = document.getElementById('cbNewPlatChan').value || 'fbm';
+  const id   = document.getElementById('cbNewId').value.trim();
+  const name = document.getElementById('cbNewName').value.trim();
+  const sku  = document.getElementById('cbNewSellerSku').value.trim();
+  if(!id){ showBanner('Enter the ASIN, Item ID or SKU this product is known by.', 'error'); return; }
+  const from = document.getElementById('cbNewPFrom').value || document.getElementById('cbAsAt').value || costRefDate();
+  const num = eid => { const v = document.getElementById(eid).value.trim(); return v === '' ? null : +v; };
+  const buy = num('cbNewPBuy'), ship = num('cbNewPShip'), oper = num('cbNewPOper'), refRaw = num('cbNewPRef');
+  if(buy == null && ship == null && oper == null && refRaw == null){
+    showBanner('Enter at least one cost, otherwise there is nothing to record.', 'error'); return;
+  }
+  const k = cbId(fam, id);
+  const existed = !!COSTBOOK[k];
+  if(buy  != null) cbSetCost(fam, id, chan, 'buy',  buy,  from, name);
+  if(oper != null) cbSetCost(fam, id, chan, 'oper', oper, from, name);
+  if(ship != null) cbSetCost(fam, id, chan, chan === 'fba' ? 'fee' : 'ship', ship, from, name);
+  if(refRaw != null) cbSetCost(fam, id, chan, 'ref', refRaw > 1 ? refRaw/100 : refRaw, from, name);
+  // Give it a master row too when it has none, so it carries a seller SKU and a platform and
+  // shows up in Product ROIs - the book alone holds costs, not identity.
+  const already = (STATE.raw.master || []).some(r =>
+    cbFam(fixText(r.platform)) === fam &&
+    [fixText(r.asin), fixText(r.productid), fixText(r.sku)].some(x => x && x.toUpperCase() === id.toUpperCase()));
+  if(!already){
+    STATE.raw.master.push({
+      'Name': name, 'platform': plat, 'sku': sku || id,
+      'asin': fam === 'amazon' ? id : '', 'productid': id,
+      'buying_cost_per_unit': buy || 0, 'operational_cost_per_unit': oper || 0,
+      'shipping_cost_per_unit': (chan === 'fba' ? 0 : (ship || 0)),
+      'Refferal fee %': refRaw == null ? null : (refRaw > 1 ? refRaw/100 : refRaw)
+    });
+    syncMasterStore();
+  }
+  STATE.master = buildMaster();
+  if(loadedChannels().length){ recompute(); diagnostics(); }
+  for(const eid of ['cbNewId','cbNewName','cbNewSellerSku','cbNewPBuy','cbNewPShip','cbNewPOper','cbNewPRef'])
+    document.getElementById(eid).value = '';
+  // make sure the row just created is actually visible
+  document.getElementById('cbScope').value = 'all';
+  document.getElementById('cbPlat').value = 'all';
+  document.getElementById('cbFul').value = 'all';
+  document.getElementById('cbSearch').value = id;
+  renderCostBook();
+  showBanner(`${existed ? 'Updated' : 'Added'} ${id}${name ? ' - ' + name : ''}, ${cbChanLabel(fam, chan)}, effective ${from}.`, 'success');
 });
 document.getElementById('cbExport').addEventListener('click', () => {
   const asAt = document.getElementById('cbAsAt').value || todayISO();
