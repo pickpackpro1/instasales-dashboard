@@ -894,7 +894,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <select class="fsel" id="spShow"><option>10</option><option>25</option><option>50</option><option>100</option></select>
         <span class="flabel">entries</span>
         <span class="flabel" style="margin-left:14px">Search:</span>
-        <select class="fsel" id="spField"><option value="sku">Channel SKU</option><option value="name">Product Name</option></select>
+        <select class="fsel" id="spField"><option value="sku">SKU / ASIN</option><option value="name">Product Name</option></select>
         <input type="search" id="spSearch" placeholder="Type to search..." style="min-width:180px">
       </div>
       <div id="spMissingBar" class="missing-bar hidden"></div>
@@ -6633,8 +6633,14 @@ function spFiltered(){
   else if(rep==='profit') rows = rows.filter(r=>r.net_profit_ex>0);
   else if(rep==='ads') rows = rows.filter(r=>r.ads>0);
   else if(rep==='nocost') rows = rows.filter(isMissingFromMaster);   // same test the red flag uses
-  const q = STATE.sp.q.toLowerCase();
-  if(q) rows = rows.filter(r => STATE.sp.field==='sku' ? (r.key||'').toLowerCase().includes(q) : (r.name||'').toLowerCase().includes(q));
+  const q = STATE.sp.q.toLowerCase().trim();
+  // "Channel SKU" searched r.key, which on Amazon is the ASIN - so typing an actual channel
+  // SKU never matched anything. Match the id OR any seller SKU behind it, so both work.
+  if(q) rows = rows.filter(r => {
+    if(STATE.sp.field !== 'sku') return (r.name||'').toLowerCase().includes(q);
+    if((r.key||'').toLowerCase().includes(q)) return true;
+    return sellerSkusFor(r.channel, r.key).some(x => String(x).toLowerCase().includes(q));
+  });
   const k = STATE.sp.sort, dir = STATE.sp.dir==='asc'?1:-1;
   const cmp = (a,b) => {
     let va=a[k], vb=b[k];
