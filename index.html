@@ -446,6 +446,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <div class="card" style="margin-top:14px">
       <div class="toolbar">
         <h3 style="margin:0"><span class="dot"></span>Channel Revenue Performance</h3>
+        <span id="crpPick"></span>
         <span style="flex:1"></span>
         <div class="count" id="crpRange"></div>
       </div>
@@ -466,7 +467,8 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <div class="grid g2" style="margin-top:14px">
       <!-- ---- FBA vs FBM ---- -->
       <div class="card">
-        <h3><span class="dot" style="background:var(--ch-amazon2)"></span>FBA vs FBM</h3>
+        <div class="toolbar"><h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span>FBA vs FBM</h3>
+          <span id="fbaPick"></span></div>
         <div class="sub-title" id="fbaSub">Amazon only. Needs the All Orders Report to split an ASIN's units between its two offers.</div>
         <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:8px">
           <div style="width:180px;height:180px;flex-shrink:0"><canvas id="fbaDonut"></canvas></div>
@@ -479,7 +481,8 @@ input[type=range]{accent-color:var(--accent);width:150px}
       </div>
       <!-- ---- organic vs ad sales ---- -->
       <div class="card">
-        <h3><span class="dot" style="background:var(--green)"></span>Organic vs Ad Sales</h3>
+        <div class="toolbar"><h3 style="margin:0"><span class="dot" style="background:var(--green)"></span>Organic vs Ad Sales</h3>
+          <span id="orgPick"></span></div>
         <div class="sub-title" id="orgSub">Ad sales are the revenue the ad reports attribute to advertising; the rest is organic.</div>
         <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:8px">
           <div style="width:180px;height:180px;flex-shrink:0"><canvas id="orgDonut"></canvas></div>
@@ -4589,7 +4592,14 @@ function renderDashboard(){
       tooltip:{callbacks:{label:c=>{const tot=c.dataset.data.reduce((a,b)=>a+b,0); return ` ${c.label}: ${fmtGBP(c.parsed)} (${tot?(c.parsed/tot*100).toFixed(1):0}%)`;}}}}}
   });
   renderActionItems();
-  renderDashPanels();   // same filtered rows as the tiles above, so they cannot disagree
+  // built once, then only re-rendered - rebuilding the pickers each pass would lose focus mid-click
+  if(!document.querySelector('.dash-range')){
+    document.getElementById('crpPick').innerHTML = dashPickerHTML('crp');
+    document.getElementById('fbaPick').innerHTML = dashPickerHTML('fba');
+    document.getElementById('orgPick').innerHTML = dashPickerHTML('org');
+    dashBindPickers();
+  }
+  renderDashPanels();
 }
 
 // Pull an hour-of-day (0-23) out of a raw timestamp cell. Order exports carry a full
@@ -6374,6 +6384,123 @@ function renderDailyTrends(){
     `${fmtNum(Math.min(view.length, CAP))}${view.length>CAP?'+':''} of ${fmtNum(all.length)} products · ${dates.length ? dates[0]+' → '+dates[dates.length-1] : 'no days'}`;
 }
 
+// ---- Per-panel date ranges ----
+// Each dashboard panel can look at its own window without touching the global filter or each
+// other. '' means "follow the filter at the top", which stays the default so nothing changes
+// underneath you until you ask it to.
+const DASH_RANGE = {crp:{p:'', from:'', to:''}, fba:{p:'', from:'', to:''}, org:{p:'', from:'', to:''}};
+const DASH_PRESETS = [
+  ['',          'Follows top filter'],
+  ['today',     'Today'],
+  ['yesterday', 'Yesterday'],
+  ['last7',     'Last 7 days'],
+  ['last30',    'Last 30 days'],
+  ['mtd',       'Month to date'],
+  ['lastmonth', 'Last month'],
+  ['quarter',   'This quarter'],
+  ['ytd',       'Year to date'],
+  ['all',       'All dates'],
+  ['custom',    'Custom range']
+];
+const dISO = d => d.toISOString().slice(0,10);
+// Anchored on the newest day the loaded files actually cover, not the wall clock: "last 7 days"
+// against a machine date ahead of the data would return an empty panel and look broken.
+function dashToday(){
+  let mx = '';
+  for(const ch of ALL_CH){
+    const d = (STATE.extras[ch] || {}).daily || {};
+    for(const k of Object.keys(d)) if(k > mx) mx = k;
+  }
+  return mx || todayISO();
+}
+function dashRangeFor(r){
+  if(!r || !r.p) return null;                       // follow the global filter
+  if(r.p === 'all') return {from:'', to:''};
+  if(r.p === 'custom') return (r.from || r.to) ? {from:r.from, to:r.to} : null;
+  const t = new Date(dashToday() + 'T12:00:00');    // midday: no DST edge cases
+  const back = n => { const d = new Date(t); d.setDate(d.getDate() - n); return dISO(d); };
+  const y = t.getFullYear(), m = t.getMonth();
+  switch(r.p){
+    case 'today':     return {from:dISO(t), to:dISO(t)};
+    case 'yesterday': return {from:back(1), to:back(1)};
+    case 'last7':     return {from:back(6), to:dISO(t)};
+    case 'last30':    return {from:back(29), to:dISO(t)};
+    case 'mtd':       return {from:dISO(new Date(y, m, 1)), to:dISO(t)};
+    case 'lastmonth': return {from:dISO(new Date(y, m-1, 1)), to:dISO(new Date(y, m, 0))};
+    case 'quarter':   return {from:dISO(new Date(y, Math.floor(m/3)*3, 1)), to:dISO(t)};
+    case 'ytd':       return {from:dISO(new Date(y, 0, 1)), to:dISO(t)};
+  }
+  return null;
+}
+// Channel rows for a panel's own window. Re-runs the engines with the filter pinned there and
+// restores afterwards - the same path the comparison drawer uses. Results are cached per range
+// for one render pass, so three panels on the same window cost one recompute, not three.
+let _dashRangeCache = null;
+function dashRowsFor(range){
+  if(!range) return {chans: filteredChannels(), rows: ch => STATE.channels[ch] || [],
+                     daily: ch => (STATE.extras[ch] || {}).daily || {}, label: ''};
+  const key = range.from + '|' + range.to;
+  if(_dashRangeCache && _dashRangeCache.key === key) return _dashRangeCache.val;
+  const sf = STATE.dateFrom, st = STATE.dateTo;
+  let snapCh = {}, snapEx = {}, chans = [];
+  try{
+    STATE.dateFrom = range.from; STATE.dateTo = range.to;
+    recompute();
+    chans = filteredChannels();
+    for(const ch of ALL_CH){
+      if(STATE.channels[ch]) snapCh[ch] = STATE.channels[ch].slice();
+      snapEx[ch] = ((STATE.extras[ch] || {}).daily) || {};
+    }
+  } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
+  const val = {chans, rows: ch => snapCh[ch] || [], daily: ch => snapEx[ch] || {},
+    label: (range.from || range.to) ? `${range.from || '…'} → ${range.to || '…'}` : 'all dates'};
+  _dashRangeCache = {key, val};
+  return val;
+}
+// One picker, used by all three panels.
+function dashPickerHTML(id){
+  return `<select class="fsel dash-range" data-r="${id}" style="min-width:150px">`
+    + DASH_PRESETS.map(([v,l]) => `<option value="${v}">${l}</option>`).join('')
+    + `</select>`
+    + `<input type="date" class="dash-cf hidden" data-r="${id}" style="width:142px">`
+    + `<input type="date" class="dash-ct hidden" data-r="${id}" style="width:142px">`;
+}
+function dashSyncPickers(){
+  for(const [id, r] of Object.entries(DASH_RANGE)){
+    const sel = document.querySelector(`.dash-range[data-r="${id}"]`);
+    if(!sel) continue;
+    sel.value = r.p;
+    const cf = document.querySelector(`.dash-cf[data-r="${id}"]`), ct = document.querySelector(`.dash-ct[data-r="${id}"]`);
+    const show = r.p === 'custom';
+    cf.classList.toggle('hidden', !show); ct.classList.toggle('hidden', !show);
+    if(show){ if(!cf.value) cf.value = r.from || dashToday(); if(!ct.value) ct.value = r.to || dashToday(); }
+  }
+}
+function dashBindPickers(){
+  document.querySelectorAll('.dash-range').forEach(sel => sel.addEventListener('change', () => {
+    const id = sel.dataset.r;
+    DASH_RANGE[id].p = sel.value;
+    if(sel.value === 'custom'){
+      const cf = document.querySelector(`.dash-cf[data-r="${id}"]`), ct = document.querySelector(`.dash-ct[data-r="${id}"]`);
+      DASH_RANGE[id].from = cf.value || dashToday();
+      DASH_RANGE[id].to   = ct.value || dashToday();
+    }
+    _dashRangeCache = null;
+    renderDashPanels();
+  }));
+  const onCustom = e => {
+    const id = e.target.dataset.r;
+    const cf = document.querySelector(`.dash-cf[data-r="${id}"]`), ct = document.querySelector(`.dash-ct[data-r="${id}"]`);
+    if(cf.value && ct.value && cf.value > ct.value){        // keep from <= to
+      if(e.target === cf) ct.value = cf.value; else cf.value = ct.value;
+    }
+    DASH_RANGE[id].p = 'custom'; DASH_RANGE[id].from = cf.value; DASH_RANGE[id].to = ct.value;
+    _dashRangeCache = null;
+    renderDashPanels();
+  };
+  document.querySelectorAll('.dash-cf, .dash-ct').forEach(i => i.addEventListener('change', onCustom));
+}
+
 // ---- Dashboard: channel revenue, FBA vs FBM, organic vs ad sales ----
 // All three read the SAME filtered rows the KPI tiles above them use, so a channel or date
 // filter moves them together and none can disagree with the headline numbers.
@@ -6400,10 +6527,11 @@ const dashRowHTML = (dot, label, cells) =>
   + cells.map(c => `<td class="num" style="padding:6px 4px;font-weight:700">${c}</td>`).join('') + '</tr>';
 
 function renderChannelPerf(){
-  const chans = filteredChannels().filter(ch => (STATE.channels[ch] || []).length);
+  const D = dashRowsFor(dashRangeFor(DASH_RANGE.crp));
+  const chans = D.chans.filter(ch => D.rows(ch).length);
   const rev = {}; let total = 0;
   for(const ch of chans){
-    const t = totalsOf(STATE.channels[ch]);
+    const t = totalsOf(D.rows(ch));
     rev[ch] = t.revenue_gross || 0;
     total += rev[ch];
   }
@@ -6419,7 +6547,7 @@ function renderChannelPerf(){
   // daily line per channel, from the same per-day series the trend chart uses
   const days = new Set();
   for(const ch of order){
-    const d = (STATE.extras[ch] || {}).daily || {};
+    const d = D.daily(ch);
     for(const k of Object.keys(d)) if(k) days.add(k);
   }
   const labels = [...days].sort();
@@ -6429,7 +6557,7 @@ function renderChannelPerf(){
     CH.crpTrend = new Chart(el, {
       type:'line',
       data:{labels, datasets: order.map(ch => {
-        const d = (STATE.extras[ch] || {}).daily || {};
+        const d = D.daily(ch);
         return {label:CH_NAME[ch], data:labels.map(x => +((d[x] && d[x].rev) || 0).toFixed(2)),
           borderColor:CH_COL[ch], backgroundColor:CH_COL[ch], tension:.32, borderWidth:2,
           pointRadius:0, pointHoverRadius:4};
@@ -6447,10 +6575,11 @@ function renderChannelPerf(){
 
 function renderFbaFbm(){
   // Only Amazon has the split, and only when the All Orders Report says which SKU sold.
-  const chans = filteredChannels().filter(ch => ch === 'amazon' || ch === 'amazon2');
+  const D = dashRowsFor(dashRangeFor(DASH_RANGE.fba));
+  const chans = D.chans.filter(ch => ch === 'amazon' || ch === 'amazon2');
   let fbaU = 0, fbmU = 0, fbaR = 0, fbmR = 0, anySplit = false, units = 0;
   for(const ch of chans){
-    for(const r of (STATE.channels[ch] || [])){
+    for(const r of D.rows(ch)){
       const u = r.units || 0, fu = r.fbaUnits || 0;
       units += u;
       if(fu > 0) anySplit = true;
@@ -6479,10 +6608,11 @@ function renderFbaFbm(){
 }
 
 function renderOrganicVsAds(){
-  const chans = filteredChannels();
+  const D = dashRowsFor(dashRangeFor(DASH_RANGE.org));
+  const chans = D.chans;
   let rev = 0, adSales = 0, ads = 0;
   for(const ch of chans){
-    const t = totalsOf(STATE.channels[ch] || []);
+    const t = totalsOf(D.rows(ch));
     rev += t.revenue_gross || 0;
     adSales += t.ad_sales || 0;
     ads += t.ads || 0;
@@ -6505,7 +6635,11 @@ function renderOrganicVsAds(){
          <td class="num" style="padding:6px 4px;font-weight:800">${fmtGBP(rev)}</td><td class="num"></td></tr>`
     : '<tr><td colspan="3" style="color:var(--muted);padding:10px">No revenue in this selection.</td></tr>';
 }
-function renderDashPanels(){ renderChannelPerf(); renderFbaFbm(); renderOrganicVsAds(); }
+function renderDashPanels(){
+  _dashRangeCache = null;          // a fresh pass must not reuse last pass's rows
+  renderChannelPerf(); renderFbaFbm(); renderOrganicVsAds();
+  dashSyncPickers();
+}
 
 // ---- PLS ----
 function renderPLS(){
