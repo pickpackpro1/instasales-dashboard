@@ -3452,18 +3452,22 @@ function computeEbay(){
   // unless a separate campaign export happened to be loaded. Campaign reports still win when
   // present - they carry ad SALES and clicks, which the transaction report does not.
   let txnAdTotal = 0;
-  if(!R.ebay_ppc.length && !R.ebay_pl.length){
+  const applyTxnAds = () => {
+    txnAdTotal = 0;
     for(const r of rows){
       const b = txnFee[r.key];
-      if(b && b.ads > 0){ r.ads = b.ads; txnAdTotal += b.ads; }
+      r.ads = (b && b.ads > 0) ? b.ads : 0;
+      txnAdTotal += r.ads;
     }
     if(txnAdsOther > 0.004 && rows.length){
-      // fees eBay did not tie to an item: spread on revenue so the total still lands
+      // spend eBay did not tie to an item: spread on revenue so the total still lands
       const base = rows.reduce((a,r) => a + (r.revenue_gross || 0), 0);
-      for(const r of rows) r.ads = (r.ads || 0) + txnAdsOther * (base > 0 ? (r.revenue_gross||0)/base : 1/rows.length);
+      for(const r of rows) r.ads += txnAdsOther * (base > 0 ? (r.revenue_gross||0)/base : 1/rows.length);
       txnAdTotal += txnAdsOther;
     }
-  }
+    return txnAdTotal;
+  };
+  applyTxnAds();
   let ppcExtras = null;
   if(R.ebay_ppc.length || R.ebay_pl.length){
     const ppcByDay = {}; const undatedPpc = {spend:0, sales:0, clicks:0, impressions:0};
@@ -3502,15 +3506,23 @@ function computeEbay(){
     }
     if(!fActive){ pSpend += undatedPpc.spend; pSales += undatedPpc.sales; pClicks += undatedPpc.clicks; pImp += undatedPpc.impressions; }
 
-    // distribute across SKUs by promoted-fee share, else revenue share
-    const feeBase = rows.reduce((a,r) => a + (r.ads || 0), 0);
-    const revBase = rows.reduce((a,r) => a + (r.revenue_gross || 0), 0);
-    for(const r of rows){
-      const w = feeBase > 0.004 ? (r.ads||0)/feeBase : (revBase > 0 ? r.revenue_gross/revBase : 0);
-      r.ads = pSpend * w;
-      r.ad_sales = pSales * w;
-      r.clicks = Math.round(pClicks * w);
-      r.impressions = Math.round(pImp * w);
+    // A campaign report loaded for OTHER days has no spend in this range. Overwriting with its
+    // zero wiped the Promoted Listings billing the transaction report already gave us, so eBay
+    // showed no ad spend at all on days the campaign export did not cover.
+    if(pSpend > 0.004 || pSales > 0.004){
+      // distribute across SKUs by promoted-fee share, else revenue share
+      const feeBase = rows.reduce((a,r) => a + (r.ads || 0), 0);
+      const revBase = rows.reduce((a,r) => a + (r.revenue_gross || 0), 0);
+      for(const r of rows){
+        const w = feeBase > 0.004 ? (r.ads||0)/feeBase : (revBase > 0 ? r.revenue_gross/revBase : 0);
+        r.ads = pSpend * w;
+        r.ad_sales = pSales * w;
+        r.clicks = Math.round(pClicks * w);
+        r.impressions = Math.round(pImp * w);
+      }
+      txnAdTotal = 0;                     // campaign figures are in charge for this range
+    } else {
+      applyTxnAds();                      // fall back to what eBay actually billed
     }
     ppcExtras = {ppcSpend:pSpend, ppcSales:pSales, ppcClicks:pClicks, ppcImp:pImp, ppcDated, ppcDays:Object.keys(ppcByDay).length};
   }
@@ -4504,7 +4516,16 @@ const KPI_DEFS = {
   sales:      {label:'Sales (Inc VAT)',      card:(t)=>({value:fmtGBP0(t.revenue_gross), sub:`${fmtNum(t.units)} units / ${fmtNum(t.orders_count)} orders`})},
   refunds:    {label:'Refunds',              card:(t,c)=>({value:fmtGBP0(t.refunds+c.xref), valueCls:(t.refunds+c.xref)>0?'neg':''})},
   cogs:       {label:'COGS (Buying)',        card:(t)=>({value:fmtGBP0(t.buying), sub:'product buying cost'})},
-  referral:   {label:'Referral / Mkt Fee',   card:(t)=>({value:fmtGBP0(t.mkt_fee), sub:'marketplace fee'})},
+  referral:   {label:'Referral / Mkt Fee',   card:(t)=>{
+                // On eBay this is the WHOLE marketplace charge, and the regulatory and fixed
+                // fees have tiles of their own - so spell out the split, or the total reads as
+                // if the referral rate itself were wrong.
+                const inside = (t.reg_fee || 0) + (t.fixed_fee || 0);
+                return {value:fmtGBP0(t.mkt_fee),
+                  sub: inside > 0.004
+                    ? `incl. ${fmtGBP(t.fixed_fee||0)} fixed + ${fmtGBP(t.reg_fee||0)} regulatory · variable ${fmtGBP(t.mkt_fee - inside)}`
+                    : 'marketplace fee'};
+              }},
   shipping:   {label:'Shipping Cost',        card:(t)=>({value:fmtGBP0(t.shipping)})},
   operational:{label:'Operational',          card:(t)=>({value:fmtGBP0(t.oper)})},
   affiliate:  {label:'Affiliate Com.',       card:(t)=>({value:fmtGBP0(t.affiliate)})},
