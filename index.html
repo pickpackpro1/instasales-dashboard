@@ -2956,18 +2956,26 @@ function computeAmazon(A){
     const shipOf = (m, units, parcels) => m.fba ? units * (m.fbaFee || 0) : parcels * (m.shipping || 0);
     if(parts && tot > 0){
       let buying = 0, shipping = 0, oper = 0, covered = 0, fbaUnits = 0;
+      // Keep each offer's own figures, not just their sum: an ASIN's FBM and FBA listings are
+      // separate SKUs costing different amounts, and SKU Performance shows them as their own
+      // rows. Discarding this left one row quoting two SKUs and a blended cost.
+      const offerParts = [];
       for(const p of parts){
         const m = cbFor(asin, p.fba) || M.amazon.bySku[p.sku];
         if(!m) continue;
         const share = p.units / tot;
         const units = (row.units || 0) * share;
         const parcels = parcelsOf(row) * share;
-        buying += units * (m.buying || 0);
-        shipping += shipOf({fba:p.fba, fbaFee:m.fbaFee, shipping:m.shipping}, units, parcels);
-        oper += parcels * (m.oper || 0);
+        const pBuy = units * (m.buying || 0);
+        const pShip = shipOf({fba:p.fba, fbaFee:m.fbaFee, shipping:m.shipping}, units, parcels);
+        const pOper = parcels * (m.oper || 0);
+        buying += pBuy; shipping += pShip; oper += pOper;
         covered += share;
         if(p.fba) fbaUnits += units;
+        offerParts.push({sku:p.sku, fba:!!p.fba, share, units, parcels,
+                         buying:pBuy, shipping:pShip, oper:pOper});
       }
+      if(offerParts.length > 1) row.offerParts = offerParts;
       if(covered > 0.999){                       // every SKU resolved - use the split verbatim
         row.buying = buying; row.shipping = shipping; row.oper = oper;
         row.fbaUnits = fbaUnits; row.splitBySku = true;
@@ -6984,8 +6992,35 @@ function skuAlerts(r, stock, runRate){
   if(!out.length) out.push(['green','Healthy']);
   return out;
 }
+// One row per OFFER. An ASIN listed both FBM and FBA is two listings with two SKUs and two
+// different cost bases; showing them merged quoted both SKUs on one line over a blended cost.
+// Everything that scales with volume is split on each offer's share of units - the Business
+// Report is ASIN-level, so units are the only basis available - while buying, shipping and
+// operational come from that offer's OWN costs, already worked out per SKU when the row was
+// costed. The parts sum back to the merged row, so no total changes.
+function spExpandOffers(rows){
+  const out = [];
+  for(const r of rows){
+    const parts = r.offerParts;
+    if(!parts || parts.length < 2){ out.push(r); continue; }
+    for(const p of parts){
+      const o = Object.assign({}, r);
+      o.offerSku = p.sku; o.offerFba = p.fba; o.isOffer = true;
+      o.units = p.units;
+      o.orders_count = (r.orders_count || 0) * p.share;
+      o.fbaUnits = p.fba ? p.units : 0;
+      o.buying = p.buying; o.shipping = p.shipping; o.oper = p.oper;
+      for(const k of ['revenue_gross','refunds','mkt_fee','affiliate','shop_ads','ads','ad_sales','clicks','impressions'])
+        o[k] = (r[k] || 0) * p.share;
+      o.__grossedUp = true;      // the parent row was already grossed; do not do it twice
+      finalizeRows([o]);
+      out.push(o);
+    }
+  }
+  return out;
+}
 function spFiltered(){
-  let rows = (STATE.sp.platform==='all' ? loadedChannels() : loadedChannels().filter(c=>c===STATE.sp.platform)).flatMap(ch => STATE.channels[ch]);
+  let rows = spExpandOffers((STATE.sp.platform==='all' ? loadedChannels() : loadedChannels().filter(c=>c===STATE.sp.platform)).flatMap(ch => STATE.channels[ch]));
   const rep = STATE.sp.report;
   if(rep==='loss') rows = rows.filter(r=>r.net_profit_ex<0);
   else if(rep==='profit') rows = rows.filter(r=>r.net_profit_ex>0);
@@ -6997,6 +7032,8 @@ function spFiltered(){
   if(q) rows = rows.filter(r => {
     if(STATE.sp.field !== 'sku') return (r.name||'').toLowerCase().includes(q);
     if((r.key||'').toLowerCase().includes(q)) return true;
+    // an offer row answers for its OWN sku only, so searching one listing does not return both
+    if(r.isOffer) return String(r.offerSku||'').toLowerCase().includes(q);
     return sellerSkusFor(r.channel, r.key).some(x => String(x).toLowerCase().includes(q));
   });
   const k = STATE.sp.sort, dir = STATE.sp.dir==='asc'?1:-1;
@@ -7156,16 +7193,18 @@ function skuRowHTML(r, i, opt){
           ${isParent
             ? `<span class="badge purple">PARENT · ${opt.childCount} child ASIN${opt.childCount>1?'s':''}</span>`
               + (opt.missingKids ? `<span class="badge red">⚠ ${opt.missingKids} child SKU${opt.missingKids>1?'s':''} missing from master</span>` : '')
-            : `<span class="badge blue">${CH_NAME[r.channel]} Listing</span>`}
+            : `<span class="badge blue">${CH_NAME[r.channel]} Listing</span>`
+              + (r.isOffer ? `<span class="badge ${r.offerFba?'purple':'blue'}">#${r.offerFba?'FBA':'FBM'}</span>` : '')}
           ${missingFromMaster ? `<span class="badge red">⚠ NOT IN MASTER SHEET</span>` : ''}
           ${stock != null ? `<span class="badge green">Stock: ${fmtNum(stock)}</span>` : ''}
           ${stockDays != null ? `<span class="badge ${stockDays<14?'red':'grey'}">Stock ending in ${stockDays>99?'99+':stockDays.toFixed(1)} days</span>` : ''}
         </div>
         <div class="kv">${isParent ? 'Parent ASIN' : ID_LBL[r.channel] || 'SKU'}: <b>${esc(r.key)}</b></div>
         ${(() => {
-          // the channel SKU(s) behind that id - what the listing is called in Seller Central.
-          // An ASIN selling both FBM and FBA has two, and both are worth seeing.
+          // the channel SKU behind that id - what the listing is called in Seller Central.
+          // A row that IS one offer names only its own SKU; an unsplit row names what it has.
           if(isParent) return '';
+          if(r.isOffer) return `<div class="kv">SKU: <b>${esc(r.offerSku || '')}</b></div>`;
           const sk = sellerSkusFor(r.channel, r.key);
           return sk.length ? `<div class="kv">SKU: <b>${esc(sk.join(', '))}</b></div>` : '';
         })()}
