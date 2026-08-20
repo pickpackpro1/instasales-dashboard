@@ -974,7 +974,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <select class="fsel" id="spShow"><option>10</option><option>25</option><option>50</option><option>100</option></select>
         <span class="flabel">entries</span>
         <span class="flabel" style="margin-left:14px">Search:</span>
-        <select class="fsel" id="spField"><option value="sku">SKU / ASIN</option><option value="name">Product Name</option></select>
+        <select class="fsel" id="spFul" title="Narrow to one Amazon offer type"><option value="all">All fulfilment</option><option value="fbm">FBM only</option><option value="fba">FBA only</option></select><select class="fsel" id="spField"><option value="sku">SKU / ASIN</option><option value="name">Product Name</option></select>
         <input type="search" id="spSearch" placeholder="Type to search..." style="min-width:180px">
       </div>
       <div id="spMissingBar" class="missing-bar hidden"></div>
@@ -1619,7 +1619,7 @@ const CH_NAME    = {tiktok:'TikTok', amazon:'Amazon 1 (Vemart)', amazon2:'Amazon
 // offer are different SKUs on the same ASIN - so this returns all of them. Indexed once per
 // master build; rebuilding per row would be O(rows x master).
 let _skuIdx = null, _skuIdxFor = null;
-function sellerSkusFor(channel, key){
+function sellerSkusFor(channel, key, ful){
   const raw = STATE.raw.master || [];
   if(!key || !raw.length) return [];
   // Indexed off the RAW sheet, not M.list: the built master keys Amazon on the ASIN, so an
@@ -1636,14 +1636,21 @@ function sellerSkusFor(channel, key){
                : sku;
       if(!id) continue;
       const k = fam + '|' + String(id).trim().toUpperCase();
+      // remember how each SKU is fulfilled, so a row can be narrowed to one offer type. The
+      // sheet's SKU CHANNEL column is authoritative; an FBA/AFN marker in the SKU name is the
+      // fallback for rows that never had that column filled in.
+      const chanRaw = fixText(r['SKU CHANNEL'] || r['sku channel'] || r['Fulfilment Channel'] || r['Fulfillment Channel']);
+      const fba = /fba|afn|amazon/i.test(chanRaw) || (!chanRaw && /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(sku));
       (_skuIdx[k] = _skuIdx[k] || []);
-      if(!_skuIdx[k].includes(sku)) _skuIdx[k].push(sku);
+      if(!_skuIdx[k].some(x => x.sku === sku)) _skuIdx[k].push({sku, fba:!!fba});
     }
   }
   const fam = (channel === 'amazon2') ? 'amazon' : channel;
-  const hit = _skuIdx[fam + '|' + String(key).trim().toUpperCase()] || [];
+  let hit = _skuIdx[fam + '|' + String(key).trim().toUpperCase()] || [];
+  // ful: undefined = every offer, true = FBA only, false = FBM only
+  if(ful === true || ful === false) hit = hit.filter(x => x.fba === ful);
   // a key that IS the sku (TikTok, Shopify) needs no second line
-  return hit.filter(x => String(x).trim().toUpperCase() !== String(key).trim().toUpperCase());
+  return hit.map(x => x.sku).filter(x => String(x).trim().toUpperCase() !== String(key).trim().toUpperCase());
 }
 // What the channel's join key actually IS, so the row does not label an ASIN as a SKU.
 const ID_LBL = {amazon:'ASIN', amazon2:'ASIN', ebay:'Item ID', tiktok:'SKU', shopify:'SKU'};
@@ -7020,12 +7027,22 @@ function spExpandOffers(rows){
   return out;
 }
 function spFiltered(){
+  const ful = STATE.sp.ful || 'all';
+  const wantFba = ful === 'fba' ? true : ful === 'fbm' ? false : null;
   let rows = spExpandOffers((STATE.sp.platform==='all' ? loadedChannels() : loadedChannels().filter(c=>c===STATE.sp.platform)).flatMap(ch => STATE.channels[ch]));
   const rep = STATE.sp.report;
   if(rep==='loss') rows = rows.filter(r=>r.net_profit_ex<0);
   else if(rep==='profit') rows = rows.filter(r=>r.net_profit_ex>0);
   else if(rep==='ads') rows = rows.filter(r=>r.ads>0);
   else if(rep==='nocost') rows = rows.filter(isMissingFromMaster);   // same test the red flag uses
+  // Fulfilment: an offer row answers for itself; an unsplit row is kept when it has any SKU of
+  // that type, because without the All Orders Report there is nothing to split it by.
+  if(wantFba !== null) rows = rows.filter(r => {
+    const fam = chOfPlat(r.channel);
+    if(fam !== 'amazon' && fam !== 'amazon2') return false;      // only Amazon has FBA/FBM
+    if(r.isOffer) return !!r.offerFba === wantFba;
+    return sellerSkusFor(r.channel, r.key, wantFba).length > 0;
+  });
   const q = STATE.sp.q.toLowerCase().trim();
   // "Channel SKU" searched r.key, which on Amazon is the ASIN - so typing an actual channel
   // SKU never matched anything. Match the id OR any seller SKU behind it, so both work.
@@ -7205,8 +7222,13 @@ function skuRowHTML(r, i, opt){
           // A row that IS one offer names only its own SKU; an unsplit row names what it has.
           if(isParent) return '';
           if(r.isOffer) return `<div class="kv">SKU: <b>${esc(r.offerSku || '')}</b></div>`;
-          const sk = sellerSkusFor(r.channel, r.key);
-          return sk.length ? `<div class="kv">SKU: <b>${esc(sk.join(', '))}</b></div>` : '';
+          // narrowed to one offer type, list only that type's SKUs
+          const f = STATE.sp.ful;
+          const sk = sellerSkusFor(r.channel, r.key, f === 'fba' ? true : f === 'fbm' ? false : undefined);
+          if(!sk.length) return '';
+          const tag = f === 'fba' ? ' <span class="badge purple">#FBA</span>'
+                    : f === 'fbm' ? ' <span class="badge blue">#FBM</span>' : '';
+          return `<div class="kv">SKU: <b>${esc(sk.join(', '))}</b>${tag}</div>`;
         })()}
         <div class="kv">${isParent?'Avg Selling Price':'Selling Price'}: <b>${price!=null?fmtGBP(price):'-'}</b></div>
         <div class="kv">${isParent?'Avg COGS':'COGS'}: <b>${unitCogs!=null?fmtGBP(unitCogs):'-'}</b></div>
@@ -8450,6 +8472,7 @@ document.getElementById('spSort').addEventListener('change', e => { STATE.sp.sor
 document.getElementById('spDir').addEventListener('change', e => { STATE.sp.dir = e.target.value; spReset(); });
 document.getElementById('spShow').addEventListener('change', e => { STATE.sp.show = parseInt(e.target.value); spReset(); });
 document.getElementById('spField').addEventListener('change', e => { STATE.sp.field = e.target.value; spReset(); });
+document.getElementById('spFul').addEventListener('change', e => { STATE.sp.ful = e.target.value; spReset(); });
 document.getElementById('spSearch').addEventListener('input', e => { STATE.sp.q = e.target.value; spReset(); });
 document.getElementById('spApply').addEventListener('click', spReset);
 document.getElementById('spExport').addEventListener('click', doExport);
