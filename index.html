@@ -1523,7 +1523,11 @@ const STATE = {
     // reclaimable. Amazon and eBay state their fees NET, so those are grossed up first and the
     // VAT reclaimed after - both land on the same ex-VAT cost by different routes.
     // TikTok AD SPEND is not listed: like all advertising it is invoiced net plus VAT.
-    alreadyGross:{tiktok:['mkt_fee','affiliate','shop_ads']},
+    // eBay states it outright at the top of its own transaction report: "All fee amounts shown
+    // include taxes." So its selling fees and its Promoted Listings billing are already
+    // VAT-inclusive and must not be grossed up again - the VAT inside them is still reclaimed.
+    // Amazon is not listed: it quotes net and adds VAT on the invoice.
+    alreadyGross:{tiktok:['mkt_fee','affiliate','shop_ads'], ebay:['mkt_fee','ads']},
     // Source figures stated EX-VAT, grossed up to the real cash cost before anything reads
     // them; the VAT pass then reclaims it back out, so the ex-VAT cost lands on the figure the
     // report stated. Confirmed against the Amazon and eBay fee invoices - both charge VAT on
@@ -3178,6 +3182,26 @@ function computeEbay(){
   const varUnits = {};   // item -> { "Custom label": units } for per-variation costing
   const txnOrders = []; const refundsList = [];
   const rangeByItem = {};   // per-item units/revenue/orders from dated transactions
+  // Real eBay charges, straight from the transaction report. eBay's rates vary by category and
+  // by seller, so a single referral % from the master sheet cannot be right for every listing -
+  // these columns are what was actually billed on each order.
+  const txnFee = {};        // item -> {fvfVar, fvfFixed, reg, other, ads}
+  let txnFeeRows = 0, txnAdsOther = 0;
+  const feeBucket = it => (txnFee[it] = txnFee[it] || {fvfVar:0, fvfFixed:0, reg:0, other:0, ads:0});
+  // the report writes these headers with an en dash, which survives some exports as mojibake,
+  // so match on the stable words rather than the exact string
+  const feeCols = (() => {
+    const keys = R.ebay_txn.length ? Object.keys(R.ebay_txn[0]) : [];
+    const find = re => keys.find(k => re.test(k)) || '';
+    return {
+      fixed: find(/^final value fee.*fixed/i),
+      variable: find(/^final value fee.*variable/i),
+      reg: find(/^regulatory operating fee/i),
+      inad: find(/item not as described/i),
+      below: find(/below standard performance/i),
+      intl: find(/^international fee/i)
+    };
+  })();
   const txnSeen = new Set();
   let fullMin = '', fullMax = '';   // unfiltered date span (basis for Amazon day-proration)
   for(const r of R.ebay_txn){
@@ -3200,6 +3224,15 @@ function computeEbay(){
         daily[date].refunds += amt;
       }
       refundsList.push({channel:'ebay', date, item, order:fixText(r['Order number']), sku:fixText(r['Custom label']).replace(/^--$/,'') || fixText(r['Item title']).replace(/^--$/,''), amount:amt});
+    } else if(type === 'Other fee' || type === 'Other Fee'){
+      // Promoted Listings is billed as its own transaction, not inside the order, so eBay ad
+      // spend never appeared on the dashboard unless a separate campaign report was loaded.
+      const desc = fixText(r['Description']);
+      if(/promoted listing|ads express|promoted offsite/i.test(desc)){
+        const amt = Math.abs(cleanMoney(r['Net amount']) || cleanMoney(r['Gross transaction amount']));
+        const item = fixText(r['Item ID']).replace(/^--$/,'');
+        if(item) feeBucket(item).ads += amt; else txnAdsOther += amt;
+      }
     } else if(type === 'Order'){
       const qty = cleanInt(String(r['Quantity']||'').replace(/^--$/,'0'));
       const gross = cleanMoney(r['Gross transaction amount']);
@@ -3221,6 +3254,14 @@ function computeEbay(){
       if(item){
         if(!rangeByItem[item]) rangeByItem[item] = {rev:0, units:0, orders:0};
         rangeByItem[item].rev += gross; rangeByItem[item].units += qty; rangeByItem[item].orders += 1;
+        if(feeCols.variable || feeCols.fixed || feeCols.reg){
+          const b = feeBucket(item), m = c => c ? Math.abs(cleanMoney(r[c])) : 0;
+          b.fvfVar   += m(feeCols.variable);
+          b.fvfFixed += m(feeCols.fixed);
+          b.reg      += m(feeCols.reg);
+          b.other    += m(feeCols.inad) + m(feeCols.below) + m(feeCols.intl);
+          txnFeeRows++;
+        }
       }
       txnOrders.push({channel:'ebay', date, item, order:fixText(r['Order number']), sku:fixText(r['Custom label']).replace(/^--$/,''), name:fixText(r['Item title']).replace(/^--$/,''), qtyRaw:qty, rev:gross, status:'Order'});
     }
@@ -3325,10 +3366,17 @@ function computeEbay(){
     if(refundByItem[item]) consumedRefunds.add(item);
     row.ads = a.adFees * scale;
     row.mkt_fee = Math.max(a.sellCosts - a.adFees, 0) * scale;
-    // The report names the regulatory fee outright. It does NOT break out the per-order fixed
-    // fee - eBay reports that inside Final value fees - so fixed_fee stays 0 on this path
-    // rather than being invented; the tile says so when that happens.
-    row.reg_fee = Math.abs(a.fees['Regulatory operating fee'] || 0) * scale;
+    // The Listings report lumps the per-order fixed fee inside Final value fees. The
+    // transaction report splits them out, so prefer it when present and fall back otherwise.
+    const tfL = txnFee[item];
+    if(tfL && (tfL.fvfVar || tfL.fvfFixed || tfL.reg)){
+      row.reg_fee   = tfL.reg;
+      row.fixed_fee = tfL.fvfFixed;
+      row.mkt_fee   = tfL.fvfVar + tfL.fvfFixed + tfL.reg + tfL.other;
+      row.fee_actual = true;
+    } else {
+      row.reg_fee = Math.abs(a.fees['Regulatory operating fee'] || 0) * scale;
+    }
     row.fee_detail = Object.entries(a.fees).filter(([,v]) => Math.abs(v) > 0.004).map(([l,v]) => [l, v*scale]);
     row.ad_detail = Object.entries(a.adsD).filter(([,v]) => Math.abs(v) > 0.004).map(([l,v]) => [l, v*scale]);
     const e = ebayCostFor(item, row.name);
@@ -3367,11 +3415,21 @@ function computeEbay(){
       // final value fee (the master's referral %) + regulatory % of revenue + the fixed fee
       // once per ORDER. The final value fee is the big one - leaving it out charged ~0.8%
       // on a sale that really costs ~11%, so these rows looked far more profitable than they are.
-      const evRate = (e.referral != null) ? e.referral : EBAY_FVF_PCT;
-      row.reg_fee   = row.revenue_gross * (e.reg != null ? e.reg : EBAY_REG_PCT);
-      row.fixed_fee = (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER) * parcelsOf(row);
-      row.mkt_fee = (row.revenue_gross - row.refunds) * (evRate || 0)
-                  + row.reg_fee + row.fixed_fee;
+      const tf = txnFee[item];
+      if(tf && (tf.fvfVar || tf.fvfFixed || tf.reg)){
+        // real charges from the transaction report - eBay's rates vary by category and seller,
+        // so a single master-sheet % could never be right across the range
+        row.reg_fee   = tf.reg;
+        row.fixed_fee = tf.fvfFixed;
+        row.mkt_fee   = tf.fvfVar + tf.fvfFixed + tf.reg + tf.other;
+        row.fee_actual = true;
+      } else {
+        const evRate = (e.referral != null) ? e.referral : EBAY_FVF_PCT;
+        row.reg_fee   = row.revenue_gross * (e.reg != null ? e.reg : EBAY_REG_PCT);
+        row.fixed_fee = (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER) * parcelsOf(row);
+        row.mkt_fee = (row.revenue_gross - row.refunds) * (evRate || 0)
+                    + row.reg_fee + row.fixed_fee;
+      }
     }
     const p2 = pl[item];
     if(p2){ row.ad_sales = p2.sales; row.clicks = Math.round(p2.clicks); row.impressions = Math.round(p2.impressions); }
@@ -3389,6 +3447,23 @@ function computeEbay(){
   // attributable to items that sold (which is all the Listings Sales Report carries).
   // Combined, they replace the per-item promoted-listing fee estimate, distributed across
   // SKUs by promoted-fee share (or revenue share) so per-SKU profit and channel ACOS stay correct.
+  // Promoted Listings billed inside the transaction report. eBay charges it as its own
+  // transaction rather than inside the order, so without this eBay showed no ad spend at all
+  // unless a separate campaign export happened to be loaded. Campaign reports still win when
+  // present - they carry ad SALES and clicks, which the transaction report does not.
+  let txnAdTotal = 0;
+  if(!R.ebay_ppc.length && !R.ebay_pl.length){
+    for(const r of rows){
+      const b = txnFee[r.key];
+      if(b && b.ads > 0){ r.ads = b.ads; txnAdTotal += b.ads; }
+    }
+    if(txnAdsOther > 0.004 && rows.length){
+      // fees eBay did not tie to an item: spread on revenue so the total still lands
+      const base = rows.reduce((a,r) => a + (r.revenue_gross || 0), 0);
+      for(const r of rows) r.ads = (r.ads || 0) + txnAdsOther * (base > 0 ? (r.revenue_gross||0)/base : 1/rows.length);
+      txnAdTotal += txnAdsOther;
+    }
+  }
   let ppcExtras = null;
   if(R.ebay_ppc.length || R.ebay_pl.length){
     const ppcByDay = {}; const undatedPpc = {spend:0, sales:0, clicks:0, impressions:0};
@@ -3441,7 +3516,9 @@ function computeEbay(){
   }
 
   const finalized = finalizeRows(rows);
-  return {rows: finalized, extras:{daily, refundOther, txnOrders, refundsList, dayRows, pl, useDatedListings, ppc:ppcExtras, unjoinableListings, fullSpan:{min:fullMin, max:fullMax}}};
+  return {rows: finalized, extras:{daily, refundOther, txnOrders, refundsList, dayRows, pl, useDatedListings, ppc:ppcExtras, unjoinableListings,
+    txnFeeRows, txnAdTotal, feeCols:Object.values(feeCols).filter(Boolean).length,
+    fullSpan:{min:fullMin, max:fullMax}}};
 }
 
 // ================= Shopify =================
@@ -4047,6 +4124,12 @@ function diagnostics(){
       L.push(`${label}: no All Orders Report loaded, so costs come from the ASIN-level master row. If an ASIN has both an FBA and an FBM offer, only one of their costs can be applied - drop the All Orders Report in to split them.`);
     }
   }
+  if(STATE.extras.ebay && STATE.extras.ebay.txnFeeRows > 0)
+    L.push(`eBay: fees taken from the transaction report on ${fmtNum(STATE.extras.ebay.txnFeeRows)} order line(s) - final value fee (variable + fixed), regulatory and any other eBay charge, exactly as billed. The master sheet's referral %, and the built-in fallbacks, are not used for those lines.`);
+  if(STATE.extras.ebay && STATE.extras.ebay.feeCols === 0 && (STATE.raw.ebay_txn||[]).length)
+    L.push(`eBay: the transaction report has no fee columns (no "Final value fee" / "Regulatory operating fee"), so fees fall back to the master sheet's rates. Export the transaction report with fee detail to cost eBay exactly.`);
+  if(STATE.extras.ebay && STATE.extras.ebay.txnAdTotal > 0.004)
+    L.push(`eBay: ${fmtGBP(STATE.extras.ebay.txnAdTotal)} of Promoted Listings spend read from the transaction report - eBay bills it as its own transaction, not inside the order.`);
   if(STATE.extras.ebay && STATE.extras.ebay.refundOther > 0) L.push(`eBay: ${fmtGBP(STATE.extras.ebay.refundOther)} refunds not matched to a listing in this report (older orders) - counted in refund KPIs.`);
   for(const ch of ['amazon','amazon2']){
     const x = STATE.extras[ch];
