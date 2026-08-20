@@ -441,6 +441,56 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <div class="chart-box"><canvas id="dashPie"></canvas></div>
       </div>
     </div>
+
+    <!-- ---- channel revenue performance ---- -->
+    <div class="card" style="margin-top:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot"></span>Channel Revenue Performance</h3>
+        <span style="flex:1"></span>
+        <div class="count" id="crpRange"></div>
+      </div>
+      <div class="sub-title">Revenue share by channel, and how each moved day by day. Follows the channel and date filters at the top.</div>
+      <div class="grid g2" style="margin-top:8px;align-items:start">
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <div style="width:200px;height:200px;flex-shrink:0"><canvas id="crpDonut"></canvas></div>
+          <div style="flex:1;min-width:200px"><table id="crpTable" style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr><th style="text-align:left;padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase">Channel</th>
+            <th class="num" style="padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase">Revenue</th>
+            <th class="num" style="padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase">Share</th></tr></thead>
+            <tbody></tbody></table></div>
+        </div>
+        <div class="chart-box"><canvas id="crpTrend"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:14px">
+      <!-- ---- FBA vs FBM ---- -->
+      <div class="card">
+        <h3><span class="dot" style="background:var(--ch-amazon2)"></span>FBA vs FBM</h3>
+        <div class="sub-title" id="fbaSub">Amazon only. Needs the All Orders Report to split an ASIN's units between its two offers.</div>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <div style="width:180px;height:180px;flex-shrink:0"><canvas id="fbaDonut"></canvas></div>
+          <div style="flex:1;min-width:200px"><table id="fbaTable" style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr><th style="text-align:left;padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase"></th>
+            <th class="num" style="padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase">Units</th>
+            <th class="num" style="padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase">Revenue</th></tr></thead>
+            <tbody></tbody></table></div>
+        </div>
+      </div>
+      <!-- ---- organic vs ad sales ---- -->
+      <div class="card">
+        <h3><span class="dot" style="background:var(--green)"></span>Organic vs Ad Sales</h3>
+        <div class="sub-title" id="orgSub">Ad sales are the revenue the ad reports attribute to advertising; the rest is organic.</div>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <div style="width:180px;height:180px;flex-shrink:0"><canvas id="orgDonut"></canvas></div>
+          <div style="flex:1;min-width:200px"><table id="orgTable" style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr><th style="text-align:left;padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase"></th>
+            <th class="num" style="padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase">Revenue</th>
+            <th class="num" style="padding:6px 4px;color:var(--muted);font-size:11px;text-transform:uppercase">Share</th></tr></thead>
+            <tbody></tbody></table></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ============ CONSOLIDATED ============ -->
@@ -4539,6 +4589,7 @@ function renderDashboard(){
       tooltip:{callbacks:{label:c=>{const tot=c.dataset.data.reduce((a,b)=>a+b,0); return ` ${c.label}: ${fmtGBP(c.parsed)} (${tot?(c.parsed/tot*100).toFixed(1):0}%)`;}}}}}
   });
   renderActionItems();
+  renderDashPanels();   // same filtered rows as the tiles above, so they cannot disagree
 }
 
 // Pull an hour-of-day (0-23) out of a raw timestamp cell. Order exports carry a full
@@ -6322,6 +6373,139 @@ function renderDailyTrends(){
   document.getElementById('daTrCount').textContent =
     `${fmtNum(Math.min(view.length, CAP))}${view.length>CAP?'+':''} of ${fmtNum(all.length)} products · ${dates.length ? dates[0]+' → '+dates[dates.length-1] : 'no days'}`;
 }
+
+// ---- Dashboard: channel revenue, FBA vs FBM, organic vs ad sales ----
+// All three read the SAME filtered rows the KPI tiles above them use, so a channel or date
+// filter moves them together and none can disagree with the headline numbers.
+function dashDonut(canvasId, key, labels, values, colours){
+  destroy(key);
+  const el = document.getElementById(canvasId);
+  if(!el) return;
+  const total = values.reduce((a,b) => a + b, 0);
+  if(!(total > 0)){                       // an empty donut is a confusing grey ring
+    const c = el.getContext('2d');
+    c.clearRect(0, 0, el.width, el.height);
+    return;
+  }
+  CH[key] = new Chart(el, {
+    type:'doughnut',
+    data:{labels, datasets:[{data:values.map(v => +v.toFixed(2)), backgroundColor:colours, borderColor:SURFACE, borderWidth:2}]},
+    options:{responsive:true, maintainAspectRatio:false, cutout:'58%',
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:c => ` ${c.label}: ${fmtGBP(c.parsed)} (${(c.parsed/total*100).toFixed(1)}%)`}}}}
+  });
+}
+const dashRowHTML = (dot, label, cells) =>
+  `<tr><td style="padding:6px 4px"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${dot};margin-right:7px"></span>${esc(label)}</td>`
+  + cells.map(c => `<td class="num" style="padding:6px 4px;font-weight:700">${c}</td>`).join('') + '</tr>';
+
+function renderChannelPerf(){
+  const chans = filteredChannels().filter(ch => (STATE.channels[ch] || []).length);
+  const rev = {}; let total = 0;
+  for(const ch of chans){
+    const t = totalsOf(STATE.channels[ch]);
+    rev[ch] = t.revenue_gross || 0;
+    total += rev[ch];
+  }
+  const order = chans.slice().sort((a,b) => rev[b] - rev[a]);
+  dashDonut('crpDonut', 'crpDonut', order.map(c => CH_NAME[c]), order.map(c => rev[c]), order.map(c => CH_COL[c]));
+  document.querySelector('#crpTable tbody').innerHTML = order.length
+    ? order.map(ch => dashRowHTML(CH_COL[ch], CH_NAME[ch],
+        [fmtGBP(rev[ch]), total > 0 ? fmtPct(rev[ch]/total*100) : '—'])).join('')
+      + `<tr style="border-top:1px solid var(--border)"><td style="padding:6px 4px;font-weight:800">Total</td>
+         <td class="num" style="padding:6px 4px;font-weight:800">${fmtGBP(total)}</td><td class="num"></td></tr>`
+    : '<tr><td colspan="3" style="color:var(--muted);padding:10px">No revenue in this selection.</td></tr>';
+
+  // daily line per channel, from the same per-day series the trend chart uses
+  const days = new Set();
+  for(const ch of order){
+    const d = (STATE.extras[ch] || {}).daily || {};
+    for(const k of Object.keys(d)) if(k) days.add(k);
+  }
+  const labels = [...days].sort();
+  destroy('crpTrend');
+  const el = document.getElementById('crpTrend');
+  if(el && labels.length){
+    CH.crpTrend = new Chart(el, {
+      type:'line',
+      data:{labels, datasets: order.map(ch => {
+        const d = (STATE.extras[ch] || {}).daily || {};
+        return {label:CH_NAME[ch], data:labels.map(x => +((d[x] && d[x].rev) || 0).toFixed(2)),
+          borderColor:CH_COL[ch], backgroundColor:CH_COL[ch], tension:.32, borderWidth:2,
+          pointRadius:0, pointHoverRadius:4};
+      })},
+      options:{responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false},
+        plugins:{legend:{position:'top', labels:{boxWidth:10, font:{size:11}}},
+          tooltip:{callbacks:{label:c => ` ${c.dataset.label}: ${fmtGBP(c.parsed.y)}`}}},
+        scales:{y:{grid:{color:GRID}, ticks:{callback:v => CUR + v.toLocaleString()}}, x:{grid:{display:false}}}}
+    });
+  } else if(el){ el.getContext('2d').clearRect(0, 0, el.width, el.height); }
+  document.getElementById('crpRange').textContent = labels.length
+    ? `${labels[0]} → ${labels[labels.length-1]}`
+    : (chans.length ? 'no dated data' : '');
+}
+
+function renderFbaFbm(){
+  // Only Amazon has the split, and only when the All Orders Report says which SKU sold.
+  const chans = filteredChannels().filter(ch => ch === 'amazon' || ch === 'amazon2');
+  let fbaU = 0, fbmU = 0, fbaR = 0, fbmR = 0, anySplit = false, units = 0;
+  for(const ch of chans){
+    for(const r of (STATE.channels[ch] || [])){
+      const u = r.units || 0, fu = r.fbaUnits || 0;
+      units += u;
+      if(fu > 0) anySplit = true;
+      const rev = r.revenue_gross || 0;
+      const share = u > 0 ? fu/u : 0;         // revenue follows the unit split
+      fbaU += fu; fbmU += Math.max(u - fu, 0);
+      fbaR += rev * share; fbmR += rev * (1 - share);
+    }
+  }
+  const sub = document.getElementById('fbaSub');
+  if(!chans.length){
+    sub.textContent = 'No Amazon channel in the current selection.';
+  } else if(!anySplit){
+    sub.innerHTML = 'Everything is counted as <b>FBM</b> because no All Orders Report is loaded — that file is what names the SKU behind each order, and so which offer sold. Load it in WorkSpace to split this properly.';
+  } else {
+    sub.textContent = 'Split per ASIN from the All Orders Report; revenue follows each offer’s share of units.';
+  }
+  dashDonut('fbaDonut', 'fbaDonut', ['FBM', 'FBA'], [fbmR, fbaR], ['#7b61ff', '#f5a623']);
+  document.querySelector('#fbaTable tbody').innerHTML = (fbmU + fbaU) > 0
+    ? dashRowHTML('#7b61ff', 'FBM', [fmtNum(Math.round(fbmU)), fmtGBP(fbmR)])
+      + dashRowHTML('#f5a623', 'FBA', [fmtNum(Math.round(fbaU)), fmtGBP(fbaR)])
+      + `<tr style="border-top:1px solid var(--border)"><td style="padding:6px 4px;font-weight:800">Total</td>
+         <td class="num" style="padding:6px 4px;font-weight:800">${fmtNum(Math.round(fbmU+fbaU))}</td>
+         <td class="num" style="padding:6px 4px;font-weight:800">${fmtGBP(fbmR+fbaR)}</td></tr>`
+    : '<tr><td colspan="3" style="color:var(--muted);padding:10px">No Amazon units in this selection.</td></tr>';
+}
+
+function renderOrganicVsAds(){
+  const chans = filteredChannels();
+  let rev = 0, adSales = 0, ads = 0;
+  for(const ch of chans){
+    const t = totalsOf(STATE.channels[ch] || []);
+    rev += t.revenue_gross || 0;
+    adSales += t.ad_sales || 0;
+    ads += t.ads || 0;
+  }
+  // Attributed sales can exceed total revenue on a channel whose ad report covers a wider
+  // window than the sales file; clamp so the donut cannot show a negative organic slice.
+  const attributed = Math.min(adSales, rev);
+  const organic = Math.max(rev - attributed, 0);
+  const sub = document.getElementById('orgSub');
+  sub.innerHTML = adSales > rev
+    ? 'Attributed ad sales exceed revenue in this range — the ad report covers a wider period than the sales file, so the split is shown clamped.'
+    : (ads > 0
+        ? `Ad sales are what the ad reports attribute to advertising; the rest is organic. Ad spend in this range: <b>${fmtGBP(ads)}</b>.`
+        : 'No ad spend in this selection, so everything here is organic.');
+  dashDonut('orgDonut', 'orgDonut', ['Organic', 'Ad sales'], [organic, attributed], ['#4a3fd6', '#5aa9f2']);
+  document.querySelector('#orgTable tbody').innerHTML = rev > 0
+    ? dashRowHTML('#4a3fd6', 'Organic', [fmtGBP(organic), fmtPct(organic/rev*100)])
+      + dashRowHTML('#5aa9f2', 'Ad sales', [fmtGBP(attributed), fmtPct(attributed/rev*100)])
+      + `<tr style="border-top:1px solid var(--border)"><td style="padding:6px 4px;font-weight:800">Total</td>
+         <td class="num" style="padding:6px 4px;font-weight:800">${fmtGBP(rev)}</td><td class="num"></td></tr>`
+    : '<tr><td colspan="3" style="color:var(--muted);padding:10px">No revenue in this selection.</td></tr>';
+}
+function renderDashPanels(){ renderChannelPerf(); renderFbaFbm(); renderOrganicVsAds(); }
 
 // ---- PLS ----
 function renderPLS(){
