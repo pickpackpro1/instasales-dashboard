@@ -1527,7 +1527,7 @@ const STATE = {
     // include taxes." So its selling fees and its Promoted Listings billing are already
     // VAT-inclusive and must not be grossed up again - the VAT inside them is still reclaimed.
     // Amazon is not listed: it quotes net and adds VAT on the invoice.
-    alreadyGross:{tiktok:['mkt_fee','affiliate','shop_ads'], ebay:['mkt_fee','ads']},
+    alreadyGross:{tiktok:['mkt_fee','affiliate','shop_ads'], ebay:['mkt_fee']},
     // Source figures stated EX-VAT, grossed up to the real cash cost before anything reads
     // them; the VAT pass then reclaims it back out, so the ex-VAT cost lands on the figure the
     // report stated. Confirmed against the Amazon and eBay fee invoices - both charge VAT on
@@ -3452,7 +3452,12 @@ function computeEbay(){
   // unless a separate campaign export happened to be loaded. Campaign reports still win when
   // present - they carry ad SALES and clicks, which the transaction report does not.
   let txnAdTotal = 0;
+  const anyTxnAds = Object.values(txnFee).some(b => b.ads > 0) || txnAdsOther > 0.004;
   const applyTxnAds = () => {
+    // Only when the transaction report actually carries Promoted Listings rows. Otherwise the
+    // Listings Sale sheet's own ad-fee columns are what the row already has, and zeroing them
+    // here would lose the only ad figure available.
+    if(!anyTxnAds) return 0;
     txnAdTotal = 0;
     for(const r of rows){
       const b = txnFee[r.key];
