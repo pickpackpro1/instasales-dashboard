@@ -1720,6 +1720,25 @@ function sellerSkusFor(channel, key, ful){
 }
 // What the channel's join key actually IS, so the row does not label an ASIN as a SKU.
 const ID_LBL = {amazon:'ASIN', amazon2:'ASIN', ebay:'Item ID', tiktok:'SKU', shopify:'SKU'};
+// One way of naming a row everywhere it is listed: the seller SKU where one is known, the id
+// where it is not - and never an id shown as though it were a SKU. An Amazon ASIN can carry
+// both an FBM and an FBA SKU, so the rest are kept rather than one being picked silently.
+function skuLabelFor(channel, key, ful){
+  const all = sellerSkusFor(channel, key, ful);
+  const idl = ID_LBL[channel] || 'ID';
+  if(!all.length) return {text:key || '', extra:'', mapped:false, all:[],
+    tip:`no seller SKU mapped for this ${idl}${key ? ' (' + key + ')' : ''}`};
+  return {text:all[0], extra: all.length > 1 ? ` +${all.length-1}` : '', mapped:true, all,
+    tip:(all.length > 1 ? 'SKUs: ' + all.join(', ') + ' · ' : '') + idl + ' ' + (key || '')};
+}
+// The same label as HTML. An unmapped id is underlined so it reads as a gap to fill, not a SKU.
+function skuLabelHTML(channel, key, ful, name){
+  const L = skuLabelFor(channel, key, ful);
+  return `<span title="${esc(L.tip + (name ? ' · ' + name : ''))}">`
+    + `<b${L.mapped ? '' : ' style="border-bottom:1px dotted var(--muted)"'}>${esc(L.text)}</b>`
+    + (L.extra ? `<span style="color:var(--muted);font-size:11px">${L.extra}</span>` : '')
+    + `</span>`;
+}
 const chOfPlat = p => {
   p = String(p || '').toLowerCase();
   if(p.includes('vefive') || p.includes('amazon2') || p.includes('amazon 2')) return 'amazon2';
@@ -6311,23 +6330,14 @@ function renderDailySummary(S){
   // one of them on hover - naming only one would quietly hide the other offer. Where no SKU
   // is known at all the id is shown as-is and marked, so an ASIN on screen reads as "no SKU
   // mapped for this yet" rather than as a SKU.
-  const skuLabel = x => {
-    const sk = sellerSkusFor(x.channel, x.key);
-    if(!sk.length) return {text: x.key || '', extra: '', mapped: false, all: []};
-    return {text: sk[0], extra: sk.length > 1 ? ` +${sk.length-1}` : '', mapped: true, all: sk};
-  };
+  const skuLabel = x => skuLabelFor(x.channel, x.key);
   // One line, read at a glance: SKU plus the single number that matters for that list. The
   // product name and the id stay on hover so a row can still be identified without widening it.
   const skuChips = (arr, val, colour) => arr.length
-    ? `<div style="margin-top:6px;line-height:1.95">` + arr.map(x => {
-        const L = skuLabel(x);
-        const tip = (L.all.length > 1 ? 'SKUs: ' + L.all.join(', ') + ' · ' : '')
-                  + (L.mapped ? (ID_LBL[x.channel]||'ID') + ' ' + (x.key||'') : 'no seller SKU mapped for this ' + (ID_LBL[x.channel]||'id'))
-                  + (x.name ? ' · ' + x.name : '');
-        return `<span title="${esc(tip)}"><b${L.mapped?'':' style="border-bottom:1px dotted var(--muted)"'}>${esc(L.text)}</b>`
-             + (L.extra ? `<span style="color:var(--muted);font-size:11px">${L.extra}</span>` : '')
-             + ` <span style="color:${colour}">(${val(x)})</span></span>`;
-      }).join(' <span style="color:var(--muted)">·</span> ') + `</div>`
+    ? `<div style="margin-top:6px;line-height:1.95">` + arr.map(x =>
+        skuLabelHTML(x.channel, x.key, undefined, x.name)
+        + ` <span style="color:${colour}">(${val(x)})</span>`
+      ).join(' <span style="color:var(--muted)">·</span> ') + `</div>`
     : '<div style="margin-top:4px;color:var(--muted)">none</div>';
 
   // KPI chips across the top of the summary
@@ -6427,7 +6437,7 @@ function renderDailyMovement(){
   let view = list.filter(e => {
     if(DA_PM_FILTER !== 'all' && bandOf(e) !== DA_PM_FILTER) return false;
     if(DA_PM_Q){
-      const hay = (e.name + ' ' + e.key).toLowerCase();
+      const hay = (e.name + ' ' + e.key + ' ' + sellerSkusFor(e.channel, e.key).join(' ')).toLowerCase();
       if(!hay.includes(DA_PM_Q)) return false;
     }
     return true;
@@ -6464,14 +6474,15 @@ function renderDailyMovement(){
   const html = shown.map((e, idx) => {
     const t = e.tot;
     const head = `<tr class="sku-group-head-row"><td colspan="11" style="background:#eef3f9;font-weight:700;padding:8px 10px">
-      <span class="badge blue">${idx+1}</span> ${esc(e.name.slice(0,70))}
+      <span class="badge blue">${idx+1}</span> ${skuLabelHTML(e.channel, e.key, undefined, e.name)}
+      <span style="font-weight:400;color:var(--muted)"> ${esc(e.name.slice(0,58))}</span>
       <span class="chip ${e.channel}">${CH_NAME[e.channel]||e.channel}</span>
       <span style="font-weight:400;color:var(--muted);font-size:11.5px"> · ${fmtNum(t.dayCount)} day(s) active · Rev ${fmtGBP0(t.rev)} · Profit ${fmtGBP0(t.profit)}</span>
     </td></tr>`;
     const days = e.days.slice().sort((a,b) => a.date.localeCompare(b.date));
     const body = days.map((r, i) => dayRow(r, i > 0 ? days[i-1] : null)).join('');
     const tot = `<tr style="background:#f7fafc;font-weight:700;border-bottom:2px solid var(--border)">
-      <td style="padding-left:22px;font-style:italic">${esc(e.name.slice(0,34))} — TOTAL</td>
+      <td style="padding-left:22px;font-style:italic">${esc(skuLabelFor(e.channel, e.key).text.slice(0,34))} — TOTAL</td>
       ${cell(fmtNum(t.orders))}${cell(fmtNum(t.units))}${cell(fmtGBP0(t.rev))}
       ${cell(t.ads>0?fmtGBP0(t.ads):'—')}${cell(daPct1(t.acos))}${cell(daPct1(t.tacos))}
       ${cell(fmtGBP0(t.profit), `color:${t.profit>=0?'var(--green)':'var(--red)'}`)}
@@ -6503,9 +6514,9 @@ function renderDailyMovement(){
     item('Period Revenue', fmtGBP0(pRev)) +
     item('Period Profit', fmtGBP0(pPft)) +
     item('Overall TACoS', pAds > 0 && pRev > 0 ? daPct1(pAds/pRev*100) : '—') +
-    item('Top Revenue SKU', bestRev ? `${esc(bestRev.name.slice(0,26))} — ${fmtGBP0(bestRev.tot.rev)}` : '—') +
-    item('Top Profit SKU', bestPft ? `${esc(bestPft.name.slice(0,26))} — ${fmtGBP0(bestPft.tot.profit)}` : '—') +
-    item('Best Margin SKU', bestMgn ? `${esc(bestMgn.name.slice(0,26))} — ${daPct1(bestMgn.tot.margin)}` : '—');
+    item('Top Revenue SKU', bestRev ? `${skuLabelHTML(bestRev.channel, bestRev.key, undefined, bestRev.name)} — ${fmtGBP0(bestRev.tot.rev)}` : '—') +
+    item('Top Profit SKU', bestPft ? `${skuLabelHTML(bestPft.channel, bestPft.key, undefined, bestPft.name)} — ${fmtGBP0(bestPft.tot.profit)}` : '—') +
+    item('Best Margin SKU', bestMgn ? `${skuLabelHTML(bestMgn.channel, bestMgn.key, undefined, bestMgn.name)} — ${daPct1(bestMgn.tot.margin)}` : '—');
   document.getElementById('daPmCount').textContent =
     `${fmtNum(shown.length)}${view.length > CAP ? '+' : ''} of ${fmtNum(all.length)} SKUs`
     + (win.set ? ` · ${win.dates.length} day(s)` : '');
@@ -7479,10 +7490,15 @@ function skuRowHTML(r, i, opt){
           if(r.isOffer) return `<div class="kv">SKU: <b>${esc(r.offerSku || '')}</b></div>`;
           // narrowed to one offer type, list only that type's SKUs
           const f = STATE.sp.ful;
-          const sk = sellerSkusFor(r.channel, r.key, f === 'fba' ? true : f === 'fbm' ? false : undefined);
-          if(!sk.length) return '';
+          const ful = f === 'fba' ? true : f === 'fbm' ? false : undefined;
+          const sk = sellerSkusFor(r.channel, r.key, ful);
           const tag = f === 'fba' ? ' <span class="badge purple">#FBA</span>'
                     : f === 'fbm' ? ' <span class="badge blue">#FBM</span>' : '';
+          // Say so when nothing maps, rather than dropping the line: a silently absent SKU
+          // looks identical to a product that simply has none, and hides the gap to fill.
+          if(!sk.length) return `<div class="kv" style="color:var(--muted)">SKU: <span title="${
+            esc('no seller SKU mapped for this ' + (ID_LBL[r.channel]||'id') + ' - add it to the master sheet, or load this account’s All Orders Report')
+            }" style="border-bottom:1px dotted var(--muted)">not mapped</span>${tag}</div>`;
           return `<div class="kv">SKU: <b>${esc(sk.join(', '))}</b>${tag}</div>`;
         })()}
         <div class="kv">${isParent?'Avg Selling Price':'Selling Price'}: <b>${price!=null?fmtGBP(price):'-'}</b></div>
