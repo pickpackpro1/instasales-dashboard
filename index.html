@@ -842,6 +842,20 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <div class="count" id="daPmCount"></div>
       </div>
       <div class="fbar" style="flex-wrap:wrap;gap:6px">
+        <span class="flabel">Dates</span>
+        <button class="btn da-pm-w" data-days="0">All in range</button>
+        <button class="btn secondary da-pm-w" data-days="1">Latest day</button>
+        <button class="btn secondary da-pm-w" data-days="7">7 days</button>
+        <button class="btn secondary da-pm-w" data-days="14">14 days</button>
+        <button class="btn secondary da-pm-w" data-days="30">30 days</button>
+        <span class="flabel" style="margin-left:6px">Custom</span>
+        <input type="date" id="daPmFrom" style="width:148px">
+        <input type="date" id="daPmTo" style="width:148px">
+        <button class="btn" id="daPmApply">Apply</button>
+        <button class="btn secondary" id="daPmClear" title="Back to the full range from the top of the page">Clear</button>
+        <span class="flabel" id="daPmRange" style="margin-left:8px;font-weight:600"></span>
+      </div>
+      <div class="fbar" style="flex-wrap:wrap;gap:6px">
         <span class="flabel">Filter</span>
         <button class="btn da-pm-f" data-f="all">All</button>
         <button class="btn secondary da-pm-f" data-f="excellent">⭐ Excellent</button>
@@ -858,7 +872,9 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <button class="btn secondary da-pm-s" data-s="acos">ACoS</button>
         <button class="btn" id="daPmDir" title="Toggle ascending / descending">▼ Desc</button>
       </div>
-      <div class="sub-title">Each product with every day it moved, then its own total for the range. Same filters and channel scope as the table above.</div>
+      <div class="sub-title">Each product with every day it moved, then its own total for the window. The dates
+        above narrow this table only &mdash; it can never look wider than the range at the top of the page, since that
+        is what was computed; totals, badges and the summary strip all follow whatever window is selected.</div>
       <div class="table-wrap" style="max-height:700px"><table id="daPmTable">
         <thead><tr>
           <th>Date</th><th class="num">Orders</th><th class="num">Units</th><th class="num">Revenue</th>
@@ -6131,6 +6147,11 @@ let DA_PM_FILTER = 'all';        // all | excellent | profitable | low | loss
 let DA_PM_SORT = 'rev';          // rev | profit | margin | orders | units | ads | acos
 let DA_PM_DESC = true;
 let DA_PM_Q = '';
+// Movement has its own date window over the days DA_SKU already holds. 0 with no custom dates
+// means "whatever the range at the top of the page produced", which stays the default so the
+// table does not silently disagree with the tiles above it until you narrow it yourself.
+let DA_PM_DAYS = 0;
+let DA_PM_FROM = '', DA_PM_TO = '';
 // Thresholds the wording and badges key off. Stated once so the prose, the badges and the
 // alerts can never drift apart, and so changing a target changes all three together.
 const DA_T = {excellent:15, low:8, acosTarget:25, acosBad:30, tacosTarget:15};
@@ -6279,9 +6300,35 @@ function renderDailySummary(S){
     '<div style="color:var(--muted)">No standout performers on this day.</div>';
 }
 
+// Which days the movement table shows. Slices dates already computed, so narrowing here never
+// re-runs the engines - and `set:null` when nothing is narrowed keeps the default path free.
+function daPmDates(){
+  const all = new Set();
+  for(const e of daSkuList()) for(const d of e.days) all.add(d.date);
+  const dates = [...all].sort();
+  let sel = dates;
+  if(DA_PM_FROM || DA_PM_TO) sel = dates.filter(d => (!DA_PM_FROM || d >= DA_PM_FROM) && (!DA_PM_TO || d <= DA_PM_TO));
+  else if(DA_PM_DAYS > 0) sel = dates.slice(-DA_PM_DAYS);
+  const narrowed = sel.length !== dates.length;
+  return {dates:sel, all:dates, set: narrowed ? new Set(sel) : null,
+          label: !sel.length ? 'no days in this window'
+               : sel[0] === sel[sel.length-1] ? sel[0]
+               : `${sel[0]} → ${sel[sel.length-1]} · ${sel.length} day(s)`};
+}
+
 // ── Product-by-product movement: every SKU, its day rows, and its period total ──
 function renderDailyMovement(){
-  const list = daSkuList().map(e => ({...e, tot: daRoll(e.days)}));
+  const win = daPmDates();
+  const rangeEl = document.getElementById('daPmRange');
+  if(rangeEl) rangeEl.textContent = win.set ? win.label : (win.all.length ? `all ${win.all.length} day(s) in range` : '');
+  const fEl = document.getElementById('daPmFrom'), tEl = document.getElementById('daPmTo');
+  if(fEl && !DA_PM_FROM && !DA_PM_TO && win.dates.length){ fEl.value = win.dates[0]; tEl.value = win.dates[win.dates.length-1]; }
+  // Drop the days outside the window, then drop SKUs left with none - a product that did not
+  // move inside the window has no line here rather than an all-zero one.
+  const list = daSkuList()
+    .map(e => win.set ? {...e, days: e.days.filter(d => win.set.has(d.date))} : e)
+    .filter(e => e.days.length)
+    .map(e => ({...e, tot: daRoll(e.days)}));
   const bandOf = e => daBand(e.tot.profit, e.tot.margin);
   let view = list.filter(e => {
     if(DA_PM_FILTER !== 'all' && bandOf(e) !== DA_PM_FILTER) return false;
@@ -6340,7 +6387,11 @@ function renderDailyMovement(){
     return head + body + tot;
   }).join('');
   document.querySelector('#daPmTable tbody').innerHTML = html ||
-    `<tr><td colspan="11" style="color:var(--muted);padding:18px;text-align:center">No SKUs match this filter.</td></tr>`;
+    `<tr><td colspan="11" style="color:var(--muted);padding:18px;text-align:center">${
+      win.set && !win.dates.length
+        ? `Nothing sold between those dates. The range at the top of the page covers ${
+            win.all.length ? esc(win.all[0]) + ' → ' + esc(win.all[win.all.length-1]) : 'no days'}.`
+        : 'No SKUs match this filter.'}</td></tr>`;
 
   // summary strip over the FILTERED set, so it always describes what is on screen
   const all = list;
@@ -6362,7 +6413,8 @@ function renderDailyMovement(){
     item('Top Profit SKU', bestPft ? `${esc(bestPft.name.slice(0,26))} — ${fmtGBP0(bestPft.tot.profit)}` : '—') +
     item('Best Margin SKU', bestMgn ? `${esc(bestMgn.name.slice(0,26))} — ${daPct1(bestMgn.tot.margin)}` : '—');
   document.getElementById('daPmCount').textContent =
-    `${fmtNum(shown.length)}${view.length > CAP ? '+' : ''} of ${fmtNum(all.length)} SKUs`;
+    `${fmtNum(shown.length)}${view.length > CAP ? '+' : ''} of ${fmtNum(all.length)} SKUs`
+    + (win.set ? ` · ${win.dates.length} day(s)` : '');
 }
 
 // ---- Product Trend Intelligence ----
@@ -8253,6 +8305,27 @@ document.getElementById('daExport').addEventListener('click', () => {
 document.getElementById('daDay').addEventListener('change', e => { DA_DAY = e.target.value; renderDailySummary(DA_LAST); });
 // The movement table re-renders from DA_SKU, which the last day-pass already filled - no need
 // to re-run the engines just to re-sort or re-filter.
+document.querySelectorAll('.da-pm-w').forEach(b => b.addEventListener('click', () => {
+  DA_PM_DAYS = +b.dataset.days; DA_PM_FROM = ''; DA_PM_TO = '';
+  document.querySelectorAll('.da-pm-w').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  document.getElementById('daPmFrom').value = ''; document.getElementById('daPmTo').value = '';
+  renderDailyMovement();
+}));
+document.getElementById('daPmApply').addEventListener('click', () => {
+  const f = document.getElementById('daPmFrom').value, t = document.getElementById('daPmTo').value;
+  if(!f && !t){ showBanner('Pick a from and/or to date, or use one of the quick windows.', 'error'); return; }
+  if(f && t && f > t){ showBanner('The "from" date is after the "to" date.', 'error'); return; }
+  DA_PM_FROM = f; DA_PM_TO = t;
+  document.querySelectorAll('.da-pm-w').forEach(x => x.classList.add('secondary'));
+  renderDailyMovement();
+});
+document.getElementById('daPmClear').addEventListener('click', () => {
+  DA_PM_DAYS = 0; DA_PM_FROM = ''; DA_PM_TO = '';
+  document.querySelectorAll('.da-pm-w').forEach(x => x.classList.toggle('secondary', x.dataset.days !== '0'));
+  document.getElementById('daPmFrom').value = ''; document.getElementById('daPmTo').value = '';
+  renderDailyMovement();
+});
 document.querySelectorAll('.da-pm-f').forEach(b => b.addEventListener('click', () => {
   DA_PM_FILTER = b.dataset.f;
   document.querySelectorAll('.da-pm-f').forEach(x => x.classList.add('secondary'));
