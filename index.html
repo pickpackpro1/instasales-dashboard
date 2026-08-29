@@ -1736,11 +1736,16 @@ function skuLabelFor(channel, key, ful, name){
   if(all.length) return {text:all[0], extra: all.length > 1 ? ` +${all.length-1}` : '',
     mapped:true, isName:false, all,
     tip:(all.length > 1 ? 'SKUs: ' + all.join(', ') + ' · ' : '') + idl + ' ' + (key || '')};
-  // No SKU mapped. The product title still identifies it at a glance where a bare id does not,
-  // so prefer the title and say plainly that it is not the SKU.
-  const nm = String(name || '').trim();
-  return {text: nm || key || '', extra:'', mapped:false, isName:!!nm, all:[],
+  // No SKU mapped. The product title identifies it at a glance where a bare id does not, but a
+  // full Amazon title is a paragraph - enough of it to recognise the product, plus the id to
+  // pin down exactly which listing, is what fits on a line. Full title stays on hover.
+  const nm = String(name || '').replace(/\s+/g, ' ').trim();
+  const words = nm ? nm.split(' ') : [];
+  const short = words.slice(0, 4).join(' ') + (words.length > 4 ? '…' : '');
+  return {text: short || key || '', extra:'', mapped:false, isName:!!nm, all:[],
+    id: short ? (key || '') : '',
     tip:`no seller SKU mapped for ${idl} ${key || '?'} — showing the ${nm ? 'product title' : idl}. `
+      + (nm ? nm + ' — ' : '')
       + `Add it to the master sheet, or load this account’s All Orders Report.`};
 }
 // The same label as HTML. An unmapped id is underlined so it reads as a gap to fill, not a SKU.
@@ -1749,6 +1754,7 @@ function skuLabelHTML(channel, key, ful, name){
   return `<span title="${esc(L.tip)}">`
     + `<b${L.mapped ? '' : ' style="border-bottom:1px dotted var(--muted)"'}>${esc(L.text)}</b>`
     + (L.extra ? `<span style="color:var(--muted);font-size:11px">${L.extra}</span>` : '')
+    + (L.id ? ` <span style="color:var(--muted);font-size:11px;font-weight:400">${esc(L.id)}</span>` : '')
     + `</span>`;
 }
 const chOfPlat = p => {
@@ -4179,6 +4185,14 @@ function selfTest(){
       eq('label falls back to title', skuLabelFor('amazon','B0NOPE',undefined,'Widget 3x').text, 'Widget 3x');
       eq('title fallback is flagged', skuLabelFor('amazon','B0NOPE',undefined,'Widget 3x').mapped, 'false');
       eq('no title falls back to the id', skuLabelFor('amazon','B0NOPE',undefined,'').text, 'B0NOPE');
+      // the title fallback is trimmed to 4 words and carries the id, so it cannot eat the line
+      const L4 = skuLabelFor('amazon','B0NOPE',undefined,'Hard Brush QUaltex Universal Replacement Head For Numatic');
+      eq('title trimmed to 4 words', L4.text, 'Hard Brush QUaltex Universal…');
+      eq('trimmed title carries the id', L4.id, 'B0NOPE');
+      eq('full title stays in the tooltip', /Replacement Head For Numatic/.test(L4.tip), 'true');
+      const L2 = skuLabelFor('amazon','B0NOPE',undefined,'Short Title');
+      eq('short title is not ellipsised', L2.text, 'Short Title');
+      eq('id is dropped when there is no title', skuLabelFor('amazon','B0NOPE',undefined,'').id, '');
     } finally {
       STATE.raw.master = sm; STATE.raw.amz_orders = o1; STATE.raw.amz2_orders = o2;
       _skuIdxFor = null; _ordIdx = null;
