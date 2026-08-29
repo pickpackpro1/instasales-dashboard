@@ -1638,10 +1638,46 @@ const CH_NAME    = {tiktok:'TikTok', amazon:'Amazon 1 (Vemart)', amazon2:'Amazon
 // Seller SKUs for a channel key. An Amazon ASIN can carry more than one - an FBM and an FBA
 // offer are different SKUs on the same ASIN - so this returns all of them. Indexed once per
 // master build; rebuilding per row would be O(rows x master).
+// Second source for ASIN -> seller SKU: the All Orders Report, which names the SKU on every
+// order line. Two things the master index below cannot do - it is per ACCOUNT (the master
+// index keys both Amazon accounts under one "amazon" family, so it can hand back the other
+// account's SKU), and it answers for ASINs the master sheet never listed, including the
+// Cost-Book-only setups where there is no master sheet at all. Not date-filtered: a label is
+// a label, and an ASIN that sold under a SKU last month still IS that SKU today.
+let _ordIdx = null, _ordIdxA = null, _ordIdxB = null;
+function ordersSkuIdx(){
+  const a1 = STATE.raw.amz_orders || [], a2 = STATE.raw.amz2_orders || [];
+  if(_ordIdx && _ordIdxA === a1 && _ordIdxB === a2) return _ordIdx;
+  _ordIdxA = a1; _ordIdxB = a2; _ordIdx = {};
+  const scan = (rows, ch) => {
+    for(const r of rows){
+      const status = fixText(r['order-status'] || r['order status']).toLowerCase();
+      if(status === 'cancelled' || status === 'canceled') continue;
+      const asin = fixText(r['asin']), sku = fixText(r['sku']);
+      if(!asin || !sku) continue;
+      const fc = fixText(r['fulfillment-channel'] || r['fulfilment-channel'] || r['fulfillment channel']).toUpperCase();
+      const fba = fc.startsWith('AFN') || fc.includes('AMAZON');
+      const k = ch + '|' + String(asin).trim().toUpperCase();
+      const list = (_ordIdx[k] = _ordIdx[k] || []);
+      if(!list.some(x => x.sku === sku)) list.push({sku, fba});
+    }
+  };
+  scan(a1, 'amazon'); scan(a2, 'amazon2');
+  return _ordIdx;
+}
+// Which channel buckets a master row belongs in. Only the two Amazon accounts are ambiguous:
+// "amazon-vefive" / "amazon-vemart" name one, a bare "amazon" names neither.
+function skuIdxChans(platform, fam){
+  if(fam !== 'amazon') return [fam];
+  const p = String(platform || '').toLowerCase();
+  if(p.includes('vefive') || p.includes('amazon2') || p.includes('amazon 2')) return ['amazon2'];
+  if(p.includes('vemart') || p.includes('amazon1') || p.includes('amazon 1')) return ['amazon'];
+  return ['amazon', 'amazon2'];
+}
 let _skuIdx = null, _skuIdxFor = null;
 function sellerSkusFor(channel, key, ful){
   const raw = STATE.raw.master || [];
-  if(!key || !raw.length) return [];
+  if(!key) return [];
   // Indexed off the RAW sheet, not M.list: the built master keys Amazon on the ASIN, so an
   // ASIN listed both FBM and FBA keeps only one of its two rows there and the other SKU would
   // be invisible. Rebuilt only when the sheet itself changes.
@@ -1655,22 +1691,32 @@ function sellerSkusFor(channel, key, ful){
                : fam === 'ebay'   ? (fixText(r['productid']) || sku)
                : sku;
       if(!id) continue;
-      const k = fam + '|' + String(id).trim().toUpperCase();
       // remember how each SKU is fulfilled, so a row can be narrowed to one offer type. The
       // sheet's SKU CHANNEL column is authoritative; an FBA/AFN marker in the SKU name is the
       // fallback for rows that never had that column filled in.
       const chanRaw = fixText(r['SKU CHANNEL'] || r['sku channel'] || r['Fulfilment Channel'] || r['Fulfillment Channel']);
       const fba = /fba|afn|amazon/i.test(chanRaw) || (!chanRaw && /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(sku));
-      (_skuIdx[k] = _skuIdx[k] || []);
-      if(!_skuIdx[k].some(x => x.sku === sku)) _skuIdx[k].push({sku, fba:!!fba});
+      // Index per ACCOUNT where the sheet names one. Keying both Amazon accounts under a
+      // single "amazon" family meant a Vefive-only row answered a Vemart lookup, labelling an
+      // ASIN with the other account's SKU. A row that just says "amazon" genuinely does not
+      // say which account, so it still answers for both rather than disappearing.
+      for(const ch of skuIdxChans(fixText(r['platform']), fam)){
+        const k = ch + '|' + String(id).trim().toUpperCase();
+        (_skuIdx[k] = _skuIdx[k] || []);
+        if(!_skuIdx[k].some(x => x.sku === sku)) _skuIdx[k].push({sku, fba:!!fba});
+      }
     }
   }
-  const fam = (channel === 'amazon2') ? 'amazon' : channel;
-  let hit = _skuIdx[fam + '|' + String(key).trim().toUpperCase()] || [];
+  const K = String(key).trim().toUpperCase();
+  let hit = ((_skuIdx || {})[channel + '|' + K] || []).slice();
+  // Fill gaps from the orders report rather than replace: where the sheet already named the
+  // SKU that answer stands, and this only adds offers the sheet never listed.
+  for(const x of (ordersSkuIdx()[channel + '|' + K] || []))
+    if(!hit.some(y => y.sku === x.sku)) hit.push(x);
   // ful: undefined = every offer, true = FBA only, false = FBM only
   if(ful === true || ful === false) hit = hit.filter(x => x.fba === ful);
   // a key that IS the sku (TikTok, Shopify) needs no second line
-  return hit.map(x => x.sku).filter(x => String(x).trim().toUpperCase() !== String(key).trim().toUpperCase());
+  return hit.map(x => x.sku).filter(x => String(x).trim().toUpperCase() !== K);
 }
 // What the channel's join key actually IS, so the row does not label an ASIN as a SKU.
 const ID_LBL = {amazon:'ASIN', amazon2:'ASIN', ebay:'Item ID', tiktok:'SKU', shopify:'SKU'};
@@ -4062,6 +4108,39 @@ function selfTest(){
   eq('deferred',        amzDeferred({'Transaction status':'Deferred'}), 'true');
   eq('deferred is not released', amzReleased({'Transaction status':'Deferred'}), 'false');
   eq('no status column counts as released', amzReleased({}), 'true');
+  // ASIN -> seller SKU must survive a missing master sheet: the All Orders Report names the
+  // SKU on every line, and it is per-account, so Vemart's SKU can never label a Vefive ASIN.
+  {
+    const sm = STATE.raw.master, o1 = STATE.raw.amz_orders, o2 = STATE.raw.amz2_orders;
+    try{
+      STATE.raw.master = [];
+      STATE.raw.amz_orders  = [{asin:'B0TEST1234', sku:'VEMART-SKU-FBM', 'fulfillment-channel':'MFN'},
+                               {asin:'B0TEST1234', sku:'VEMART-SKU-FBA', 'fulfillment-channel':'AFN'},
+                               {asin:'B0TEST9999', sku:'CANCELLED-SKU', 'order-status':'Cancelled'}];
+      STATE.raw.amz2_orders = [{asin:'B0TEST1234', sku:'VEFIVE-SKU', 'fulfillment-channel':'MFN'}];
+      _skuIdxFor = null; _ordIdx = null;
+      eq('sku from orders report, no master', sellerSkusFor('amazon','B0TEST1234').join(','), 'VEMART-SKU-FBM,VEMART-SKU-FBA');
+      eq('orders sku index is per account',   sellerSkusFor('amazon2','B0TEST1234').join(','), 'VEFIVE-SKU');
+      eq('orders sku honours FBA filter',     sellerSkusFor('amazon','B0TEST1234', true).join(','), 'VEMART-SKU-FBA');
+      eq('orders sku honours FBM filter',     sellerSkusFor('amazon','B0TEST1234', false).join(','), 'VEMART-SKU-FBM');
+      eq('cancelled lines carry no sku',      sellerSkusFor('amazon','B0TEST9999').length, 0);
+      eq('unknown asin stays unmapped',       sellerSkusFor('amazon','B0NOSUCHASIN').length, 0);
+      // the master index must not leak one Amazon account's SKU into the other's lookup
+      STATE.raw.master = [{sku:'VEFIVE-ONLY', asin:'B0ACCT0001', platform:'amazon-vefive'},
+                          {sku:'VEMART-ONLY', asin:'B0ACCT0002', platform:'amazon-vemart'},
+                          {sku:'EITHER-ACCT', asin:'B0ACCT0003', platform:'amazon'}];
+      STATE.raw.amz_orders = []; STATE.raw.amz2_orders = [];
+      _skuIdxFor = null; _ordIdx = null;
+      eq('vefive sku answers vefive',      sellerSkusFor('amazon2','B0ACCT0001').join(','), 'VEFIVE-ONLY');
+      eq('vefive sku does NOT answer vemart', sellerSkusFor('amazon','B0ACCT0001').length, 0);
+      eq('vemart sku does NOT answer vefive', sellerSkusFor('amazon2','B0ACCT0002').length, 0);
+      eq('bare "amazon" answers vemart',   sellerSkusFor('amazon','B0ACCT0003').join(','), 'EITHER-ACCT');
+      eq('bare "amazon" answers vefive',   sellerSkusFor('amazon2','B0ACCT0003').join(','), 'EITHER-ACCT');
+    } finally {
+      STATE.raw.master = sm; STATE.raw.amz_orders = o1; STATE.raw.amz2_orders = o2;
+      _skuIdxFor = null; _ordIdx = null;
+    }
+  }
   return fails;
 }
 function diagnostics(){
@@ -6228,12 +6307,27 @@ function renderDailySummary(S){
     const sk = sellerSkusFor(x.channel, x.key);
     return sk.length ? sk[0] : (x.key || '');
   };
+  // An ASIN can carry an FBM and an FBA SKU. Show the first, then how many more, with every
+  // one of them on hover - naming only one would quietly hide the other offer. Where no SKU
+  // is known at all the id is shown as-is and marked, so an ASIN on screen reads as "no SKU
+  // mapped for this yet" rather than as a SKU.
+  const skuLabel = x => {
+    const sk = sellerSkusFor(x.channel, x.key);
+    if(!sk.length) return {text: x.key || '', extra: '', mapped: false, all: []};
+    return {text: sk[0], extra: sk.length > 1 ? ` +${sk.length-1}` : '', mapped: true, all: sk};
+  };
   // One line, read at a glance: SKU plus the single number that matters for that list. The
   // product name and the id stay on hover so a row can still be identified without widening it.
   const skuChips = (arr, val, colour) => arr.length
-    ? `<div style="margin-top:6px;line-height:1.95">` + arr.map(x =>
-        `<span title="${esc((x.key||'') + (x.name ? ' · ' + x.name : ''))}"><b>${esc(skuOf(x))}</b> <span style="color:${colour}">(${val(x)})</span></span>`
-      ).join(' <span style="color:var(--muted)">·</span> ') + `</div>`
+    ? `<div style="margin-top:6px;line-height:1.95">` + arr.map(x => {
+        const L = skuLabel(x);
+        const tip = (L.all.length > 1 ? 'SKUs: ' + L.all.join(', ') + ' · ' : '')
+                  + (L.mapped ? (ID_LBL[x.channel]||'ID') + ' ' + (x.key||'') : 'no seller SKU mapped for this ' + (ID_LBL[x.channel]||'id'))
+                  + (x.name ? ' · ' + x.name : '');
+        return `<span title="${esc(tip)}"><b${L.mapped?'':' style="border-bottom:1px dotted var(--muted)"'}>${esc(L.text)}</b>`
+             + (L.extra ? `<span style="color:var(--muted);font-size:11px">${L.extra}</span>` : '')
+             + ` <span style="color:${colour}">(${val(x)})</span></span>`;
+      }).join(' <span style="color:var(--muted)">·</span> ') + `</div>`
     : '<div style="margin-top:4px;color:var(--muted)">none</div>';
 
   // KPI chips across the top of the summary
