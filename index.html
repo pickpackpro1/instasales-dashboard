@@ -1147,6 +1147,11 @@ input[type=range]{accent-color:var(--accent);width:150px}
           <div class="up-hint">Costs no longer live here. They are kept in <b>Cost Manager</b> (left menu), where each cost is dated so past reports keep the price that applied at the time. Use <b>Import</b> there to load a cost spreadsheet in bulk.</div>
           <button class="btn secondary" id="wsGoCostBook">🗓️ Open Cost Manager</button>
         </div>
+        <div class="up-zone" style="border-color:#1baf7a" data-drop="">
+          <div class="up-title"><i style="background:#1baf7a"></i>Zero-rated (non-VAT) products <span class="req" style="color:var(--green);font-size:10px">BUILT-IN</span></div>
+          <div class="up-hint">Products sold at <b>0% VAT</b> - sanitary items, barley straw. No output VAT is charged on their sales and their buying cost carries none to reclaim. A list is <b>built in</b>; drop a sheet with <b>platform / SKU / ASIn-Id</b> columns to replace it.</div>
+          <div class="fs-list"><div class="fs-item" data-t="zero_vat"><span class="check">○</span><span>Non-VAT product list</span><span class="cnt">built-in</span></div></div>
+        </div>
         <div class="up-zone" style="border-color:var(--ch-amazon)" data-drop="">
           <div class="up-title"><i style="background:var(--ch-amazon)"></i>Amazon 1 (Vemart)</div>
           <div class="up-hint">Vemart's Amazon reports — Business Report, Sponsored Products (ads), Transaction report.</div>
@@ -1518,7 +1523,7 @@ function rankSku(r){
 const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
 
 // ================= state =================
-const EMPTY_RAW = () => ({master:[], tt_orders:[], tt_aff:[], tt_ads:[], amz_biz:[], amz_ads:[], amz_txn:[], amz_txn2:[], amz_orders:[], amz2_biz:[], amz2_ads:[], amz2_txn:[], amz2_txn2:[], amz2_orders:[], ebay_list:[], ebay_txn:[], ebay_pl:[], ebay_ppc:[], shop_orders:[], sku_map:[]});
+const EMPTY_RAW = () => ({master:[], zero_vat:[], tt_orders:[], tt_aff:[], tt_ads:[], amz_biz:[], amz_ads:[], amz_txn:[], amz_txn2:[], amz_orders:[], amz2_biz:[], amz2_ads:[], amz2_txn:[], amz2_txn2:[], amz2_orders:[], ebay_list:[], ebay_txn:[], ebay_pl:[], ebay_ppc:[], shop_orders:[], sku_map:[]});
 // Amazon report types that get remapped to the Amazon-2 (Vefive) buckets when dropped in that slot
 const AMZ2_REMAP = {amz_biz:'amz2_biz', amz_ads:'amz2_ads', amz_txn:'amz2_txn', amz_txn2:'amz2_txn2', amz_orders:'amz2_orders'};
 const STATE = {
@@ -1725,6 +1730,69 @@ function sellerSkusFor(channel, key, ful){
   // a key that IS the sku (TikTok, Shopify) needs no second line
   return hit.map(x => x.sku).filter(x => String(x).trim().toUpperCase() !== K);
 }
+// ================= zero-rated (non-VAT) products =================
+// UK zero-rated goods - sanitary/period products, and barley straw as animal feed. Zero-rated
+// is still a TAXABLE supply at 0%, not exemption: no output VAT is charged on the sale, but
+// input VAT on the costs of making it stays fully reclaimable. The one exception is the
+// product cost itself, which the supplier also invoices at 0% - there is no VAT inside it to
+// reclaim. Platform fees, ads, shipping and operational costs are standard-rated services
+// billed regardless of what the goods are rated, so they keep their normal treatment.
+// Keyed per channel FAMILY: the two Amazon accounts share one list because an ASIN is unique
+// across them, and a product's VAT rating belongs to the product, not to the account selling it.
+const BUILTIN_ZERO_VAT = {
+  amazon:{ids:["B0C7N1VNNZ", "B0D473B783", "B0D475BDY9", "B0D47628XW", "B0D7PYN2GN", "B0DB8HKFG2", "B0DB8PK6VM", "B0DB8QB2YH", "B0DB8RCM56", "B0DRW6BYZF", "B0F99FDX8P", "B0F99GGZ96", "B0F99Y27BV", "B0F9B36MZF", "B0F9B3WQ32", "B0F9FQ753C", "B0G66KQ3KR", "B0G66ZPF85", "B0G67DY29Q"],
+    skus:["8X6, bodyFORM VE-FBM", "Barlay pk3_New FBM", "Barlay straw pk1-NEW", "Barlay straw pk1-NEW FBA", "Barlay straw pk2-NEW", "Barlay straw pk3-NEW", "Barlay-VE-Pk2-FBM", "Barley-VE-pk-1-FBM", "Barley-Ve-Pk3", "Body - Foam- Liners-pK4", "Body - Foam- Liners-pK6", "Body Foam -pack-2 New FBM", "Body Foam -pack-4 New FBM", "Body Form Wings  2x, (8 x 2 Packs) FBM", "Body-Foam8-Pck6 FBM", "BodyF- 3PK-3PK", "Bodyf-VE-FBM-8x3", "Bodyfoam-Pck-4-New FBM", "Bodyfoam-Ult-2 New FBM", "Bodyfoam-Ult-6 New FBM", "barlay pk1-NEW FBM", "barlay pk2-NEW-FBM", "bodyfom VE_FBM"]},
+  ebay:{ids:["356953198560", "357352225354", "357660720887", "357690487090", "357690536076", "357690542729", "358394902397", "358511854406"],
+    skus:["Body Foam -pack-2 New FBM", "Body Foam -pack-4 New FBM", "Body Form 4x", "Body Form 6x", "Body Form Wings 2x, (8 x 2 Packs) FBM", "Body-Foam8-Pack6 FBM", "Bodyfoam-Pck-4-New FBM", "Bodyfoam-Ult-2 New FBM", "Bodyfoam-Ult-6 New FBM", "barlay 1x", "barlay 2x", "barlay 3x"]},
+  tiktok:{ids:["1729431102587965308", "1729431103133355900", "1729431103133683580", "1729431104309727100", "1729431104310644604", "1729431104552013692", "1729431104745213820", "1729431104747048828", "1729431104747507580", "1729431104861409148", "1729431104864096124", "1729431104864227196", "1729431104864489340", "1729431104866783100", "1729431104867962748", "1729431104869666684", "1729431104951193468", "1729431105032261500", "1729431105356468092", "1729431105537544060", "1729431105537806204", "1729520912181205884", "1729650617889692540", "1729650672974273404", "1729650678000163708", "1729677837625826172"],
+    skus:["2X-KJJJ-NEIP", "48-9Y7T-5LTL", "BC-XIKA-1AK9", "BF-New-01", "BF-Ultra10-P2", "Body - foam- 3PKs", "Body Foam -pack-2 New FBM", "Body Foam -pack-4 New FBM", "Body Foam -pack-6", "Body Form Wings 2x, (8 x 2 Packs) FBM", "Body foam dailies style", "Body-Foam-maxi", "Body-Foam8-Pack6 FBM", "Body-Foam8-Pck6", "BodyFoam INSTA", "BodyFoam-Long-Pk6", "Bodyfoam-Pck-10", "Bodyfoam-Pck-4-New FBM", "Bodyfoam-Ult-2 New FBM", "Bodyfoam-Ult-4", "Bodyfoam-Ult-6 New FBM", "T3-DBS9-9SBL", "barlay 1x-NEW", "barlay 2x", "barlay 2x-NEW", "barlay 3x", "barlay 3x-NEW", "barley pk1", "barley pk2", "barley pk3", "panty liner pk4", "panty liner pk6"]},
+};
+// Loaded from the "Non VAT products" sheet when one is dropped in, falling back to the list
+// above. Both an id and a SKU are matched: Amazon rows key on the ASIN, eBay on the item ID and
+// TikTok on the SKU, so neither alone would catch all three.
+let ZERO_VAT = null, _zvFor = null;
+function zeroVatSets(){
+  const raw = STATE.raw.zero_vat || [];
+  if(ZERO_VAT && _zvFor === raw) return ZERO_VAT;   // rebuilt only when the sheet itself changes
+  _zvFor = raw;
+  const mk = () => ({ids:new Set(), skus:new Set()});
+  const Z = {amazon:mk(), ebay:mk(), tiktok:mk(), shopify:mk()};
+  const add = (fam, id, sku) => {
+    const z = Z[fam]; if(!z) return;
+    if(id)  z.ids.add(String(id).trim().toUpperCase());
+    if(sku) z.skus.add(String(sku).trim().toUpperCase());
+  };
+  const rows = raw;
+  if(rows.length){
+    for(const r of rows){
+      const plat = fixText(r['platform'] || r['Platform']);
+      const sku  = fixText(r['SKU'] || r['SKU '] || r['sku']);
+      const id   = fixText(r['ASIn/Id'] || r['ASIN/Id'] || r['asin/id'] || r['ASIN'] || r['asin'] || r['Id'] || r['id']);
+      if(!plat && !sku && !id) continue;
+      add(cbFam(plat) || 'amazon', id, sku);
+    }
+  } else {
+    for(const [fam, e] of Object.entries(BUILTIN_ZERO_VAT)){
+      for(const id of e.ids) add(fam, id, '');
+      for(const sk of e.skus) add(fam, '', sk);
+    }
+  }
+  ZERO_VAT = Z;
+  return Z;
+}
+// Is this row's product zero-rated? Matched on the channel's own id, and on any seller SKU
+// behind it - an ASIN missing from the list is still caught when one of its SKUs is named.
+function isZeroRated(channel, key, skus){
+  const fam = (channel === 'amazon2') ? 'amazon' : channel;
+  const z = zeroVatSets()[fam];
+  if(!z) return false;
+  const K = String(key || '').trim().toUpperCase();
+  if(K && (z.ids.has(K) || z.skus.has(K))) return true;
+  for(const sk of (skus || sellerSkusFor(channel, key)))
+    if(z.skus.has(String(sk).trim().toUpperCase())) return true;
+  return false;
+}
+
 // What the channel's join key actually IS, so the row does not label an ASIN as a SKU.
 const ID_LBL = {amazon:'ASIN', amazon2:'ASIN', ebay:'Item ID', tiktok:'SKU', shopify:'SKU'};
 // One way of naming a row everywhere it is listed: the seller SKU where one is known, the id
@@ -1787,6 +1855,9 @@ function detectSheet(sheet){
     if(s.has('buying_cost_per_unit') && s.has('sku')) return {type:'master', headerRow:i};
     // SKU-mapping dashboards: product name + per-channel routed(active)/un-routed(inactive) SKU columns
     if(s.has('Type') && (s.has('SKU') || s.has('General SKU')) && cells.some(c => /sku\s*routed/i.test(c))) return {type:'sku_map', headerRow:i};
+    // the zero-rated register: platform + SKU + an asin/id column
+    if(cells.some(c => /^platform$/i.test(c)) && cells.some(c => /^sku\s*$/i.test(c))
+       && cells.some(c => /^asin\s*\/\s*id$/i.test(c))) return {type:'zero_vat', headerRow:i};
     // DC (fulfilment) stock exports -> feed the Weekly Stock Tracking, not the P&L engine
     if(s.has('SKU') && s.has('Stock Level') && s.has('Stock Level Available Allocation')) return {type:'dc_stock_level', headerRow:i};
     if(s.has('Action Quantity') && s.has('Log Created Date') && s.has('Action')) return {type:'dc_stock_txn', headerRow:i};
@@ -2079,6 +2150,7 @@ const TYPE_LABEL = {master:'Master cost sheet', tt_orders:'TikTok orders', tt_af
   amz_biz:'Amazon Business Report', amz_ads:'Amazon Sponsored Products', amz_txn:'Amazon transaction report', amz_txn2:'Amazon transaction report (date-range)',
   amz2_biz:'Amazon 2 (Vefive) Business Report', amz2_ads:'Amazon 2 (Vefive) Sponsored Products', amz2_txn:'Amazon 2 (Vefive) transaction report', amz2_txn2:'Amazon 2 (Vefive) transaction report (date-range)',
   amz_orders:'Amazon 1 (Vemart) All Orders Report', amz2_orders:'Amazon 2 (Vefive) All Orders Report',
+  zero_vat:'Zero-rated (non-VAT) products',
   ebay_list:'eBay Listings Sales', ebay_txn:'eBay transactions', ebay_pl:'eBay General Campaigns Report', ebay_ppc:'eBay Priority Campaigns Report', shop_orders:'Shopify orders', sku_map:'SKU Management map'};
 const TYPE_CH = {tt_orders:'tiktok', tt_aff:'tiktok', tt_ads:'tiktok', amz_biz:'amazon', amz_ads:'amazon', amz_txn:'amazon', amz_txn2:'amazon', amz_orders:'amazon', amz2_biz:'amazon2', amz2_ads:'amazon2', amz2_txn:'amazon2', amz2_txn2:'amazon2', amz2_orders:'amazon2', ebay_list:'ebay', ebay_txn:'ebay', ebay_pl:'ebay', ebay_ppc:'ebay', shop_orders:'shopify'};
 const FILE_DATE_COLS = {tt_orders:['Created Time','Paid Time'], tt_aff:['Time Created','Payment time'], amz_txn:['date/time'], amz_txn2:['Date'], amz_orders:['purchase-date'], amz2_orders:['purchase-date'], amz2_txn:['date/time'], amz2_txn2:['Date'], ebay_txn:['Transaction creation date'], shop_orders:['Created at','Paid at']};
@@ -2585,11 +2657,17 @@ function finalizeRows(rows){
     r.revenue = r.revenue_gross - r.refunds;
     r.total_cost = r.mkt_fee + r.affiliate + r.shop_ads + r.buying + r.shipping + r.oper + r.ads;
     r.net_profit = r.revenue - r.total_cost;
-    r.output_vat = V.revIncVAT ? vatOf(r.revenue) : 0;
+    // Zero-rated goods: no output VAT on the sale, and the supplier's invoice for the goods
+    // carries none either, so there is nothing inside the buying cost to reclaim. Everything
+    // else about the row is unchanged - zero-rating is a 0% taxable supply, not exemption, so
+    // input VAT on fees, ads, shipping and operational costs stays fully recoverable.
+    r.zeroRated = isZeroRated(r.channel, r.key);
+    r.output_vat = (V.revIncVAT && !r.zeroRated) ? vatOf(r.revenue) : 0;
     r.revenue_ex = r.revenue - r.output_vat;
     let costVat = 0, feeVat = 0;
     r.vat_rec = {};                                    // per-cost reclaim, so the P&L can itemise it
     for(const k of COST_KEYS){
+      if(r.zeroRated && k === 'buying') continue;      // zero-rated goods are bought at 0% too
       if(vatIncFor(r.channel, k)){                     // VAT-INCLUSIVE cost -> reclaim the VAT portion (also lowers ex-VAT cost)
         const v = vatOf(r[k]);
         if(v){ costVat += v; r.vat_rec[k] = (r.vat_rec[k]||0) + v; }
@@ -2617,6 +2695,11 @@ function totalsOf(rows){
   // per-cost VAT reclaim, kept out of the numeric loop above since it is a nested object
   t.vat_rec = {};
   for(const r of rows) if(r.vat_rec) for(const k in r.vat_rec) t.vat_rec[k] = (t.vat_rec[k]||0) + r.vat_rec[k];
+  // Zero-rated revenue, so the VAT panel can show what carried no output VAT and why the
+  // charge is lower than 1/6th of sales. Summed here rather than re-derived, since only the
+  // row knows whether its product is on the list.
+  t.zero_rev = 0; t.zero_rows = 0;
+  for(const r of rows) if(r.zeroRated){ t.zero_rev += (r.revenue || 0); t.zero_rows++; }
   t.margin_ex = t.revenue_ex ? t.net_profit_ex/t.revenue_ex*100 : 0;
   t.acos = t.ad_sales>0 ? t.ads/t.ad_sales*100 : null;
   t.tacos = t.revenue>0 ? t.ads/t.revenue*100 : null;
@@ -4198,6 +4281,54 @@ function selfTest(){
       _skuIdxFor = null; _ordIdx = null;
     }
   }
+  // ---- zero-rated (non-VAT) products ----
+  {
+    const zv = STATE.raw.zero_vat, sm = STATE.raw.master;
+    try{
+      STATE.raw.zero_vat = []; STATE.raw.master = []; ZERO_VAT = null; _zvFor = null; _skuIdxFor = null;
+      eq('built-in list: amazon asin',  isZeroRated('amazon',  'B0DB8QB2YH'), 'true');
+      eq('built-in list: vefive asin',  isZeroRated('amazon2', 'B0G66KQ3KR'), 'true');
+      eq('built-in list: ebay item id', isZeroRated('ebay',    '356953198560'), 'true');
+      eq('built-in list: tiktok sku',   isZeroRated('tiktok',  'panty liner pk4'), 'true');
+      eq('standard-rated stays standard', isZeroRated('amazon','B0DQ8MHNGK'), 'false');
+      eq('a zero-rated ebay id is not zero-rated on amazon', isZeroRated('amazon','356953198560'), 'false');
+      // the VAT pass: no output VAT, no reclaim inside the goods, fees still reclaimable
+      const mkRow = zero => {
+        const r = newRow(zero ? 'amazon' : 'amazon', zero ? 'B0DB8QB2YH' : 'B0DQ8MHNGK', 'x');
+        r.units = 10; r.orders_count = 10; r.revenue_gross = 120; r.buying = 60;
+        r.mkt_fee = 18; r.oper = 6; r.shipping = 12; r.ads = 0;
+        return finalizeRows([r])[0];
+      };
+      const z = mkRow(true), n = mkRow(false);
+      eq('standard row charges output VAT', n.output_vat.toFixed(2), '20.00');
+      eq('zero-rated row charges none',     z.output_vat.toFixed(2), '0.00');
+      eq('zero-rated revenue is all net',   z.revenue_ex.toFixed(2), '120.00');
+      eq('standard row reclaims on goods',  (n.vat_rec.buying||0).toFixed(2), '10.00');
+      eq('zero-rated reclaims none on goods', (z.vat_rec.buying||0).toFixed(2), '0.00');
+      // £18 referral is quoted ex-VAT on Amazon, so it is grossed to £21.60 first and
+      // £3.60 comes back out - the reclaim on fees is untouched by the goods being zero-rated.
+      eq('zero-rated still reclaims on the referral fee', (z.vat_rec.mkt_fee||0).toFixed(2), '3.60');
+      eq('zero-rated still reclaims on shipping', (z.vat_rec.shipping||0).toFixed(2), '2.00');
+      eq('zero-rated still reclaims on operational', (z.vat_rec.oper||0).toFixed(2), '1.00');
+      // Profit: £120 all net (no output VAT), less costs of 60 + 18.00 + 5 + 10 ex-VAT.
+      eq('zero-rated profit', z.net_profit_ex.toFixed(2), '27.00');
+      eq('standard profit',   n.net_profit_ex.toFixed(2), '17.00');
+      // The whole point, stated as one number: zero-rating is worth the output VAT no longer
+      // handed over (£20) less the reclaim given up inside the goods (£10).
+      eq('zero-rating is worth output VAT less the lost COGS reclaim',
+         (z.net_profit_ex - n.net_profit_ex).toFixed(2), '10.00');
+    } finally {
+      STATE.raw.zero_vat = zv; STATE.raw.master = sm; ZERO_VAT = null; _zvFor = null; _skuIdxFor = null;
+    }
+  }
+  {
+    const sm = STATE.raw.master, o1 = STATE.raw.amz_orders, o2 = STATE.raw.amz2_orders;
+    try{
+    } finally {
+      STATE.raw.master = sm; STATE.raw.amz_orders = o1; STATE.raw.amz2_orders = o2;
+      _skuIdxFor = null; _ordIdx = null;
+    }
+  }
   return fails;
 }
 function diagnostics(){
@@ -4594,6 +4725,12 @@ function openPlDrawer(from, to, title){
   for(const k of ['buying','oper','shipping','mkt_fee','ads','affiliate','shop_ads']){
     const v = (t.vat_rec || {})[k] || 0;
     if(v > 0.004) vatLines.push(vsub('VAT reclaimed on ' + REC_LBL[k], v));
+  }
+  if((t.zero_rev || 0) > 0.004){
+    vatLines.push(`<div class="pls-row sub" style="color:var(--muted);font-size:11px"><span>`
+      + `${fmtGBP(t.zero_rev)} of this was <b>zero-rated</b> (${fmtNum(t.zero_rows)} product line(s)) &mdash; `
+      + `no output VAT charged, and their buying cost carries none to reclaim. Fees, ads and shipping on them still do.`
+      + `</span><span></span></div>`);
   }
   {
     const g = (STATE.vat.alreadyGross || {}).tiktok;
@@ -7529,6 +7666,7 @@ function skuRowHTML(r, i, opt){
             : `<span class="badge blue">${CH_NAME[r.channel]} Listing</span>`
               + (r.isOffer ? `<span class="badge ${r.offerFba?'purple':'blue'}">#${r.offerFba?'FBA':'FBM'}</span>` : '')}
           ${missingFromMaster ? `<span class="badge red">⚠ NOT IN MASTER SHEET</span>` : ''}
+          ${r.zeroRated ? `<span class="badge green" title="Zero-rated for VAT: no output VAT on its sales, and its buying cost carries none to reclaim. Fees, ads and shipping on it are still standard-rated and still reclaimable.">0% VAT</span>` : ''}
           ${stock != null ? `<span class="badge green">Stock: ${fmtNum(stock)}</span>` : ''}
           ${stockDays != null ? `<span class="badge ${stockDays<14?'red':'grey'}">Stock ending in ${stockDays>99?'99+':stockDays.toFixed(1)} days</span>` : ''}
         </div>
