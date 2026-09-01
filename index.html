@@ -1524,6 +1524,25 @@ function rankSku(r){
     + '</div>';
 }
 const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+// Re-rendering a whole table throws away whatever the caret was in, so an edit would dump you
+// at the top of the page mid-row. Capture the data-* attributes that identify the focused
+// input, re-render, then put the caret back on the same box - so typing COGS, tabbing to
+// shipping and tabbing again keeps working. Silent no-op when focus was elsewhere.
+function keepFocus(containerSel, render){
+  const a = document.activeElement;
+  const inside = a && a.tagName === 'INPUT' && a.closest && a.closest(containerSel);
+  // JSON.stringify yields the quoted, escaped form a CSS attribute selector wants,
+  // which matters for ids holding a '|' such as "amazon|B0HGHVHX5T".
+  const sel = inside
+    ? Object.entries(a.dataset).map(([k, v]) =>
+        `[data-${k.replace(/[A-Z]/g, m => '-' + m.toLowerCase())}=${JSON.stringify(String(v))}]`).join('')
+    : '';
+  render();
+  if(!sel) return;
+  let back = null;
+  try{ back = document.querySelector(containerSel + ' input' + sel); }catch(e){}
+  if(back){ back.focus(); try{ back.select(); }catch(e){} }
+}
 
 // ================= state =================
 const EMPTY_RAW = () => ({master:[], zero_vat:[], tt_orders:[], tt_aff:[], tt_ads:[], amz_biz:[], amz_ads:[], amz_txn:[], amz_txn2:[], amz_orders:[], amz2_biz:[], amz2_ads:[], amz2_txn:[], amz2_txn2:[], amz2_orders:[], ebay_list:[], ebay_txn:[], ebay_pl:[], ebay_ppc:[], shop_orders:[], sku_map:[]});
@@ -5725,17 +5744,7 @@ function renderCostBook(){
     CB_JUST_SET.add(cbId(fam,id) + '::' + chan);
     if(STATE.raw.master.length || Object.keys(COSTBOOK).length) STATE.master = buildMaster();
     if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
-    // The whole table is rebuilt, which throws away whatever the caret was in. Put it back on
-    // the same box so tabbing along a row keeps working instead of dumping you at the top.
-    const act = document.activeElement;
-    const restore = act && act.dataset && act.dataset.cb
-      ? {cb:act.dataset.cb, chan:act.dataset.chan, f:act.dataset.f} : null;
-    renderCostBook();
-    if(restore){
-      const back = document.querySelector('#cbTable input[data-cb="' + CSS.escape(restore.cb)
-        + '"][data-chan="' + restore.chan + '"][data-f="' + restore.f + '"]');
-      if(back){ back.focus(); back.select && back.select(); }
-    }
+    keepFocus('#cbTable', renderCostBook);
     showBanner('Saved ' + cbChanLabel(fam, chan) + ' ' + field + ' for ' + id + ', effective ' + asAt + '.', 'success');
   }));
   document.querySelectorAll('#cbTable [data-cbhist]').forEach(b => b.addEventListener('click', () => {
@@ -7454,7 +7463,7 @@ function renderProducts(){
     syncMasterStore();
     STATE.master = buildMaster();
     if(loadedChannels().length){ recompute(); diagnostics(); }
-    renderProducts();   // refresh the computed Profit / ROI / Margin columns
+    keepFocus('#prodTable', renderProducts);   // refresh the computed Profit / ROI / Margin columns
     showBanner('Saved - profit, ROI and margin recalculated.' + toBook, 'success');
   }));
   tb.querySelectorAll('[data-pdel]').forEach(b => b.addEventListener('click', () => {
