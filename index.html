@@ -1916,6 +1916,10 @@ function detectSheet(sheet){
     // SKU-mapping dashboards: product name + per-channel routed(active)/un-routed(inactive) SKU columns
     if(s.has('Type') && (s.has('SKU') || s.has('General SKU')) && cells.some(c => /sku\s*routed/i.test(c))) return {type:'sku_map', headerRow:i};
     // the zero-rated register: platform + SKU + an asin/id column
+    // the hand-kept month-by-month P&L: ITEM plus per-account columns, months in the row above
+    if(/^item\s*$/i.test(String(cells[0]||'').trim())
+       && cells.some(c => /^(vefive|vemart)\s*$/i.test(String(c).trim()))
+       && cells.some(c => /^total\s*$/i.test(String(c).trim()))) return {type:'pnl_hist', headerRow:i};
     if(cells.some(c => /^platform$/i.test(c)) && cells.some(c => /^sku\s*$/i.test(c))
        && cells.some(c => /^asin\s*\/\s*id$/i.test(c))) return {type:'zero_vat', headerRow:i};
     // DC (fulfilment) stock exports -> feed the Weekly Stock Tracking, not the P&L engine
@@ -2061,7 +2065,11 @@ function readFile(file){
           // in a rolling daily Business Report). Every sheet is captured (the old code
           // kept only the first and silently dropped the other days). Each sheet becomes
           // its own entry so duplicated day-sheets stay visible and removable.
-          found.push({type:det.type, rows, adsMode:det.adsMode||null, sheet:sn});
+          // The P&L history sheet stacks THREE header rows - month, metric, account - which
+          // sheet_to_json collapses into one. Carry the raw grid so its own parser sees all three.
+          const aoa = det.type === 'pnl_hist'
+            ? XLSX.utils.sheet_to_json(sh, {header:1, defval:'', raw:false}) : null;
+          found.push({type:det.type, rows, adsMode:det.adsMode||null, sheet:sn, aoa});
         }
         resolve({name: file._path || file.name, found});
       } catch(err){
@@ -2098,6 +2106,20 @@ async function handleFiles(fileList, targetAcct){
     const typeCounts = {};
     for(const f of r.found) typeCounts[f.type] = (typeCounts[f.type] || 0) + 1;
     for(const f of r.found){
+      if(f.type === 'pnl_hist'){
+        // History, not a report: it feeds Comparison PNL directly and never reaches the P&L
+        // engines, which compute their own months from the raw channel files.
+        const parsed = f.aoa ? parsePnlHistory(f.aoa) : {ok:false, why:'sheet could not be read as a grid'};
+        if(!parsed.ok){
+          logLines.push(`[!] ${r.name} -> P&L history: ${parsed.why}`);
+        } else {
+          const res = applyPnlHistory(parsed);
+          logLines.push(`[PNL] ${r.name} -> P&L history: ${fmtNum(res.items)} product(s) over `
+            + `${parsed.months.map(m => m.label + ' (' + m.key + ')').join(', ')}`
+            + `${res.noted ? ' · ' + fmtNum(res.noted) + ' reasoning note(s)' : ''}`);
+        }
+        continue;
+      }
       if(f.type === 'dc_stock_level' || f.type === 'dc_stock_txn'){
         // DC stock exports feed the Weekly Stock Tracking, not the P&L compute engine
         const res = f.type === 'dc_stock_level' ? importDcStockLevel(f.rows) : importDcStockTxn(f.rows);
@@ -2210,7 +2232,7 @@ const TYPE_LABEL = {master:'Master cost sheet', tt_orders:'TikTok orders', tt_af
   amz_biz:'Amazon Business Report', amz_ads:'Amazon Sponsored Products', amz_txn:'Amazon transaction report', amz_txn2:'Amazon transaction report (date-range)',
   amz2_biz:'Amazon 2 (Vefive) Business Report', amz2_ads:'Amazon 2 (Vefive) Sponsored Products', amz2_txn:'Amazon 2 (Vefive) transaction report', amz2_txn2:'Amazon 2 (Vefive) transaction report (date-range)',
   amz_orders:'Amazon 1 (Vemart) All Orders Report', amz2_orders:'Amazon 2 (Vefive) All Orders Report',
-  zero_vat:'Zero-rated (non-VAT) products',
+  zero_vat:'Zero-rated (non-VAT) products', pnl_hist:'P&L history (month by month)',
   ebay_list:'eBay Listings Sales', ebay_txn:'eBay transactions', ebay_pl:'eBay General Campaigns Report', ebay_ppc:'eBay Priority Campaigns Report', shop_orders:'Shopify orders', sku_map:'SKU Management map'};
 const TYPE_CH = {tt_orders:'tiktok', tt_aff:'tiktok', tt_ads:'tiktok', amz_biz:'amazon', amz_ads:'amazon', amz_txn:'amazon', amz_txn2:'amazon', amz_orders:'amazon', amz2_biz:'amazon2', amz2_ads:'amazon2', amz2_txn:'amazon2', amz2_txn2:'amazon2', amz2_orders:'amazon2', ebay_list:'ebay', ebay_txn:'ebay', ebay_pl:'ebay', ebay_ppc:'ebay', shop_orders:'shopify'};
 const FILE_DATE_COLS = {tt_orders:['Created Time','Paid Time'], tt_aff:['Time Created','Payment time'], amz_txn:['date/time'], amz_txn2:['Date'], amz_orders:['purchase-date'], amz2_orders:['purchase-date'], amz2_txn:['date/time'], amz2_txn2:['Date'], ebay_txn:['Transaction creation date'], shop_orders:['Created at','Paid at']};
@@ -6242,6 +6264,143 @@ function renderStock(){
   }));
 }
 
+
+// ---- Imported P&L history ----
+// Months from before the dashboard was fed raw reports, taken from the hand-kept "Combined SKU
+// WISE" sheet: units and profit after VAT per account per month, plus the reasoning written
+// against each month. Comparison PNL falls back to these for any month it cannot compute
+// itself, so a comparison can reach back further than the loaded files do.
+const LS_PNLHIST = 'mcpd_pnl_hist';
+let PNL_HIST = {};       // item name -> { 'YYYY-MM': {units:{ch:n}, profit:{ch:n}, note} }
+function loadPnlHist(){ try{ PNL_HIST = JSON.parse(store.get(lsKey(LS_PNLHIST))) || {}; }catch(e){ PNL_HIST = {}; } }
+function savePnlHist(){ try{ store.set(lsKey(LS_PNLHIST), JSON.stringify(PNL_HIST)); }catch(e){} }
+
+const PNL_MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+// The sheet names months without a year. Blocks run newest-first, so the leftmost is the most
+// recent one that is not in the future, and each block to its right must be strictly earlier -
+// stepping back a year whenever the month number stops decreasing.
+function pnlInferYears(names){
+  const now = new Date();
+  let y = now.getFullYear(), prevM = null;
+  const out = [];
+  for(const nm of names){
+    const mi = PNL_MONTHS.indexOf(String(nm).trim().toLowerCase());
+    if(mi < 0){ out.push(null); continue; }
+    if(prevM === null){ if(mi > now.getMonth()) y--; }
+    else if(mi >= prevM) y--;
+    prevM = mi;
+    out.push(y + '-' + String(mi + 1).padStart(2, '0'));
+  }
+  return out;
+}
+// Which account a column belongs to. The sheet is not column-stable - one month lists VEMART
+// before VEFIVE - so the account is read from the header text, never from the position.
+function pnlAcct(label){
+  const t = String(label || '').trim().toLowerCase();
+  if(!t) return '';
+  if(t.includes('vefive')) return 'amazon2';
+  if(t.includes('vemart')) return 'amazon';
+  if(t.includes('total'))  return 'total';
+  if(t.includes('ebay'))   return 'ebay';
+  if(t.includes('tiktok')) return 'tiktok';
+  return '';
+}
+function parsePnlHistory(aoa){
+  const txt = v => String(v == null ? '' : v).trim();
+  // The row that names the columns is the one starting with ITEM; the two above it carry the
+  // month and the metric. Found by content rather than by index, since the sheet has a
+  // variable number of blank rows above it.
+  let h3 = -1;
+  for(let i = 0; i < Math.min(aoa.length, 12); i++){
+    if(/^item\b/i.test(txt(aoa[i][0])) && aoa[i].some(c => pnlAcct(c))) { h3 = i; break; }
+  }
+  if(h3 < 1) return {ok:false, why:'no "ITEM ... VEFIVE / VEMART / TOTAL" header row found'};
+  const rMonth = aoa[h3 - 2] || [], rMetric = aoa[h3 - 1] || [], rHead = aoa[h3];
+  const width = Math.max(rMonth.length, rMetric.length, rHead.length);
+
+  // month blocks: a month name in the top row opens one, and it runs to the next month name
+  const starts = [];
+  for(let c = 0; c < width; c++){
+    if(PNL_MONTHS.includes(txt(rMonth[c]).toLowerCase())) starts.push({c, name:txt(rMonth[c])});
+  }
+  if(!starts.length) return {ok:false, why:'no month names found in the top row'};
+  const keys = pnlInferYears(starts.map(s => s.name));
+  const blocks = starts.map((s, i) => ({
+    key: keys[i], label: s.name,
+    from: s.c, to: (i + 1 < starts.length ? starts[i+1].c - 1 : width - 1)
+  })).filter(b => b.key);
+
+  // classify every column inside each block
+  for(const b of blocks){
+    b.cols = []; b.noteCol = -1;
+    let metric = '';
+    for(let c = b.from; c <= b.to; c++){
+      const m = txt(rMetric[c]).toLowerCase();
+      if(m) metric = m.includes('profit') ? 'profit' : m.includes('unit') ? 'units' : metric;
+      const acct = pnlAcct(rHead[c]);
+      if(acct && metric) b.cols.push({c, acct, metric});
+      else if(/reason/i.test(txt(rHead[c]))) b.noteCol = c;
+      else if(!acct && b.noteCol < 0 && c > b.from) b.noteCol = c;   // the unlabelled note column
+    }
+  }
+  const items = {};
+  let rows = 0, notes = 0;
+  const num = v => {
+    const s = String(v == null ? '' : v).replace(/[^0-9.\-]/g, '');
+    if(s === '' || s === '-' || s === '.') return null;
+    const n = parseFloat(s);
+    return isNaN(n) ? null : n;
+  };
+  for(let i = h3 + 1; i < aoa.length; i++){
+    const row = aoa[i] || [];
+    const name = txt(row[0]);
+    if(!name || /^sub\s*total$/i.test(name) || /^total$/i.test(name)) continue;
+    const rec = items[name] = items[name] || {};
+    let any = false;
+    for(const b of blocks){
+      const cell = {units:{}, profit:{}, note:''};
+      for(const col of b.cols){
+        if(col.acct === 'total') continue;      // recomputed from the parts, never trusted blind
+        const v = num(row[col.c]);
+        if(v == null) continue;
+        cell[col.metric][col.acct] = (cell[col.metric][col.acct] || 0) + v;
+      }
+      if(b.noteCol >= 0){
+        const n = txt(row[b.noteCol]);
+        if(n && num(n) == null){ cell.note = n; notes++; }
+      }
+      const hasNums = Object.keys(cell.units).length || Object.keys(cell.profit).length;
+      if(hasNums || cell.note){ rec[b.key] = cell; any = true; }
+    }
+    if(any) rows++; else delete items[name];
+  }
+  return {ok:true, items, months:blocks.map(b => ({key:b.key, label:b.label})), rows, notes};
+}
+// Merge an import into what is already held. Newly imported months replace the same month for
+// the same item, and anything not in the file is left alone, so importing one month's workbook
+// cannot wipe the months an earlier one brought in.
+function applyPnlHistory(parsed){
+  let items = 0, cells = 0;
+  for(const [name, months] of Object.entries(parsed.items)){
+    const rec = PNL_HIST[name] = PNL_HIST[name] || {};
+    for(const [m, cell] of Object.entries(months)){ rec[m] = cell; cells++; }
+    items++;
+  }
+  savePnlHist();
+  // The sheet's reasoning is a note like any other, so it lands in the same place the ones
+  // typed on the page do - without overwriting anything already written there by hand.
+  let noted = 0;
+  for(const [name, months] of Object.entries(parsed.items))
+    for(const [m, cell] of Object.entries(months)){
+      const k = name + '||' + m;
+      if(cell.note && !CMP_NOTES[k]){ CMP_NOTES[k] = cell.note; noted++; }
+    }
+  if(noted) saveCmpNotes();
+  _cmpCache = null;
+  _histFamMap = null;      // new item names to match against the mapping
+  return {items, cells, noted};
+}
+
 // ================= Comparison PNL =================
 // Month-over-month P&L per PRODUCT rather than per listing. A product sells under many ids -
 // an FBA and an FBM SKU on one ASIN, the same item again on eBay and TikTok, and several ASINs
@@ -6300,7 +6459,28 @@ function cmpMonths(){
     const d = (STATE.extras[ch] || {}).daily || {};
     for(const k of Object.keys(d)) if(k && k.length >= 7) set.add(k.slice(0, 7));
   }
+  // Imported history counts as a month too, which is the point of importing it - it reaches
+  // back past the raw reports the engines have.
+  for(const rec of Object.values(PNL_HIST || {})) for(const m of Object.keys(rec)) set.add(m);
   return [...set].sort();
+}
+// An imported item name matched against the SKU Management identifiers, so a month taken from
+// the sheet lands on the same line as the months the engines compute. Compared loosely -
+// case, spacing and punctuation differ between a hand-kept sheet and the mapping - but never
+// guessed at beyond that: an unmatched name keeps its own line rather than being forced onto
+// the nearest-looking product.
+const cmpNorm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+let _histFamMap = null, _histFamFor = null;
+function histFamilyMap(){
+  const idx = skuFamilyIndex();
+  if(_histFamMap && _histFamFor === idx) return _histFamMap;
+  _histFamFor = idx;
+  const byNorm = {};
+  for(const f of idx.families) byNorm[cmpNorm(f)] = f;
+  const out = {};
+  for(const name of Object.keys(PNL_HIST || {})) out[name] = byNorm[cmpNorm(name)] || name;
+  _histFamMap = out;
+  return out;
 }
 const cmpMonthLabel = m => {
   const [y, mm] = String(m).split('-');
@@ -6335,6 +6515,38 @@ function cmpSeries(months){
       }
     }
   } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
+  // Imported months fill only what the engines could NOT produce. A month with live reports
+  // keeps the engines' figure: that is the same number the Dashboard shows, whereas the sheet
+  // was worked out by hand and the two would otherwise silently disagree.
+  const computed = new Set();
+  for(const e of Object.values(byFam)) for(const m of Object.keys(e.m)) computed.add(m);
+  const famOf = histFamilyMap();
+  for(const [name, rec] of Object.entries(PNL_HIST || {})){
+    for(const m of months){
+      if(computed.has(m)) continue;              // engines own this month
+      const cell = rec[m];
+      if(!cell) continue;
+      const units = cell.units || {}, profit = cell.profit || {};
+      const chans = [...new Set([...Object.keys(units), ...Object.keys(profit)])];
+      if(!chans.length) continue;
+      const fam = famOf[name] || name;
+      const e = byFam[fam] = byFam[fam] || {fam, mapped:false, ids:new Set(), m:{}};
+      // Mapped means the resolved name IS a SKU Management identifier - testing fam !== name
+      // would miss every sheet name that already matches its identifier exactly.
+      if(skuFamilyIndex().families.has(fam)) e.mapped = true;
+      const c = e.m[m] = e.m[m] || {units:0, profit:0, rev:0, byCh:{}, imported:true};
+      c.imported = true;
+      // The sheet does not carry profit for every month - May is units only. Recording that
+      // keeps it showing as "no figure" instead of a confident zero.
+      if(!Object.keys(profit).length) c.noProfit = c.noProfit !== false; else c.noProfit = false;
+      for(const ch of chans){
+        const u = +units[ch] || 0, p = +profit[ch] || 0;
+        c.units += u; c.profit += p;
+        const b = c.byCh[ch] = c.byCh[ch] || {units:0, profit:0};
+        b.units += u; b.profit += p;
+      }
+    }
+  }
   const val = Object.values(byFam);
   _cmpCache = {key, val};
   return val;
@@ -6363,6 +6575,11 @@ function renderComparePL(){
   const idx = skuFamilyIndex();
   const rows = cmpSeries(show);
   const unmapped = rows.filter(r => !r.mapped).length;
+  // Which months came from the imported sheet rather than from a run of the engines. Flagged
+  // because the two are not the same kind of number: one is this app's own P&L, the other is
+  // what was worked out by hand at the time.
+  const impMonths = new Set();
+  for(const r of rows) for(const [m, c] of Object.entries(r.m)) if(c.imported) impMonths.add(m);
   notice.innerHTML = idx.families.size
     ? (unmapped
         ? '<div class="notice" style="background:#fdf6e7;border-color:#f0d9a8">Grouped by the <b>' + fmtNum(idx.families.size) + '</b> product identifiers in <b>SKU Management</b>. <b>' + fmtNum(unmapped) + '</b> product(s) are not in that mapping yet, so each is listed under its own name and will not merge with its siblings until it is added.</div>'
@@ -6393,7 +6610,7 @@ function renderComparePL(){
     '<tr><th rowspan="2" style="min-width:210px;text-align:left">Product</th>'
     + show.map((m,i) => '<th colspan="' + (i === 0 && prev ? 4 : 3) + '" style="text-align:center;background:' + (i ? '#f7fafc' : '#eef3f9') + ';' + BL + '">' + cmpMonthLabel(m) + '</th>').join('')
     + '</tr><tr>'
-    + show.map((m,i) => '<th class="num" style="' + BL + '">Units</th><th class="num">Profit</th>'
+    + show.map((m,i) => '<th class="num" style="' + BL + '">Units' + (impMonths.has(m) ? ' <span title="Taken from the imported P&L history sheet, not computed from reports" style="color:#9a6a00">⚑</span>' : '') + '</th><th class="num">Profit</th>'
         + (i === 0 && prev ? '<th class="num" title="Change in profit against ' + cmpMonthLabel(prev) + '">vs prev</th>' : '')
         + '<th style="min-width:150px">Reasoning</th>').join('')
     + '</tr>';
@@ -6410,15 +6627,21 @@ function renderComparePL(){
   body.innerHTML = shown.map(r => {
     const main = '<tr><td style="max-width:260px"><b>' + esc(r.fam.slice(0,52)) + '</b>'
       + (r.mapped ? '' : ' <span class="badge amber" style="background:#fdf3df;color:#9a6a00" title="Not in the SKU Management mapping, so this line is one listing rather than a whole product">unmapped</span>')
-      + '<div style="font-size:11px;color:var(--muted)">' + fmtNum(r.ids.size) + ' listing(s)</div></td>'
+      + (r.ids.size ? '<div style="font-size:11px;color:var(--muted)">' + fmtNum(r.ids.size) + ' listing(s)</div>'
+                    : '<div style="font-size:11px;color:var(--muted)">from imported history</div>') + '</td>'
       + show.map((m,i) => {
           const c = val(r,m);
+          const pv = val(r,prev);
           const d = (i === 0 && prev)
-            ? '<td class="num" style="color:' + ((c.profit - val(r,prev).profit) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + arrow(c.profit - val(r,prev).profit) + '</td>'
+            ? (c.noProfit || pv.noProfit
+                ? '<td class="num"><span style="color:var(--muted)">&mdash;</span></td>'
+                : '<td class="num" style="color:' + ((c.profit - pv.profit) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + arrow(c.profit - pv.profit) + '</td>')
             : '';
+          const pc = c.noProfit
+            ? '<td class="num"><span style="color:var(--muted)" title="The imported sheet has no profit figure for this month">no figure</span></td>'
+            : '<td class="num" style="font-weight:700;color:' + (c.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + money(c.profit) + '</td>';
           return '<td class="num" style="' + BL + '">' + (c.units ? fmtNum(c.units) : '<span style="color:var(--muted)">&mdash;</span>') + '</td>'
-               + '<td class="num" style="font-weight:700;color:' + (c.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + money(c.profit) + '</td>'
-               + d + note(r.fam, m);
+               + pc + d + note(r.fam, m);
         }).join('')
       + '</tr>';
     if(!split) return main;
@@ -6442,15 +6665,26 @@ function renderComparePL(){
       + '</tr>').join('');
   }).join('') || '<tr><td colspan="' + cols + '" style="color:var(--muted);padding:18px;text-align:center">No products match.</td></tr>';
 
-  const tot = m => list.reduce((a,r) => { const c = val(r,m); a.units += c.units; a.profit += c.profit; return a; }, {units:0, profit:0});
+  const tot = m => list.reduce((a,r) => {
+    const c = val(r,m);
+    a.units += c.units;
+    if(c.noProfit) a.partial = true; else a.profit += c.profit;
+    return a;
+  }, {units:0, profit:0, partial:false});
   foot.innerHTML = '<tr><td style="font-weight:800">TOTAL &middot; ' + fmtNum(list.length) + ' product(s)</td>'
     + show.map((m,i) => {
         const t = tot(m);
+        const tp = prev ? tot(prev) : null;
         const d = (i === 0 && prev)
-          ? '<td class="num" style="font-weight:800;color:' + ((t.profit - tot(prev).profit) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + arrow(t.profit - tot(prev).profit) + '</td>'
+          ? ((t.partial && !t.profit) || (tp.partial && !tp.profit)
+              ? '<td class="num"><span style="color:var(--muted)">&mdash;</span></td>'
+              : '<td class="num" style="font-weight:800;color:' + ((t.profit - tp.profit) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + arrow(t.profit - tp.profit) + '</td>')
           : '';
         return '<td class="num" style="font-weight:800;' + BL + '">' + fmtNum(t.units) + '</td>'
-             + '<td class="num" style="font-weight:800;color:' + (t.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + money(t.profit) + '</td>'
+             + (t.partial && !t.profit
+                 ? '<td class="num"><span style="color:var(--muted)" title="The imported sheet carries no profit for this month">no figure</span></td>'
+                 : '<td class="num" style="font-weight:800;color:' + (t.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + money(t.profit)
+                   + (t.partial ? '<span style="color:var(--muted);font-weight:400" title="Some products have no profit figure for this month">*</span>' : '') + '</td>')
              + d + '<td></td>';
       }).join('') + '</tr>';
 
@@ -6459,7 +6693,9 @@ function renderComparePL(){
   document.getElementById('cmpSub').innerHTML =
     'Profit is <b>net profit after VAT</b> &mdash; the same figure the Dashboard reports for that month, because each month here is a real run of the engines over that date range rather than an apportioned total. '
     + (prev ? '<b>vs prev</b> compares ' + cmpMonthLabel(cur) + ' against ' + cmpMonthLabel(prev) + '. ' : '')
-    + 'Reasoning notes are yours and are saved per product per month.';
+    + (impMonths.size ? '<b style="color:#9a6a00">⚑ ' + [...impMonths].sort().reverse().map(cmpMonthLabel).join(', ')
+        + '</b> came from the imported P&L history sheet, not from reports — those months are as they were worked out by hand, and a month is only taken from the sheet when the engines have no reports for it. ' : '')
+    + 'Reasoning notes are yours and are saved per product per month; the sheet’s own reasoning was brought in with it.';
 
   body.querySelectorAll('input[data-cmpn]').forEach(el => el.addEventListener('change', () => {
     const k = el.dataset.cmpn;
@@ -9608,6 +9844,7 @@ function switchAccount(id){
   restoreSkuMap();
   loadStock();
   loadCmpNotes();
+  loadPnlHist();
   loadCostBook();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
   if(haveCosts()) STATE.master = buildMaster();
@@ -9657,6 +9894,7 @@ function startApp(){
   restoreSkuMap();
   loadStock();
   loadCmpNotes();
+  loadPnlHist();
   loadCostBook();
   // background: cloud copy wins over local/built-in once each arrives
   cloudSyncAccounts();   // account list is global - only pulled here, not on every switch
