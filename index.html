@@ -355,6 +355,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <button class="nav-item" data-page="skuperf"><span class="ic">📉</span>SKU Performance</button>
       <button class="nav-item" data-page="intel"><span class="ic">🧠</span>Product Intelligence</button>
       <button class="nav-item" data-page="comparison"><span class="ic">⚖️</span>Comparison Charts</button>
+      <button class="nav-item" data-page="cmppnl"><span class="ic">📐</span>Comparison PNL</button>
       <button class="nav-item" data-page="economics"><span class="ic">🧮</span>Product Economics</button>
       <button class="nav-item" data-page="fees"><span class="ic">🧾</span>Product Fee Changes</button>
       <button class="nav-item" data-page="bsr"><span class="ic">🏷️</span>BSR Changes (BETA)</button>
@@ -1028,6 +1029,42 @@ input[type=range]{accent-color:var(--accent);width:150px}
   </div>
 
   <!-- ============ COMPARISON ============ -->
+  <!-- ============ COMPARISON PNL ============ -->
+  <div class="page" id="page-cmppnl">
+    <div class="card" style="margin-bottom:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span>Comparison PNL</h3>
+        <span style="flex:1"></span>
+        <input type="search" id="cmpSearch" placeholder="Search product / SKU / ASIN..." style="min-width:220px">
+        <div class="count" id="cmpCount"></div>
+      </div>
+      <div class="fbar" style="flex-wrap:wrap;gap:6px">
+        <span class="flabel">Months</span>
+        <button class="btn cmp-n" data-n="3">Last 3</button>
+        <button class="btn secondary cmp-n" data-n="6">Last 6</button>
+        <button class="btn secondary cmp-n" data-n="12">Last 12</button>
+        <button class="btn secondary cmp-n" data-n="0">All</button>
+        <span class="flabel" style="margin-left:10px">Sort</span>
+        <button class="btn cmp-s" data-s="profit">Latest profit</button>
+        <button class="btn secondary cmp-s" data-s="drop">Biggest drop</button>
+        <button class="btn secondary cmp-s" data-s="rise">Biggest rise</button>
+        <button class="btn secondary cmp-s" data-s="units">Units</button>
+        <button class="btn secondary cmp-s" data-s="name">Product</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer;margin-left:10px">
+          <input type="checkbox" id="cmpSplit"> Split by account</label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="cmpMoved" checked> Hide products with no activity</label>
+        <span style="flex:1"></span>
+        <button class="btn secondary" id="cmpExport">⬇️ Export</button>
+      </div>
+      <div class="sub-title" id="cmpSub"></div>
+      <div id="cmpNotice"></div>
+      <div class="table-wrap" style="max-height:720px"><table id="cmpTable">
+        <thead></thead><tbody></tbody><tfoot></tfoot>
+      </table></div>
+    </div>
+  </div>
+
   <div class="page" id="page-comparison">
     <div class="grid g2">
       <div class="card"><h3><span class="dot"></span>Revenue Ex VAT</h3><div class="chart-box short"><canvas id="cmpRev"></canvas></div></div>
@@ -4089,8 +4126,15 @@ function buildAll(){
   saveHistoryNow();    // history accumulates automatically on every load
   renderPage();
 }
+// Declared above recompute(), which clears it: a `let` used before its declaration line has
+// been evaluated throws, and recompute can run during start-up.
+let _cmpCache = null;
 function recompute(){
   STATE.channels = {}; STATE.extras = {};
+  // Any recompute means the data or the filters moved, so the month-by-month roll-up behind
+  // Comparison PNL is stale. Safe to clear here: cmpSeries fills the cache only after its own
+  // recompute has finished, so it never clears what it just built.
+  _cmpCache = null;
   // TikTok + eBay first: Amazon's date-proration uses their dated span as the period basis
   const tt = computeTikTok(); if(tt){ STATE.channels.tiktok = tt.rows; STATE.extras.tiktok = tt.extras; }
   const eb = computeEbay(); if(eb){ STATE.channels.ebay = eb.rows; STATE.extras.ebay = eb.extras; }
@@ -4524,8 +4568,8 @@ function kpiCard(c){
 }
 
 // ================= pages =================
-const PAGE_TITLES = {dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Product ROIs', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
-const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','inventory','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily']);
+const PAGE_TITLES = {cmppnl:'Comparison PNL', dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Product ROIs', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
+const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','inventory','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily','cmppnl']);
 
 function showPage(id){
   STATE.page = id;
@@ -4556,7 +4600,7 @@ function renderPage(){
       inventory:renderInventory, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
       economics:renderEconomics, fees:renderFees, reports:renderReports, opex:renderOpex, advertising:renderAds,
       grow:renderGrow, tasks:renderTasks, workspace:renderLoadedReports, products:renderProducts, skumgt:renderSkuMgtPage,
-      costbook:renderCostBook, daily:renderDaily}[id] || (()=>{}))();
+      costbook:renderCostBook, daily:renderDaily, cmppnl:renderComparePL}[id] || (()=>{}))();
   } catch(err){
     showBanner('Render error: ' + err.message, 'error');
     console.error(err);
@@ -6195,6 +6239,232 @@ function renderStock(){
     if(STOCK_SORT.key === k) STOCK_SORT.dir = STOCK_SORT.dir === 'asc' ? 'desc' : 'asc';
     else STOCK_SORT = {key:k, dir: k === 'name' ? 'asc' : 'desc'};
     renderStock();
+  }));
+}
+
+// ================= Comparison PNL =================
+// Month-over-month P&L per PRODUCT rather than per listing. A product sells under many ids -
+// an FBA and an FBM SKU on one ASIN, the same item again on eBay and TikTok, and several ASINs
+// for the same thing across the two Amazon accounts - so comparing ids answers the wrong
+// question. SKU Management already states which SKUs are one product; that mapping is the
+// identifier here, so this page and the stock table group things the same way.
+const LS_CMPNOTES = 'mcpd_cmp_notes';
+let CMP_NOTES = {};          // "family||YYYY-MM" -> why the month moved
+let CMP_N = 3;               // months shown, 0 = every month in the data
+let CMP_SORT = 'profit';
+let CMP_Q = '';
+function loadCmpNotes(){ try{ CMP_NOTES = JSON.parse(store.get(lsKey(LS_CMPNOTES))) || {}; }catch(e){ CMP_NOTES = {}; } }
+function saveCmpNotes(){ try{ store.set(lsKey(LS_CMPNOTES), JSON.stringify(CMP_NOTES)); }catch(e){} }
+
+// seller SKU -> product family, from the SKU Management map. Routed and un-routed both count:
+// an un-routed SKU is one not currently selling, which is exactly the history being compared.
+let _famIdx = null, _famIdxFor = null;
+function skuFamilyIndex(){
+  const raw = STATE.raw.sku_map || [];
+  if(_famIdx && _famIdxFor === raw) return _famIdx;
+  _famIdxFor = raw;
+  const idx = {bySku:{}, families:new Set()};
+  const map = buildSkuMap();
+  for(const p of (map ? map.products : [])){
+    const fam = (p.family || p.name || '').trim();
+    if(!fam) continue;
+    idx.families.add(fam);
+    for(const ch of Object.keys(p.byCh || {}))
+      for(const list of [p.byCh[ch].routed, p.byCh[ch].unrouted])
+        for(const sk of (list || [])){
+          const k = String(sk).trim().toUpperCase();
+          if(k && !idx.bySku[k]) idx.bySku[k] = fam;
+        }
+  }
+  _famIdx = idx;
+  return idx;
+}
+// Which product a channel row belongs to. Tries the row's own id first (TikTok and eBay key on
+// something the map lists directly), then every seller SKU behind it (an Amazon ASIN reaches
+// its product only through its SKUs). Falls back to the product's own name, so a product the
+// map has never heard of still gets a line instead of vanishing from the comparison.
+function cmpFamilyOf(channel, key, name){
+  const idx = skuFamilyIndex();
+  const K = String(key || '').trim().toUpperCase();
+  if(K && idx.bySku[K]) return {fam: idx.bySku[K], mapped: true};
+  for(const sk of sellerSkusFor(channel, key)){
+    const hit = idx.bySku[String(sk).trim().toUpperCase()];
+    if(hit) return {fam: hit, mapped: true};
+  }
+  return {fam: (name || key || '(unnamed)').trim(), mapped: false};
+}
+// Months the loaded data actually covers, oldest first.
+function cmpMonths(){
+  const set = new Set();
+  for(const ch of ALL_CH){
+    const d = (STATE.extras[ch] || {}).daily || {};
+    for(const k of Object.keys(d)) if(k && k.length >= 7) set.add(k.slice(0, 7));
+  }
+  return [...set].sort();
+}
+const cmpMonthLabel = m => {
+  const [y, mm] = String(m).split('-');
+  return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mm - 1] + ' ' + y;
+};
+// One pass per month: pin the range to that month, re-run the engines, then roll every channel
+// row up to its product. Same route the daily tracker uses, so a month here is the sum of the
+// same P&L the Dashboard shows for that range - not a separate calculation that could disagree.
+function cmpSeries(months){
+  const key = months.join(',') + '|' + filteredChannels().join(',');
+  if(_cmpCache && _cmpCache.key === key) return _cmpCache.val;
+  const sf = STATE.dateFrom, st = STATE.dateTo;
+  const byFam = {};                     // fam -> {name, mapped, m:{month:{units,profit,byCh:{}}}}
+  try{
+    for(const m of months){
+      const last = new Date(+m.slice(0,4), +m.slice(5,7), 0).getDate();
+      STATE.dateFrom = m + '-01'; STATE.dateTo = m + '-' + String(last).padStart(2,'0');
+      recompute();
+      for(const ch of filteredChannels()){
+        for(const r of (STATE.channels[ch] || [])){
+          if(!r.key) continue;
+          const f = cmpFamilyOf(ch, r.key, r.name);
+          const e = byFam[f.fam] = byFam[f.fam] || {fam:f.fam, mapped:f.mapped, ids:new Set(), m:{}};
+          e.mapped = e.mapped || f.mapped;
+          e.ids.add(ch + '|' + r.key);
+          const cell = e.m[m] = e.m[m] || {units:0, profit:0, rev:0, byCh:{}};
+          const u = r.units || 0, p = r.net_profit_ex || 0, rv = r.revenue_gross || 0;
+          cell.units += u; cell.profit += p; cell.rev += rv;
+          const b = cell.byCh[ch] = cell.byCh[ch] || {units:0, profit:0};
+          b.units += u; b.profit += p;
+        }
+      }
+    }
+  } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
+  const val = Object.values(byFam);
+  _cmpCache = {key, val};
+  return val;
+}
+
+function renderComparePL(){
+  const months = cmpMonths();
+  const head = document.querySelector('#cmpTable thead');
+  const body = document.querySelector('#cmpTable tbody');
+  const foot = document.querySelector('#cmpTable tfoot');
+  const notice = document.getElementById('cmpNotice');
+  if(!months.length){
+    head.innerHTML = ''; foot.innerHTML = '';
+    body.innerHTML = '<tr><td style="color:var(--muted);padding:18px">No dated sales loaded yet, so there are no months to compare. Load a channel&rsquo;s reports in WorkSpace.</td></tr>';
+    document.getElementById('cmpCount').textContent = '';
+    document.getElementById('cmpSub').textContent = '';
+    notice.innerHTML = '';
+    return;
+  }
+  // newest month first: that is the one being explained
+  const show = (CMP_N > 0 ? months.slice(-CMP_N) : months).slice().reverse();
+  const cur = show[0], prev = show[1];
+  const split = document.getElementById('cmpSplit').checked;
+  const onlyMoved = document.getElementById('cmpMoved').checked;
+
+  const idx = skuFamilyIndex();
+  const rows = cmpSeries(show);
+  const unmapped = rows.filter(r => !r.mapped).length;
+  notice.innerHTML = idx.families.size
+    ? (unmapped
+        ? '<div class="notice" style="background:#fdf6e7;border-color:#f0d9a8">Grouped by the <b>' + fmtNum(idx.families.size) + '</b> product identifiers in <b>SKU Management</b>. <b>' + fmtNum(unmapped) + '</b> product(s) are not in that mapping yet, so each is listed under its own name and will not merge with its siblings until it is added.</div>'
+        : '<div class="notice" style="background:#eefaf4;border-color:#bfe6d4">Grouped by the <b>' + fmtNum(idx.families.size) + '</b> product identifiers in <b>SKU Management</b>, so every ASIN, item ID and SKU for one product sits on a single line.</div>')
+    : '<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>No SKU mapping loaded.</b> Every listing is on its own line here. Load your SKU dashboard in <b>SKU Management</b> to group an item&rsquo;s ASINs, item IDs and SKUs onto one row.</div>';
+
+  const val = (r, m) => r.m[m] || {units:0, profit:0, rev:0, byCh:{}};
+  const q = CMP_Q;
+  const list = rows.filter(r => {
+    if(onlyMoved && !show.some(m => { const c = val(r,m); return c.units || Math.abs(c.profit) > 0.004; })) return false;
+    if(!q) return true;
+    if(r.fam.toLowerCase().includes(q)) return true;
+    return [...r.ids].some(x => x.toLowerCase().includes(q));
+  });
+  const delta = r => prev ? val(r,cur).profit - val(r,prev).profit : 0;
+  const sorters = {
+    profit: (a,b) => val(b,cur).profit - val(a,cur).profit,
+    units:  (a,b) => val(b,cur).units  - val(a,cur).units,
+    drop:   (a,b) => delta(a) - delta(b),
+    rise:   (a,b) => delta(b) - delta(a),
+    name:   (a,b) => a.fam.localeCompare(b.fam)
+  };
+  list.sort(sorters[CMP_SORT] || sorters.profit);
+
+  const BL = 'border-left:2px solid var(--border)';
+  const cols = 1 + show.reduce((a,_,i) => a + (i === 0 && prev ? 4 : 3), 0);
+  head.innerHTML =
+    '<tr><th rowspan="2" style="min-width:210px;text-align:left">Product</th>'
+    + show.map((m,i) => '<th colspan="' + (i === 0 && prev ? 4 : 3) + '" style="text-align:center;background:' + (i ? '#f7fafc' : '#eef3f9') + ';' + BL + '">' + cmpMonthLabel(m) + '</th>').join('')
+    + '</tr><tr>'
+    + show.map((m,i) => '<th class="num" style="' + BL + '">Units</th><th class="num">Profit</th>'
+        + (i === 0 && prev ? '<th class="num" title="Change in profit against ' + cmpMonthLabel(prev) + '">vs prev</th>' : '')
+        + '<th style="min-width:150px">Reasoning</th>').join('')
+    + '</tr>';
+
+  const money = v => fmtGBP0(v);
+  const arrow = dv => Math.abs(dv) < 0.005 ? '&mdash;' : (dv > 0 ? '&#9650; ' : '&#9660; ') + money(Math.abs(dv));
+  const note = (fam, m) => {
+    const k = fam + '||' + m;
+    return '<td><input data-cmpn="' + esc(k) + '" value="' + esc(CMP_NOTES[k] || '') + '" placeholder="why?"'
+      + ' style="width:100%;min-width:140px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:11.5px"></td>';
+  };
+  const CAP = 400;
+  const shown = list.slice(0, CAP);
+  body.innerHTML = shown.map(r => {
+    const main = '<tr><td style="max-width:260px"><b>' + esc(r.fam.slice(0,52)) + '</b>'
+      + (r.mapped ? '' : ' <span class="badge amber" style="background:#fdf3df;color:#9a6a00" title="Not in the SKU Management mapping, so this line is one listing rather than a whole product">unmapped</span>')
+      + '<div style="font-size:11px;color:var(--muted)">' + fmtNum(r.ids.size) + ' listing(s)</div></td>'
+      + show.map((m,i) => {
+          const c = val(r,m);
+          const d = (i === 0 && prev)
+            ? '<td class="num" style="color:' + ((c.profit - val(r,prev).profit) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + arrow(c.profit - val(r,prev).profit) + '</td>'
+            : '';
+          return '<td class="num" style="' + BL + '">' + (c.units ? fmtNum(c.units) : '<span style="color:var(--muted)">&mdash;</span>') + '</td>'
+               + '<td class="num" style="font-weight:700;color:' + (c.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + money(c.profit) + '</td>'
+               + d + note(r.fam, m);
+        }).join('')
+      + '</tr>';
+    if(!split) return main;
+    // A channel that traded in ANY shown month keeps a line in every month, so one that stopped
+    // selling reads as a zero instead of quietly dropping out of the split.
+    const chans = ALL_CH.filter(ch => show.some(m => {
+      const b = val(r,m).byCh[ch]; return b && (b.units || Math.abs(b.profit) > 0.004);
+    }));
+    return main + chans.map(ch => '<tr style="background:#fbfdff">'
+      + '<td style="padding-left:18px"><span class="chip ' + ch + '">' + (CH_NAME[ch] || ch) + '</span></td>'
+      + show.map((m,i) => {
+          const b = val(r,m).byCh[ch] || {units:0, profit:0};
+          const d = (i === 0 && prev)
+            ? (() => { const pb = val(r,prev).byCh[ch] || {units:0, profit:0}; const dv = b.profit - pb.profit;
+                return '<td class="num" style="font-size:11px;color:' + (dv >= 0 ? 'var(--green)' : 'var(--red)') + '">' + arrow(dv) + '</td>'; })()
+            : '';
+          return '<td class="num" style="' + BL + ';font-size:11.5px">' + (b.units ? fmtNum(b.units) : '<span style="color:var(--muted)">&mdash;</span>') + '</td>'
+               + '<td class="num" style="font-size:11.5px;color:' + (b.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + money(b.profit) + '</td>'
+               + d + '<td></td>';
+        }).join('')
+      + '</tr>').join('');
+  }).join('') || '<tr><td colspan="' + cols + '" style="color:var(--muted);padding:18px;text-align:center">No products match.</td></tr>';
+
+  const tot = m => list.reduce((a,r) => { const c = val(r,m); a.units += c.units; a.profit += c.profit; return a; }, {units:0, profit:0});
+  foot.innerHTML = '<tr><td style="font-weight:800">TOTAL &middot; ' + fmtNum(list.length) + ' product(s)</td>'
+    + show.map((m,i) => {
+        const t = tot(m);
+        const d = (i === 0 && prev)
+          ? '<td class="num" style="font-weight:800;color:' + ((t.profit - tot(prev).profit) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + arrow(t.profit - tot(prev).profit) + '</td>'
+          : '';
+        return '<td class="num" style="font-weight:800;' + BL + '">' + fmtNum(t.units) + '</td>'
+             + '<td class="num" style="font-weight:800;color:' + (t.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + money(t.profit) + '</td>'
+             + d + '<td></td>';
+      }).join('') + '</tr>';
+
+  document.getElementById('cmpCount').textContent =
+    fmtNum(shown.length) + (list.length > CAP ? '+' : '') + ' of ' + fmtNum(rows.length) + ' product(s) · ' + show.length + ' month(s)';
+  document.getElementById('cmpSub').innerHTML =
+    'Profit is <b>net profit after VAT</b> &mdash; the same figure the Dashboard reports for that month, because each month here is a real run of the engines over that date range rather than an apportioned total. '
+    + (prev ? '<b>vs prev</b> compares ' + cmpMonthLabel(cur) + ' against ' + cmpMonthLabel(prev) + '. ' : '')
+    + 'Reasoning notes are yours and are saved per product per month.';
+
+  body.querySelectorAll('input[data-cmpn]').forEach(el => el.addEventListener('change', () => {
+    const k = el.dataset.cmpn;
+    if(el.value.trim()) CMP_NOTES[k] = el.value.trim(); else delete CMP_NOTES[k];
+    saveCmpNotes();
   }));
 }
 
@@ -9119,6 +9389,43 @@ Costs come from the Cost Book as at ${asAt}. Nothing already in the sheet is cha
   showBanner(`Added ${fmtNum(added)} master row(s) for ${fmtNum(miss.length)} product(s)`
     + `${named ? `, ${fmtNum(named)} with a seller SKU from your reports` : ''}. They now appear in Product ROIs.`, 'success');
 });
+// ---- Comparison PNL controls ----
+document.querySelectorAll('.cmp-n').forEach(b => b.addEventListener('click', () => {
+  CMP_N = +b.dataset.n;
+  document.querySelectorAll('.cmp-n').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderComparePL();
+}));
+document.querySelectorAll('.cmp-s').forEach(b => b.addEventListener('click', () => {
+  CMP_SORT = b.dataset.s;
+  document.querySelectorAll('.cmp-s').forEach(x => x.classList.add('secondary'));
+  b.classList.remove('secondary');
+  renderComparePL();
+}));
+document.getElementById('cmpSearch').addEventListener('input', e => {
+  CMP_Q = (e.target.value || '').toLowerCase().trim();
+  renderComparePL();
+});
+['cmpSplit','cmpMoved'].forEach(id =>
+  document.getElementById(id).addEventListener('change', () => renderComparePL()));
+document.getElementById('cmpExport').addEventListener('click', () => {
+  const months = cmpMonths();
+  if(!months.length){ showBanner('No months to export yet.', 'error'); return; }
+  const show = (CMP_N > 0 ? months.slice(-CMP_N) : months).slice().reverse();
+  const rows = cmpSeries(show).map(r => {
+    const o = {Product: r.fam, 'In SKU mapping': r.mapped ? 'yes' : 'no', Listings: r.ids.size};
+    for(const m of show){
+      const c = r.m[m] || {units:0, profit:0};
+      o[cmpMonthLabel(m) + ' units'] = c.units;
+      o[cmpMonthLabel(m) + ' profit'] = +c.profit.toFixed(2);
+      o[cmpMonthLabel(m) + ' reasoning'] = CMP_NOTES[r.fam + '||' + m] || '';
+    }
+    return o;
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Comparison PNL');
+  XLSX.writeFile(wb, 'InstaSales_Comparison_PNL_' + show[show.length-1] + '_to_' + show[0] + '.xlsx');
+});
 document.getElementById('cbExport').addEventListener('click', () => {
   const asAt = document.getElementById('cbAsAt').value || todayISO();
   const rows = cbOffers().map(o => {
@@ -9300,6 +9607,7 @@ function switchAccount(id){
   restoreMaster();
   restoreSkuMap();
   loadStock();
+  loadCmpNotes();
   loadCostBook();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
   if(haveCosts()) STATE.master = buildMaster();
@@ -9348,6 +9656,7 @@ function startApp(){
   restoreMaster();
   restoreSkuMap();
   loadStock();
+  loadCmpNotes();
   loadCostBook();
   // background: cloud copy wins over local/built-in once each arrives
   cloudSyncAccounts();   // account list is global - only pulled here, not on every switch
