@@ -675,6 +675,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
         <button class="btn" id="cbImport">⤓ Import</button>
         <input type="file" id="cbImportFile" accept=".xlsx,.xls,.csv" style="display:none">
         <button class="btn" id="cbExport">📄 Export</button>
+        <button class="btn secondary" id="cbToMaster" title="Give every offer here a master-sheet row, so it carries a seller SKU and a platform and appears in Product ROIs">→ Add missing to master</button>
         <span class="flabel" style="margin-left:8px">Batch</span>
         <select class="fsel" id="cbDelDate" style="min-width:200px"></select>
         <button class="btn danger" id="cbDeleteBatch">🗑 Delete batch</button>
@@ -9021,6 +9022,102 @@ document.getElementById('cbAddProduct').addEventListener('click', () => {
   document.getElementById('cbSearch').value = id;
   renderCostBook();
   showBanner(`${existed ? 'Updated' : 'Added'} ${id}${name ? ' - ' + name : ''}, ${cbChanLabel(fam, chan)}, effective ${from}.`, 'success');
+});
+// Offers the Cost Manager knows about that the master sheet has never heard of. The book holds
+// COSTS; the master sheet holds IDENTITY - platform, seller SKU, product name - which is what
+// Product ROIs lists and what the SKU lookups read. An offer with only a book entry therefore
+// prices correctly but is nameless everywhere else, which is what makes ASINs show up in place
+// of SKUs across the app.
+function cbOffersMissingFromMaster(){
+  const raw = STATE.raw.master || [];
+  const have = new Set();
+  for(const r of raw){
+    const fam = cbFam(fixText(r.platform));
+    for(const v of [r.asin, r.productid, r.sku]){
+      const t = fixText(v);
+      if(t) have.add(fam + '|' + t.toUpperCase());
+    }
+  }
+  // One master row per PRODUCT, not per offer: FBM and FBA are two offers on one ASIN, and the
+  // sheet already distinguishes them by SKU CHANNEL rather than by having two products.
+  const byProduct = new Map();
+  for(const o of cbOffers()){
+    const k = cbId(o.fam, o.id);
+    if(have.has(k)) continue;
+    const cur = byProduct.get(k);
+    if(!cur) byProduct.set(k, {fam:o.fam, id:o.id, name:o.name, chans:new Set([o.chan]),
+                              live:o.live || o.asinLive, on:new Set(o.asinOn || o.on || [])});
+    else { cur.chans.add(o.chan); cur.live = cur.live || o.live || o.asinLive;
+           if(!cur.name && o.name) cur.name = o.name;
+           for(const c of (o.asinOn || o.on || [])) cur.on.add(c); }
+  }
+  return [...byProduct.values()];
+}
+document.getElementById('cbToMaster').addEventListener('click', () => {
+  const miss = cbOffersMissingFromMaster();
+  if(!miss.length){ showBanner('Every offer already has a master-sheet row.', 'success'); return; }
+  const asAt = document.getElementById('cbAsAt').value || costRefDate();
+  const withSku = miss.filter(m => sellerSkusFor(m.fam === 'amazon' ? 'amazon' : m.fam, m.id).length
+                               || sellerSkusFor('amazon2', m.id).length).length;
+  if(!confirm(`Add ${fmtNum(miss.length)} product(s) to the master sheet?
+
+`
+    + `${fmtNum(withSku)} already have a seller SKU known from your reports; the rest are named by their id `
+    + `until one turns up.
+
+Costs come from the Cost Book as at ${asAt}. Nothing already in the sheet is changed.`)) return;
+
+  let added = 0, named = 0;
+  for(const m of miss){
+    // Which Amazon account: the sheet names them separately, and the SKU lookups key on that.
+    // Selling on both, or on neither yet, stays the neutral "amazon" which answers for both.
+    let plat = m.fam;
+    if(m.fam === 'amazon'){
+      const v1 = m.on.has('amazon'), v2 = m.on.has('amazon2');
+      plat = (v1 && !v2) ? 'amazon-vemart' : (v2 && !v1) ? 'amazon-vefive' : 'amazon';
+    }
+    // A row per fulfilment channel that actually holds costs, so an ASIN selling both ways
+    // keeps its two prices. Otherwise one row is enough.
+    const chans = [...m.chans].filter(c => {
+      const rec = COSTBOOK[cbId(m.fam, m.id)];
+      return rec && cbSorted(rec[c]).length;
+    });
+    const use = chans.length ? chans : [[...m.chans][0] || 'fbm'];
+    for(const chan of use){
+      const isFba = m.fam === 'amazon' && chan === 'fba';
+      const skus = m.fam === 'amazon'
+        ? [...new Set([...sellerSkusFor('amazon', m.id, isFba), ...sellerSkusFor('amazon2', m.id, isFba)])]
+        : sellerSkusFor(m.fam, m.id);
+      // On TikTok/eBay/Shopify the id IS the seller SKU, so it belongs in that column. An ASIN
+      // is NOT a SKU, so leave Amazon's blank when nothing names it rather than inventing one -
+      // a fake SKU would be indistinguishable from a real one everywhere it is read.
+      const sku = skus[0] || (m.fam === 'amazon' ? '' : m.id);
+      if(skus.length) named++;
+      const v = costBookAt(m.id, chan, asAt, m.fam) || {};
+      STATE.raw.master.push({
+        'Name': m.name || '',
+        'platform': plat,
+        'sku': sku,
+        'asin': m.fam === 'amazon' ? m.id : '',
+        'productid': m.id,
+        'SKU CHANNEL': m.fam === 'amazon' ? (isFba ? 'FBA' : 'FBM') : '',
+        'buying_cost_per_unit': +v.buy || 0,
+        'operational_cost_per_unit': +v.oper || 0,
+        'shipping_cost_per_unit': isFba ? 0 : (+v.ship || 0),
+        'FBA Fees': isFba ? (+v.fee || 0) : null,
+        'Refferal fee %': (v.ref == null || v.ref === '') ? null : (+v.ref > 1 ? +v.ref/100 : +v.ref)
+      });
+      added++;
+    }
+  }
+  syncMasterStore();
+  _skuIdxFor = null;                          // the SKU index reads the sheet - rebuild it
+  STATE.master = buildMaster();
+  if(loadedChannels().length){ recompute(); diagnostics(); }
+  renderCostBook();
+  if(STATE.page === 'products') renderProducts();
+  showBanner(`Added ${fmtNum(added)} master row(s) for ${fmtNum(miss.length)} product(s)`
+    + `${named ? `, ${fmtNum(named)} with a seller SKU from your reports` : ''}. They now appear in Product ROIs.`, 'success');
 });
 document.getElementById('cbExport').addEventListener('click', () => {
   const asAt = document.getElementById('cbAsAt').value || todayISO();
