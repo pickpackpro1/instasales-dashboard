@@ -5609,6 +5609,21 @@ function renderFulPicker(famSel){
   sel.innerHTML = html;
   sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'all';
 }
+// Offers costed during this visit to the "Missing a cost" list. They stay on screen until the
+// filters change, so an offer can be finished (COGS, then shipping, then operational) instead
+// of disappearing the moment its first field is filled.
+let CB_JUST_SET = new Set();
+// Seller SKUs behind a cost-book offer, for the search box. An Amazon family covers both
+// accounts, so ask each; the lookup is indexed, so this is cheap per row.
+function cbSkusFor(o){
+  if(o._skus) return o._skus;
+  const out = o.fam === 'amazon'
+    ? [...new Set([...sellerSkusFor('amazon', o.id), ...sellerSkusFor('amazon2', o.id)])]
+    : sellerSkusFor(o.fam === 'tiktok' ? 'tiktok' : o.fam, o.id);
+  // TikTok and Shopify key on the SKU itself, so the id IS the thing being searched for
+  o._skus = out;
+  return out;
+}
 function renderCostBook(){
   renderBatchPicker();
   const asAtEl = document.getElementById('cbAsAt');
@@ -5634,8 +5649,17 @@ function renderCostBook(){
     list = list.filter(o => o.fam === ff && o.chan === fc);
   }
   if(scope === 'live') list = list.filter(o => o.live || o.asinLive);
-  else if(scope === 'gaps') list = list.filter(noCost);
-  if(q) list = list.filter(o => o.id.toLowerCase().includes(q) || (o.name||'').toLowerCase().includes(q));
+  else if(scope === 'gaps'){
+    // Keep a row you have JUST costed, even though it no longer has a gap. Dropping it the
+    // instant COGS was typed took the shipping and operational boxes away with it, so the
+    // rest of the offer could never be filled in. It leaves on the next filter change.
+    list = list.filter(o => noCost(o) || CB_JUST_SET.has(cbId(o.fam,o.id) + '::' + o.chan));
+  }
+  // The box says "ASIN / SKU / product", so match the seller SKU too. Without this, searching
+  // the thing you actually type into Seller Central found nothing and the offer looked lost.
+  if(q) list = list.filter(o => o.id.toLowerCase().includes(q)
+    || (o.name||'').toLowerCase().includes(q)
+    || cbSkusFor(o).some(sk => sk.toLowerCase().includes(q)));
   list.sort((a,b) => (b.units||0)-(a.units||0) || a.id.localeCompare(b.id) || a.chan.localeCompare(b.chan));
 
   const engineDate = costRefDate();
@@ -5669,9 +5693,12 @@ function renderCostBook(){
         (shownU ? ' title="' + fmtNum(Math.round(shownU)) + ' unit(s) in the loaded period"' : '') +
         '>selling</span>'
       : '';
-    return '<tr' + (o.live && noCost(o) ? ' style="background:#fff5f5"' : '') + '>' +
+    const justSet = CB_JUST_SET.has(cbId(o.fam,o.id) + '::' + o.chan) && !noCost(o);
+    return '<tr' + (justSet ? ' style="background:#eefaf4"' : (o.live && noCost(o) ? ' style="background:#fff5f5"' : '')) + '>' +
       '<td style="max-width:330px">' +
-        '<div style="font-size:11.5px;color:var(--muted)"><b>' + esc(o.id) + '</b>' + liveBit + '</div>' +
+        '<div style="font-size:11.5px;color:var(--muted)"><b>' + esc(o.id) + '</b>' + liveBit +
+          (justSet ? ' &middot; <span style="color:var(--green)" title="Costed just now. Kept here so you can finish the shipping and operational figures; it leaves this list when you change a filter.">just costed</span>' : '') +
+        '</div>' +
         '<div class="ptitle2" title="' + esc(o.name) + '">' + esc((o.name||o.id).slice(0,72)) + '</div>' +
       '</td>' +
       '<td>' + tag + '</td>' +
@@ -5695,9 +5722,20 @@ function renderCostBook(){
     const k = cbId(fam, id);
     const known = all.find(x => x.fam===fam && x.id===id);
     cbSetCost(fam, id, chan, field, val, asAt, known ? known.name : '');
+    CB_JUST_SET.add(cbId(fam,id) + '::' + chan);
     if(STATE.raw.master.length || Object.keys(COSTBOOK).length) STATE.master = buildMaster();
     if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
+    // The whole table is rebuilt, which throws away whatever the caret was in. Put it back on
+    // the same box so tabbing along a row keeps working instead of dumping you at the top.
+    const act = document.activeElement;
+    const restore = act && act.dataset && act.dataset.cb
+      ? {cb:act.dataset.cb, chan:act.dataset.chan, f:act.dataset.f} : null;
     renderCostBook();
+    if(restore){
+      const back = document.querySelector('#cbTable input[data-cb="' + CSS.escape(restore.cb)
+        + '"][data-chan="' + restore.chan + '"][data-f="' + restore.f + '"]');
+      if(back){ back.focus(); back.select && back.select(); }
+    }
     showBanner('Saved ' + cbChanLabel(fam, chan) + ' ' + field + ' for ' + id + ', effective ' + asAt + '.', 'success');
   }));
   document.querySelectorAll('#cbTable [data-cbhist]').forEach(b => b.addEventListener('click', () => {
@@ -8740,7 +8778,10 @@ document.getElementById('daTrSearch').addEventListener('input', e => {
 });
 // ---- Cost Manager controls ----
 ['cbAsAt','cbScope','cbSearch','cbPlat','cbFul'].forEach(id =>
-  document.getElementById(id).addEventListener(id==='cbSearch'?'input':'change', () => renderCostBook()));
+  document.getElementById(id).addEventListener(id==='cbSearch'?'input':'change', () => {
+    CB_JUST_SET = new Set();      // changing a filter is the "I'm done with those" gesture
+    renderCostBook();
+  }));
 document.getElementById('cbHistClose').addEventListener('click', () => { CB_OPEN=''; renderCostHistory(); });
 document.getElementById('cbNewChan').addEventListener('change', e => {
   document.getElementById('cbNewShip').placeholder = e.target.value==='fba' ? 'FBA fee £' : 'Ship £';
