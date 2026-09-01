@@ -617,7 +617,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <!-- ---- Weekly stock tracking section ---- -->
     <div id="skuStockView" style="margin-top:24px;border-top:2px solid var(--border);padding-top:18px">
       <h3 style="margin:4px 0 12px;font-size:16px"><span class="dot" style="background:var(--amber)"></span> 📦 Weekly Stock Tracking <span style="font-weight:400;color:var(--muted);font-size:13px">— forecast reordering by product name</span></h3>
-      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the SKU Mapping table above, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. <b>Daily units are read-only</b> — they come from the imported sales sheet, so re-import to change them; <b>stock on hand, Actions and China Alarm are editable</b>.</div>
+      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the SKU Mapping table above, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. <b>Daily units are read-only</b> — they come from the imported sales sheet, so re-import to change them; <b>stock on hand, Actions and China Alarm are editable</b>. Uploaded the wrong file for a date? Use <b>Delete a day</b> (or the × on a date column) to take just that date back out.</div>
       <div class="grid g4" id="stockTiles"></div>
       <div class="card" style="margin-bottom:14px;padding:12px 16px">
         <div class="fbar">
@@ -629,6 +629,9 @@ input[type=range]{accent-color:var(--accent);width:150px}
           <input type="number" id="stockThreshold" value="7" min="0" step="1" style="width:64px;padding:6px 8px">
           <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer"><input type="checkbox" id="stockShowOlder"> Show older days</label>
           <input type="search" id="stockSearch" placeholder="Search product..." style="min-width:180px">
+          <span class="flabel" style="margin-left:10px">Delete a day</span>
+          <select class="fsel" id="stockDelDay" style="min-width:150px"></select>
+          <button class="btn secondary" id="stockDelGo" title="Remove every product's figures for the selected date">✕ Delete</button>
           <span style="flex:1"></span>
           <button class="btn secondary" id="stockExport">⬇️ Export</button>
           <button class="btn danger" id="stockClear">Clear all</button>
@@ -5940,6 +5943,36 @@ function parseStockSheet(rows, kind, fileDay){
   }
   return {matched, note};
 }
+// Remove one day's figures across every product. Says what will go before it goes, since the
+// numbers behind a date are not all on screen - the table shows a 7-day window and one search
+// filter, so "delete 08/29" can reach rows that are not currently visible.
+function stockDeleteDay(day){
+  if(!day) return;
+  let prods = 0, units = 0;
+  for(const p of Object.values(STOCK)){
+    const v = p.daily ? p.daily[day] : undefined;
+    if(v === undefined || v === null || v === '') continue;
+    prods++; units += (parseFloat(v) || 0);
+  }
+  if(!prods){ showBanner(`Nothing recorded for ${day}.`, 'error'); return; }
+  if(!confirm(`Delete the daily sales for ${day}?
+
+${fmtNum(prods)} product(s), ${fmtNum(units)} unit(s).
+
+`
+    + `Inventory, actions and China alarm are kept - only this day's figures go. `
+    + `Re-import the correct file for that date to put it back.`)) return;
+  for(const p of Object.values(STOCK)) if(p.daily) delete p.daily[day];
+  // a product left with no sales AND nothing else recorded is not tracked at all any more
+  for(const [n, p] of Object.entries(STOCK)){
+    const hasDaily = p.daily && Object.keys(p.daily).length;
+    const hasElse = (p.inventory != null && p.inventory !== '') || (p.actions||'').trim() || (p.alarm||'').trim();
+    if(!hasDaily && !hasElse) delete STOCK[n];
+  }
+  saveStock();
+  renderStock(); renderSkuMgt();
+  showBanner(`Deleted ${day} — ${fmtNum(prods)} product(s), ${fmtNum(units)} unit(s).`, 'ok');
+}
 function stockAllDatesSorted(){
   const set = new Set();
   for(const p of Object.values(STOCK)) for(const d of Object.keys(p.daily)) set.add(d);
@@ -5978,6 +6011,21 @@ function renderStock(){
     return va === vb ? a.localeCompare(b) : dir * (va - vb);
   });
 
+  // Every date, not just the 7 on screen: a wrong upload is often an older day the table hides.
+  {
+    const sel = document.getElementById('stockDelDay');
+    const keep = sel.value;
+    sel.innerHTML = allDates.length
+      ? allDates.map(d => {
+          let prods = 0;
+          for(const p of Object.values(STOCK)) if(p.daily && p.daily[d] != null && p.daily[d] !== '') prods++;
+          return `<option value="${d}">${d} · ${fmtNum(prods)} product(s)</option>`;
+        }).join('')
+      : '<option value="">no dates loaded</option>';
+    if(keep && allDates.includes(keep)) sel.value = keep;
+    document.getElementById('stockDelGo').disabled = !allDates.length;
+  }
+
   const low = names.filter(n => { const c = calc(n); return c.daysLeft != null && c.daysLeft < threshold; }).length;
   const totalWeek = names.reduce((a,n) => a + calc(n).weekTotal, 0);
   document.getElementById('stockTiles').innerHTML = [
@@ -5987,7 +6035,13 @@ function renderStock(){
     {tl:'Days in data', tv:fmtNum(allDates.length), bg:'var(--pastel-1)'},
   ].map(x => `<div class="stat-tile" style="background:${x.bg}"><div class="tl">${x.tl}</div><div class="tv">${x.tv}</div></div>`).join('');
 
-  const dayHdr = visDates.map(d => `<th class="num" style="min-width:56px">${d.slice(5).replace('-','/')}</th>`).join('');
+  // Each day column carries its own delete. A wrongly imported day is the common case - the
+  // importer overwrites a day it re-covers, but only for the days that file contains, so a day
+  // uploaded from the wrong file otherwise sticks around with no way to take it back out.
+  const dayHdr = visDates.map(d => `<th class="num" style="min-width:56px;white-space:nowrap">`
+    + `${d.slice(5).replace('-','/')}`
+    + `<span class="st-del-day" data-d="${d}" title="Delete every product's figure for ${d}"`
+    + ` style="cursor:pointer;color:var(--muted);margin-left:4px;font-weight:700">×</span></th>`).join('');
   const sortTh = (key, label, style) => {
     const on = SK === key;
     const arrow = on ? (STOCK_SORT.dir === 'asc' ? ' ▲' : ' ▼') : '<span style="opacity:.28"> ⇅</span>';
@@ -6081,6 +6135,10 @@ function renderStock(){
     else p[field] = inp.value;
     saveStock();
     renderStock();
+  }));
+  document.querySelectorAll('#stockTable .st-del-day').forEach(x => x.addEventListener('click', e => {
+    e.stopPropagation();                              // the header is also a sort target
+    stockDeleteDay(x.dataset.d);
   }));
   document.querySelectorAll('#stockTable .st-sort').forEach(th => th.addEventListener('click', () => {
     const k = th.dataset.sk;
@@ -8975,6 +9033,9 @@ document.getElementById('stockInvFile').addEventListener('change', e => { if(e.t
 document.getElementById('stockThreshold').addEventListener('input', () => { renderStock(); renderSkuMgt(); });
 document.getElementById('stockShowOlder').addEventListener('change', renderStock);
 document.getElementById('stockSearch').addEventListener('input', renderStock);
+document.getElementById('stockDelGo').addEventListener('click', () => {
+  stockDeleteDay(document.getElementById('stockDelDay').value);
+});
 document.getElementById('stockClear').addEventListener('click', () => {
   if(!confirm('Clear all weekly stock tracking data for this account?')) return;
   STOCK = {}; saveStock(); renderStock(); renderSkuMgt(); showBanner('Stock tracking cleared for this account.');
