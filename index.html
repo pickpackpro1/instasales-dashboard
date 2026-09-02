@@ -2625,7 +2625,16 @@ function buildMaster(){
       if(!e) continue;
       const map = fam === 'amazon' ? M.amazon.byAsin : fam === 'ebay' ? M.ebay.byItem
                 : fam === 'shopify' ? M.shopify.bySku : M.tiktok.bySku;
-      const prior = map[id];
+      // The book upper-cases its key; the sheet keeps whatever casing was typed. TikTok and
+      // Shopify key on the SKU, so an exact lookup missed the sheet row and the product forked
+      // in two - one entry holding the costs, another holding the selling price, and the table
+      // showing the wrong one. Match case-insensitively and write back under the sheet's key.
+      let mapKey = id;
+      if(!map[mapKey]){
+        const hit = Object.keys(map).find(k => String(k).toUpperCase() === id);
+        if(hit) mapKey = hit;
+      }
+      const prior = map[mapKey];
       // The book supplies COSTS, not identity. Overwriting the whole row renamed every seller
       // SKU to its ASIN and stamped the family ('amazon') over the sheet's account, so both
       // Amazon accounts collapsed into Vemart and the Vefive filter came back empty. Keep the
@@ -2649,7 +2658,7 @@ function buildMaster(){
       } else {
         e.sku = id; e.asin = fam === 'amazon' ? id : ''; e.pid = id; e.plat = fam;
       }
-      map[id] = e;
+      map[mapKey] = e;
       overlaid++;
     }
     M.costBookCount = overlaid;
@@ -7772,10 +7781,41 @@ function renderPLS(){
 // ---- Product ROIs (editable cost sheet) ----
 let PROD_VIEW = [];
 function masterEditTargets(e){
-  return STATE.raw.master.filter(r => {
-    const plat = (fixText(r['platform']) || 'tiktok').toLowerCase();
-    return plat === e.plat && fixText(r['sku']) === e.sku && fixText(r['asin']) === e.asin && fixText(r['productid']) === e.pid;
-  });
+  // Compared case-insensitively: a product carried in from the Cost Book has its id upper-cased
+  // by the book's key, so an exact match would miss the sheet row it belongs to and the edit
+  // would write nowhere.
+  const eq = (a, b) => String(a == null ? '' : a).trim().toLowerCase() === String(b == null ? '' : b).trim().toLowerCase();
+  return STATE.raw.master.filter(r =>
+    eq(fixText(r['platform']) || 'tiktok', e.plat) && eq(fixText(r['sku']), e.sku)
+    && eq(fixText(r['asin']), e.asin) && eq(fixText(r['productid']), e.pid));
+}
+// Where an edit should land, creating the row if there is nowhere yet. A product that exists
+// only in the Cost Book has no sheet row at all - the book holds costs, the sheet holds
+// identity and the selling price - so typing a Selling £ into it saved nowhere and reverted on
+// the next rebuild, with no error to say why. It gets a row here instead.
+function ensureMasterRow(e){
+  const found = masterEditTargets(e);
+  if(found.length) return {rows:found, created:false};
+  const fam = cbFam(e.plat);
+  // The book upper-cases its key, so recover the SKU's real casing from the sales rows if they
+  // still carry it rather than stamping a shouty version into the sheet.
+  let sku = e.sku || '';
+  for(const ch of ALL_CH){
+    const hit = (STATE.channels[ch] || []).find(r => String(r.key||'').trim().toLowerCase() === String(sku).trim().toLowerCase());
+    if(hit){ sku = hit.key; break; }
+  }
+  const row = {
+    'Name': e.name || '', 'platform': e.plat || fam, 'sku': sku,
+    'asin': e.asin || '',
+    'productid': (e.pid && String(e.pid).toLowerCase() === String(sku).toLowerCase()) ? sku : (e.pid || ''),
+    'SKU CHANNEL': e.chan || (fam === 'amazon' ? (e.fba ? 'FBA' : 'FBM') : ''),
+    'buying_cost_per_unit': e.buying || 0, 'operational_cost_per_unit': e.oper || 0,
+    'shipping_cost_per_unit': e.shipping || 0,
+    'Refferal fee %': e.referral == null ? null : e.referral
+  };
+  STATE.raw.master.push(row);
+  _skuIdxFor = null;
+  return {rows:[row], created:true};
 }
 function syncMasterStore(){
   const name = (STATE.files.master && STATE.files.master[0]) || '(saved copy)';
@@ -7861,16 +7901,24 @@ function renderProducts(){
     };
   };
   // selling price: live sales average when the channel data is loaded, else the saved/built-in price
-  const priceOf = e => {
+  // What this product actually achieved per unit in the loaded period, or null when it has not
+  // sold. Kept apart from the price shown, so both can be reported instead of one hiding the
+  // other.
+  const achievedPrice = e => {
     const ck = chOf(e.plat);
     // both Amazon accounts key their sales rows on the ASIN, not the seller SKU
     const key = (ck === 'amazon' || ck === 'amazon2') ? (e.asin || e.pid) : ck === 'ebay' ? e.pid : e.sku;
     const rows = STATE.channels[ck];
-    if(rows){
-      const r = rows.find(x => x.key === key);
-      if(r && r.units > 0) return r.revenue_gross / r.units;
-    }
-    return (e.selling_price != null && e.selling_price > 0) ? e.selling_price : null;
+    if(!rows) return null;
+    const r = rows.find(x => String(x.key||'').trim().toLowerCase() === String(key||'').trim().toLowerCase());
+    return (r && r.units > 0) ? r.revenue_gross / r.units : null;
+  };
+  // A price you typed WINS. This column is an editable field, and it used to re-display the
+  // achieved average over whatever was entered, so a saved edit looked like it had reverted.
+  // With no price set it still falls back to what the product actually sold at.
+  const priceOf = e => {
+    if(e.selling_price != null && e.selling_price > 0) return e.selling_price;
+    return achievedPrice(e);
   };
   // c = that offer's costs (its own Cost Book channel), so FBA and FBM price out separately.
   const prodEcon = (e, P, c) => {
@@ -7915,7 +7963,12 @@ function renderProducts(){
     <td title="${esc(e.sku)}">${esc((e.sku||'').substr(0,26))}</td>
     <td>${esc(e.asin || e.pid || '')}</td>
     <td title="${esc(e.name)}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc((e.name||'').substr(0,34))}</td>
-    <td class="num" style="background:#eef6fd">${numIn(i,'price', P != null ? P : '', '0.01')}</td>
+    <td class="num" style="background:#eef6fd">${numIn(i,'price', P != null ? P : '', '0.01')}${(() => {
+      const a = achievedPrice(e);
+      if(a == null || P == null) return '';
+      if(Math.abs(a - P) < 0.005) return '<div style="font-size:10px;color:var(--muted)">as sold</div>';
+      return `<div style="font-size:10px;color:var(--muted)" title="Average actually achieved per unit over the loaded period. Your typed price is what the ROI below is based on.">sold at ${fmtGBP(a)}</div>`;
+    })()}</td>
     <td class="num">${numIn(i,'buy',c.buying,'0.01')}</td>
     <td class="num">${numIn(i,'oper',c.oper,'0.01')}</td>
     <td class="num"${isFba?' title="FBA fulfilment fee"':''}>${numIn(i,'ship',c.shipping,'0.01')}</td>
@@ -7939,7 +7992,8 @@ function renderProducts(){
     if(isNaN(v) || v < 0) v = 0;
     const field = {price:'selling_price', buy:'buying_cost_per_unit', oper:'operational_cost_per_unit', ship:'shipping_cost_per_unit', ref:'Refferal fee %', aff:'affiliate_pct', sads:'shopads_pct', reg:'regulatory_pct', fixed:'fixed_fee_per_unit'}[f];
     const val = ['ref','aff','sads','reg'].includes(f) ? v/100 : v;
-    for(const r of masterEditTargets(e)) r[field] = val;
+    const tgt = ensureMasterRow(e);
+    for(const r of tgt.rows) r[field] = val;
     if(f==='price') e.selling_price = val;
     else if(f==='buy') e.buying = val;
     else if(f==='oper') e.oper = val;
@@ -7971,7 +8025,8 @@ function renderProducts(){
     STATE.master = buildMaster();
     if(loadedChannels().length){ recompute(); diagnostics(); }
     keepFocus('#prodTable', renderProducts);   // refresh the computed Profit / ROI / Margin columns
-    showBanner('Saved - profit, ROI and margin recalculated.' + toBook, 'success');
+    showBanner('Saved - profit, ROI and margin recalculated.' + toBook
+      + (tgt.created ? ' This product had no master-sheet row, so one was created to hold it.' : ''), 'success');
   }));
   tb.querySelectorAll('[data-pdel]').forEach(b => b.addEventListener('click', () => {
     const e = PROD_VIEW[parseInt(b.dataset.pdel)].e;
