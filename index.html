@@ -7981,16 +7981,18 @@ function renderProducts(){
     <td class="num" style="background:#f4fbf7">${ec ? pill(ec.profit, fmtGBP) : '<span class="pill zero">no price</span>'}</td>
     <td class="num" style="background:#f4fbf7">${ec && ec.roi != null ? pill(ec.roi, fmtPct) : '-'}</td>
     <td class="num" style="background:#f4fbf7">${ec && ec.margin != null ? pill(ec.margin, fmtPct) : '-'}</td>
-    <td><button class="btn danger" style="padding:4px 10px;font-size:11px" data-pdel="${i}" title="Delete this product from the master sheet">✕</button></td>
+    <td style="white-space:nowrap"><button class="btn" style="padding:4px 9px;font-size:11px;background:var(--green);border-color:var(--green)" data-psave="${i}" title="Save every figure in this row now, including one you are still typing">✓</button>
+      <button class="btn danger" style="padding:4px 9px;font-size:11px;margin-left:4px" data-pdel="${i}" title="Delete this product from the master sheet">✕</button></td>
   </tr>`;
   }).join('');
-  tb.querySelectorAll('input[data-f]').forEach(inp => inp.addEventListener('change', () => {
-    const o = PROD_VIEW[parseInt(inp.dataset.i)];
+  // Write ONE field of one offer. Shared by the save-on-blur and by the row's tick button, so
+  // both land the value in exactly the same places and cannot drift apart.
+  const prodWriteField = (o, f, rawValue) => {
     const e = o.e, rowChan = o.chan;
-    const f = inp.dataset.f;
-    let v = parseFloat(inp.value);
+    let v = parseFloat(rawValue);
     if(isNaN(v) || v < 0) v = 0;
     const field = {price:'selling_price', buy:'buying_cost_per_unit', oper:'operational_cost_per_unit', ship:'shipping_cost_per_unit', ref:'Refferal fee %', aff:'affiliate_pct', sads:'shopads_pct', reg:'regulatory_pct', fixed:'fixed_fee_per_unit'}[f];
+    if(!field) return {toBook:'', created:false};
     const val = ['ref','aff','sads','reg'].includes(f) ? v/100 : v;
     const tgt = ensureMasterRow(e);
     for(const r of tgt.rows) r[field] = val;
@@ -8021,12 +8023,38 @@ function renderProducts(){
         toBook = ` Cost Manager updated, effective ${when}.`;
       }
     }
+    return {toBook, created:tgt.created};
+  };
+  // One rebuild for however many fields were just written, rather than one rebuild per field.
+  const prodCommit = (msg) => {
     syncMasterStore();
     STATE.master = buildMaster();
     if(loadedChannels().length){ recompute(); diagnostics(); }
     keepFocus('#prodTable', renderProducts);   // refresh the computed Profit / ROI / Margin columns
-    showBanner('Saved - profit, ROI and margin recalculated.' + toBook
-      + (tgt.created ? ' This product had no master-sheet row, so one was created to hold it.' : ''), 'success');
+    showBanner(msg, 'success');
+  };
+  tb.querySelectorAll('input[data-f]').forEach(inp => inp.addEventListener('change', () => {
+    const o = PROD_VIEW[parseInt(inp.dataset.i)];
+    const res = prodWriteField(o, inp.dataset.f, inp.value);
+    prodCommit('Saved - profit, ROI and margin recalculated.' + res.toBook
+      + (res.created ? ' This product had no master-sheet row, so one was created to hold it.' : ''));
+  }));
+  // The tick saves the whole row at once. Blur already saves a field, but a value still being
+  // typed has not blurred yet - so without this, pressing the row's own save button was the one
+  // gesture that could drop the number sitting in front of you.
+  tb.querySelectorAll('[data-psave]').forEach(b => b.addEventListener('click', () => {
+    const i = b.dataset.psave;
+    const o = PROD_VIEW[parseInt(i)];
+    if(!o) return;
+    const inputs = [...tb.querySelectorAll('input[data-f][data-i="' + i + '"]')];
+    let toBook = '', created = false;
+    for(const inp of inputs){
+      const res = prodWriteField(o, inp.dataset.f, inp.value);
+      if(res.toBook) toBook = res.toBook;
+      created = created || res.created;
+    }
+    prodCommit('Saved ' + fmtNum(inputs.length) + ' field(s) for ' + (o.e.sku || o.e.asin || o.e.pid) + '.' + toBook
+      + (created ? ' This product had no master-sheet row, so one was created to hold it.' : ''));
   }));
   tb.querySelectorAll('[data-pdel]').forEach(b => b.addEventListener('click', () => {
     const e = PROD_VIEW[parseInt(b.dataset.pdel)].e;
