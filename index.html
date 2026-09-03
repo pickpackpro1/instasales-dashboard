@@ -2461,6 +2461,12 @@ function rebuildFromFileStore(){
   // different Referral/Shipping/Profit for identical filters.
   const carriedMaster = (STATE.fileRows && STATE.fileRows.master) ? null : (STATE.raw.master || []);
   const carriedMasterFiles = STATE.files.master;
+  // The SKU map needs the same rescue, and for the same reason. It usually arrives from the
+  // built-in copy or localStorage rather than from a dropped file, so a fileRows pull that
+  // never carried it left this rebuild with nothing to restore it from - the mapping table
+  // appeared on first render and then vanished the moment the cloud copy landed.
+  const carriedSkuMap = (STATE.fileRows && STATE.fileRows.sku_map) ? null : (STATE.raw.sku_map || []);
+  const carriedSkuMapFiles = STATE.files.sku_map;
   STATE.raw = EMPTY_RAW();
   STATE.files = {};
   document.querySelectorAll('.fs-item').forEach(el => {
@@ -2479,6 +2485,13 @@ function rebuildFromFileStore(){
       STATE.files.master = carriedMasterFiles || ['(saved copy)'];
       updateFileStatus('master');
     } else restoreMaster();
+  }
+  if(!STATE.raw.sku_map.length){
+    if(carriedSkuMap && carriedSkuMap.length){
+      STATE.raw.sku_map = carriedSkuMap;
+      STATE.files.sku_map = carriedSkuMapFiles || ['(saved copy)'];
+      updateFileStatus('sku_map');
+    } else restoreSkuMap();
   }
   renderLoadedReports();
   const R = STATE.raw;
