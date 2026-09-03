@@ -282,13 +282,14 @@ input[type=range]{accent-color:var(--accent);width:150px}
    Layering matters here: the header is already sticky to the top and the totals to the bottom,
    so the corner cells of each must sit above the frozen column, not behind it. */
 #stockTable th:first-child,
-#stockTable tbody td:first-child{position:sticky;left:0;z-index:3;background:var(--card);
-  box-shadow:1px 0 0 var(--border)}
-#stockTable thead th:first-child{z-index:6;background:#f5f8fc}
-#stockTable tfoot td:first-child{position:sticky;left:0;z-index:7;background:#eef3f9;
-  box-shadow:1px 0 0 var(--border)}
+#stockTable tbody td:first-child{position:sticky;left:0;z-index:3;background:#eaf2fb;
+  border-right:2px solid #c6d8ec}
+#stockTable thead th:first-child{z-index:6;background:#d9e7f7;color:#2c4a70}
+#stockTable tfoot td:first-child{position:sticky;left:0;z-index:7;background:#d9e7f7;
+  border-right:2px solid #c6d8ec}
 /* the row tint has to be repainted on the frozen cell, which no longer shows the row behind it */
-#stockTable tbody tr:hover td:first-child{background:#f2f8fd}
+#stockTable tbody tr:hover td:first-child{background:#dceaf8}
+#stockTable tbody tr.row-missing td:first-child{background:#fbe6ea}
 /* Fulfilment column: a compact code (FBA/FBM/FBS/FBP/FBT) with the full name on hover. */
 .fchan-fixed{display:inline-block;font-size:11.5px;font-weight:700;color:var(--muted);white-space:nowrap}
 .badge.blue{background:#e3f2fc;color:#1a7fc4}
@@ -630,7 +631,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
     <!-- ---- Weekly stock tracking section ---- -->
     <div id="skuStockView" style="margin-top:24px;border-top:2px solid var(--border);padding-top:18px">
       <h3 style="margin:4px 0 12px;font-size:16px"><span class="dot" style="background:var(--amber)"></span> 📦 Weekly Stock Tracking <span style="font-weight:400;color:var(--muted);font-size:13px">— forecast reordering by product name</span></h3>
-      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the SKU Mapping table above, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. <b>Daily units are read-only</b> — they come from the imported sales sheet, so re-import to change them; <b>stock on hand, Actions and China Alarm are editable</b>. Uploaded the wrong file for a date? Use <b>Delete a day</b> (or the × on a date column) to take just that date back out.</div>
+      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the SKU Mapping table above, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. <b>Daily units and stock on hand are read-only</b> — both come from the imported sheets, so re-import to change them; <b>Actions and China Alarm are editable</b>. Uploaded the wrong file for a date? Use <b>Delete a day</b> (or the × on a date column) to take just that date back out.</div>
       <div class="grid g4" id="stockTiles"></div>
       <div class="card" style="margin-bottom:14px;padding:12px 16px">
         <div class="fbar">
@@ -6205,7 +6206,6 @@ function renderStock(){
     }
   }
 
-  const cellIn = (name, field, val, w) => `<input data-sn="${esc(name)}" data-sf="${field}" value="${val==null?'':val}" style="width:${w||52}px;padding:4px 5px;text-align:right;border:1px solid var(--border);border-radius:5px">`;
   const txtIn = (name, field, val) => `<input data-sn="${esc(name)}" data-sf="${field}" value="${esc(val||'')}" style="width:150px;padding:4px 6px;border:1px solid var(--border);border-radius:5px">`;
   const CAP = 500;
   const body = names.slice(0, CAP).map(n => {
@@ -6232,7 +6232,8 @@ function renderStock(){
       ${dayCells}
       <td class="num" style="background:#fff8d6;font-weight:700">${fmtNum(c.weekTotal)}</td>
       <td class="num">${c.avg.toFixed(1)}</td>
-      <td class="num" style="background:#fff8d6">${cellIn(n,'inventory', c.inv!=null?c.inv:'', 64)}</td>
+      <td class="num" style="background:#fff8d6;font-weight:700">${c.inv != null ? fmtNum(c.inv)
+        : '<span style="color:var(--muted)" title="No inventory recorded for this product - import your stock sheet to fill it in">·</span>'}</td>
       <td class="num">${dlCell}</td>
       <td>${txtIn(n,'actions', c.p.actions)}</td>
       <td>${txtIn(n,'alarm', c.p.alarm)}</td>
