@@ -5761,9 +5761,15 @@ function cbCasedId(id){
   return _casedIdx[String(id || '').toUpperCase()] || id;
 }
 function cbSkusForOffer(o){
-  if(o.fam !== 'amazon') return cbSkusFor(o);
+  if(o.fam !== 'amazon') return {list: cbSkusFor(o), tagged: true};
   const ful = o.chan === 'fba';
-  return [...new Set([...sellerSkusFor('amazon', o.id, ful), ...sellerSkusFor('amazon2', o.id, ful)])];
+  const exact = [...new Set([...sellerSkusFor('amazon', o.id, ful), ...sellerSkusFor('amazon2', o.id, ful)])];
+  if(exact.length) return {list: exact, tagged: true};
+  // Nothing tagged for this fulfilment. Whether a SKU counts as FBA is INFERRED - from a SKU
+  // CHANNEL column that sheets fill in inconsistently, or failing that from an "FBA" in the SKU
+  // text - so a blank row usually means the tag is missing or unexpected, not that no SKU
+  // exists. Fall back to the product's other SKUs, marked, rather than leaving it nameless.
+  return {list: cbSkusFor(o), tagged: false};
 }
 function cbSkusFor(o){
   if(o._skus) return o._skus;
@@ -5851,12 +5857,21 @@ function renderCostBook(){
           // typed into Seller Central; the ASIN or item ID follows it, labelled, so the row can
           // still be matched against a report. On TikTok and Shopify the id already IS the SKU,
           // so nothing is repeated.
-          const sk = cbSkusForOffer(o);
+          const S = cbSkusForOffer(o), sk = S.list;
           const shown = cbCasedId(o.id);
           const idBit = '<span style="font-weight:400">' + esc(ID_LBL[cbFamCh(o.fam)] || 'ID') + ' ' + esc(shown) + '</span>';
-          if(!sk.length) return '<b>' + esc(shown) + '</b>';
-          return '<b title="' + esc(sk.join(', ')) + '">' + esc(sk[0]) + '</b>'
+          // Still nothing: say why, so a bare id reads as a gap to fill rather than a glitch.
+          if(!sk.length) return '<b title="' + esc('No seller SKU found for this '
+            + (ID_LBL[cbFamCh(o.fam)] || 'id') + ' — it is not in the master sheet, and no '
+            + 'All Orders Report names it. Add it to the sheet, or load that report.') + '">'
+            + esc(shown) + '</b>';
+          const tip = S.tagged ? sk.join(', ')
+            : sk.join(', ') + ' — not tagged to ' + cbChanLabel(o.fam, o.chan)
+              + ' in the master sheet, so this may be the other offer’s SKU';
+          return '<b title="' + esc(tip) + '"' + (S.tagged ? '' : ' style="font-style:italic;opacity:.8"') + '>'
+            + esc(sk[0]) + '</b>'
             + (sk.length > 1 ? '<span style="font-weight:400"> +' + (sk.length - 1) + '</span>' : '')
+            + (S.tagged ? '' : '<span style="font-weight:400;opacity:.7"> ?</span>')
             + ' <span style="opacity:.75">&middot; ' + idBit + '</span>';
         })() + liveBit +
           (justSet ? ' &middot; <span style="color:var(--green)" title="Costed just now. Kept here so you can finish the shipping and operational figures; it leaves this list when you change a filter.">just costed</span>' : '') +
