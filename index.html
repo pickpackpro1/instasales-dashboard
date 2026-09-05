@@ -5736,6 +5736,35 @@ function renderFulPicker(famSel){
 let CB_JUST_SET = new Set();
 // Seller SKUs behind a cost-book offer, for the search box. An Amazon family covers both
 // accounts, so ask each; the lookup is indexed, so this is cheap per row.
+// The SKUs for THIS offer rather than for the whole product. An ASIN's FBM row must name its
+// FBM SKU and its FBA row the FBA one - showing both on both would make the split unreadable,
+// and putting the FBM name on the FBA row would be simply wrong. Nothing is shown when no SKU
+// is tagged for that fulfilment, which is honest: the empty FBA row exists so a cost CAN be
+// added to it, not because an FBA offer is known to exist.
+// ID_LBL is keyed by channel; a cost-book offer carries a platform family. Either Amazon
+// account gives the same label, so the family maps cleanly onto one of them.
+const cbFamCh = fam => (fam === 'amazon' ? 'amazon' : fam);
+// The Cost Book upper-cases its keys, so a TikTok or Shopify id - which IS the seller SKU -
+// comes back shouting. Recover the casing the sheet actually uses. Indexed once per master
+// build; scanning the sheet per row would be O(offers x master) on every render.
+let _casedIdx = null, _casedIdxFor = null;
+function cbCasedId(id){
+  const raw = STATE.raw.master || [];
+  if(_casedIdxFor !== raw){
+    _casedIdxFor = raw; _casedIdx = {};
+    for(const r of raw)
+      for(const v of [r.sku, r.productid, r.asin]){
+        const t = fixText(v);
+        if(t && !_casedIdx[t.toUpperCase()]) _casedIdx[t.toUpperCase()] = t;
+      }
+  }
+  return _casedIdx[String(id || '').toUpperCase()] || id;
+}
+function cbSkusForOffer(o){
+  if(o.fam !== 'amazon') return cbSkusFor(o);
+  const ful = o.chan === 'fba';
+  return [...new Set([...sellerSkusFor('amazon', o.id, ful), ...sellerSkusFor('amazon2', o.id, ful)])];
+}
 function cbSkusFor(o){
   if(o._skus) return o._skus;
   const out = o.fam === 'amazon'
@@ -5817,7 +5846,19 @@ function renderCostBook(){
     const justSet = CB_JUST_SET.has(cbId(o.fam,o.id) + '::' + o.chan) && !noCost(o);
     return '<tr' + (justSet ? ' style="background:#eefaf4"' : (o.live && noCost(o) ? ' style="background:#fff5f5"' : '')) + '>' +
       '<td style="max-width:330px">' +
-        '<div style="font-size:11.5px;color:var(--muted)"><b>' + esc(o.id) + '</b>' + liveBit +
+        '<div style="font-size:11.5px;color:var(--muted)">' + (() => {
+          // The seller SKU leads, because that is what a product is recognised by and what gets
+          // typed into Seller Central; the ASIN or item ID follows it, labelled, so the row can
+          // still be matched against a report. On TikTok and Shopify the id already IS the SKU,
+          // so nothing is repeated.
+          const sk = cbSkusForOffer(o);
+          const shown = cbCasedId(o.id);
+          const idBit = '<span style="font-weight:400">' + esc(ID_LBL[cbFamCh(o.fam)] || 'ID') + ' ' + esc(shown) + '</span>';
+          if(!sk.length) return '<b>' + esc(shown) + '</b>';
+          return '<b title="' + esc(sk.join(', ')) + '">' + esc(sk[0]) + '</b>'
+            + (sk.length > 1 ? '<span style="font-weight:400"> +' + (sk.length - 1) + '</span>' : '')
+            + ' <span style="opacity:.75">&middot; ' + idBit + '</span>';
+        })() + liveBit +
           (justSet ? ' &middot; <span style="color:var(--green)" title="Costed just now. Kept here so you can finish the shipping and operational figures; it leaves this list when you change a filter.">just costed</span>' : '') +
         '</div>' +
         '<div class="ptitle2" title="' + esc(o.name) + '">' + esc((o.name||o.id).slice(0,72)) + '</div>' +
