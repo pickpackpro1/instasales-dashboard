@@ -630,7 +630,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
     <!-- ---- SKU mapping section ---- -->
     <div id="skuMapView">
       <h3 style="margin:4px 0 12px;font-size:16px"><span class="dot"></span> 🧩 SKU Mapping <span style="font-weight:400;color:var(--muted);font-size:13px">— active vs inactive channel SKUs per product</span></h3>
-      <div id="skuMapEmpty" class="notice">Your <b>SKU dashboard is built in</b> - it loads automatically per account (InstaMart across Vemart/eBay/TikTok, Vefive on its own). Drop an updated SKU dashboard workbook anywhere to replace it. It maps each product to its channel SKUs and flags which are <b>active (routed)</b> vs <b>inactive (un-routed)</b>.</div>
+      <div id="skuMapEmpty" class="notice">Your <b>SKU dashboard is built in</b> - it loads automatically per account (InstaMart across Vemart/eBay/TikTok, Vefive on its own). Drop an updated SKU dashboard workbook anywhere to replace it. It maps each product to its channel SKUs and flags which are <b>active (routed)</b> vs <b>inactive (un-routed)</b>. Add an <b>ASIN</b> or <b>Item ID</b> column beside an account’s SKU columns (e.g. <b>VEMART ASIN</b>, <b>EBAY Item ID</b>) and those ids get named from here too — without it the sheet holds SKUs but nothing tying them to an id.</div>
       <div id="skuMapBody" class="hidden">
         <div class="grid g4" id="skuMapTiles"></div>
         <div class="card" style="margin-bottom:14px;padding:12px 16px">
@@ -1766,6 +1766,36 @@ function skuIdxChans(platform, fam){
   if(p.includes('vemart') || p.includes('amazon1') || p.includes('amazon 1')) return ['amazon'];
   return ['amazon', 'amazon2'];
 }
+// SKU Management as a SKU source. It normally holds product name -> channel SKUs and no ids at
+// all, in which case this yields nothing; where an ASIN / Item ID column HAS been filled in, the
+// mapping names those ids directly and no report is needed for them.
+// Channel headings there are account names ("VEMART"), so they are matched to channels here.
+const MAP_CH = {vemart:'amazon', 'amazon1':'amazon', 'amazon 1':'amazon',
+                vefive:'amazon2', 'amazon2':'amazon2', 'amazon 2':'amazon2',
+                ebay:'ebay', tiktok:'tiktok', shopify:'shopify', amazon:'amazon'};
+let _mapIdx = null, _mapIdxFor = null;
+function mapSkuIdx(){
+  const raw = STATE.raw.sku_map || [];
+  if(_mapIdx && _mapIdxFor === raw) return _mapIdx;
+  _mapIdxFor = raw; _mapIdx = {};
+  const m = buildSkuMap();
+  for(const p of (m ? m.products : [])){
+    for(const chName of (m.channels || [])){
+      const ch = MAP_CH[String(chName).trim().toLowerCase()];
+      const e = p.byCh[chName];
+      if(!ch || !e || !e.ids || !e.ids.length) continue;
+      const skus = [...e.routed, ...e.unrouted];
+      if(!skus.length) continue;
+      for(const id of e.ids){
+        const k = ch + '|' + String(id).trim().toUpperCase();
+        const list = (_mapIdx[k] = _mapIdx[k] || []);
+        for(const sk of skus)
+          if(!list.some(x => x.sku === sk)) list.push({sku:sk, fba:/(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(sk)});
+      }
+    }
+  }
+  return _mapIdx;
+}
 let _skuIdx = null, _skuIdxFor = null;
 function sellerSkusFor(channel, key, ful){
   const raw = STATE.raw.master || [];
@@ -1811,6 +1841,9 @@ function sellerSkusFor(channel, key, ful){
   // Fill gaps from the orders report rather than replace: where the sheet already named the
   // SKU that answer stands, and this only adds offers the sheet never listed.
   for(const x of (ordersSkuIdx()[channel + '|' + K] || []))
+    if(!hit.some(y => y.sku === x.sku)) hit.push(x);
+  // and from SKU Management, where its sheet carries the id
+  for(const x of (mapSkuIdx()[channel + '|' + K] || []))
     if(!hit.some(y => y.sku === x.sku)) hit.push(x);
   // ful: undefined = every offer, true = FBA only, false = FBM only
   if(ful === true || ful === false) hit = hit.filter(x => x.fba === ful);
@@ -2729,10 +2762,16 @@ function buildSkuMap(){
     if(m){
       const chName = (m[1] || 'SKU').trim() || 'SKU';
       const unKey = keys.find(x => new RegExp('^'+esc(chName)+'\\s*sku\\s*un\\s*routed','i').test(x.trim()));
-      channels.push({name: chName, routedKey: k, unroutedKey: unKey || null});
+      // Optional: an ASIN / Item ID column for this channel. The sheet is SKU-only by default,
+      // which is why an ASIN it has never seen cannot be named from it - fill this in and the
+      // mapping becomes a SKU source in its own right, with no report needed.
+      const idKey = keys.find(x => new RegExp('^'+esc(chName)+'\\s*(asin|item\\s*id|product\\s*id|id)\\s*$','i').test(x.trim()));
+      channels.push({name: chName, routedKey: k, unroutedKey: unKey || null, idKey: idKey || null});
     }
   }
   if(!nameKey || !channels.length) return null;
+  // a single un-prefixed ASIN / Item ID column applies to whichever channel the row names
+  const sharedIdKey = keys.find(k => /^(asin|item\s*id|product\s*id|asin\s*\/\s*id)$/i.test(k.trim())) || null;
   const products = []; let cur = null, curFamily = '';
   for(const r of raw){
     const name = clean(r[nameKey]);
@@ -2741,11 +2780,13 @@ function buildSkuMap(){
       const family = type === 'INVT' ? name : (curFamily || name);
       if(type === 'INVT') curFamily = name;
       cur = {name, type, family, byCh:{}, hasInactive:false};
-      for(const c of channels) cur.byCh[c.name] = {routed:[], unrouted:[]};
+      for(const c of channels) cur.byCh[c.name] = {routed:[], unrouted:[], ids:[]};
       products.push(cur);
     }
     if(!cur) continue;
     for(const c of channels){
+      const idv = clean(c.idKey ? r[c.idKey] : '') || clean(sharedIdKey ? r[sharedIdKey] : '');
+      if(idv && !cur.byCh[c.name].ids.includes(idv)) cur.byCh[c.name].ids.push(idv);
       const rv = clean(r[c.routedKey]);
       if(rv && !cur.byCh[c.name].routed.includes(rv)) cur.byCh[c.name].routed.push(rv);
       if(c.unroutedKey){ const uv = clean(r[c.unroutedKey]); if(uv && !cur.byCh[c.name].unrouted.includes(uv)){ cur.byCh[c.name].unrouted.push(uv); cur.hasInactive = true; } }
@@ -5873,7 +5914,9 @@ function renderCostBook(){
     if(!parts.length) return '';
     return '<div class="notice" style="background:#fdf6e7;border-color:#f0d9a8">'
       + '<b>Some rows show only their id.</b> ' + parts.join('; ')
-      + '. Adding them to the master sheet works for any channel.</div>';
+      + '. Two options for any channel: add them to the master sheet, or add an <b>ASIN</b> / '
+      + '<b>Item ID</b> column to your <b>SKU Management</b> sheet next to that account’s SKU '
+      + 'columns — the mapping holds the SKUs already, it just has nothing saying which id each belongs to.</div>';
   })();
   document.getElementById('cbNote').innerHTML = (gaps.length
     ? '<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>&#9888; ' + fmtNum(gaps.length) + ' offer(s) selling right now have no cost on ' + asAt + '.</b> They book &pound;0 COGS, so their profit is overstated - use the &ldquo;Missing a cost&rdquo; filter.</div>'
