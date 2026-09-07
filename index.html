@@ -596,6 +596,32 @@ input[type=range]{accent-color:var(--accent);width:150px}
       <div class="toolbar"><h3 style="margin:0"><span class="dot"></span>eBay Stock on Hand</h3><input type="search" id="invSearch" placeholder="Search listing..."><div class="count" id="invCount"></div></div>
       <div class="table-wrap"><table id="invTable"><thead><tr><th>Item ID</th><th>Listing</th><th class="num">Price</th><th class="num">Qty Available</th><th class="num">Sold (period)</th><th class="num">Weeks of Cover</th></tr></thead><tbody></tbody></table></div>
     </div>
+
+    <!-- ---- Weekly stock tracking section ---- -->
+    <div id="skuStockView">
+      <h3 style="margin:4px 0 12px;font-size:16px"><span class="dot" style="background:var(--amber)"></span> 📦 Weekly Stock Tracking <span style="font-weight:400;color:var(--muted);font-size:13px">— forecast reordering by product name</span></h3>
+      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the <b>SKU Mapping</b> table in <b>SKU Management</b>, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. <b>Daily units and stock on hand are read-only</b> — both come from the imported sheets, so re-import to change them; <b>Actions and China Alarm are editable</b>. Uploaded the wrong file for a date? Use <b>Delete a day</b> (or the × on a date column) to take just that date back out.</div>
+      <div class="grid g4" id="stockTiles"></div>
+      <div class="card" style="margin-bottom:14px;padding:12px 16px">
+        <div class="fbar">
+          <button class="btn" id="stockImportSales">⬆️ Import daily sales</button>
+          <button class="btn" id="stockImportInv">⬆️ Import inventory</button>
+          <input type="file" id="stockSalesFile" accept=".xlsx,.xls,.csv" style="display:none">
+          <input type="file" id="stockInvFile" accept=".xlsx,.xls,.csv" style="display:none">
+          <span class="flabel" style="margin-left:10px">Reorder alert when Days Left &lt;</span>
+          <input type="number" id="stockThreshold" value="7" min="0" step="1" style="width:64px;padding:6px 8px">
+          <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer"><input type="checkbox" id="stockShowOlder"> Show older days</label>
+          <input type="search" id="stockSearch" placeholder="Search product..." style="min-width:180px">
+          <span class="flabel" style="margin-left:10px">Delete a day</span>
+          <select class="fsel" id="stockDelDay" style="min-width:150px"></select>
+          <button class="btn secondary" id="stockDelGo" title="Remove every product's figures for the selected date">✕ Delete</button>
+          <span style="flex:1"></span>
+          <button class="btn secondary" id="stockExport">⬇️ Export</button>
+          <button class="btn danger" id="stockClear">Clear all</button>
+        </div>
+      </div>
+      <div class="table-wrap" style="max-height:640px"><table id="stockTable"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
+    </div>
   </div>
 
   <!-- ============ SKU MANAGEMENT ============ -->
@@ -628,31 +654,6 @@ input[type=range]{accent-color:var(--accent);width:150px}
       </div>
     </div>
 
-    <!-- ---- Weekly stock tracking section ---- -->
-    <div id="skuStockView" style="margin-top:24px;border-top:2px solid var(--border);padding-top:18px">
-      <h3 style="margin:4px 0 12px;font-size:16px"><span class="dot" style="background:var(--amber)"></span> 📦 Weekly Stock Tracking <span style="font-weight:400;color:var(--muted);font-size:13px">— forecast reordering by product name</span></h3>
-      <div class="notice" style="background:var(--pastel-4);border-color:#cfe4f7">Track stock movement by <b>product</b> and forecast reordering — the same product names as the SKU Mapping table above, so the two line up. Import your two sheets: <b>daily sales</b> ("how much sold") and <b>current inventory</b> ("how much left"). The last 7 days are shown; older days are kept but hidden (toggle to reveal). <b>Weekly TOTAL</b> = sum of the 7 days · <b>AVG/Day</b> = ÷7 · <b>Days Left</b> = stock ÷ AVG/Day. Data is saved per account. <b>Daily units and stock on hand are read-only</b> — both come from the imported sheets, so re-import to change them; <b>Actions and China Alarm are editable</b>. Uploaded the wrong file for a date? Use <b>Delete a day</b> (or the × on a date column) to take just that date back out.</div>
-      <div class="grid g4" id="stockTiles"></div>
-      <div class="card" style="margin-bottom:14px;padding:12px 16px">
-        <div class="fbar">
-          <button class="btn" id="stockImportSales">⬆️ Import daily sales</button>
-          <button class="btn" id="stockImportInv">⬆️ Import inventory</button>
-          <input type="file" id="stockSalesFile" accept=".xlsx,.xls,.csv" style="display:none">
-          <input type="file" id="stockInvFile" accept=".xlsx,.xls,.csv" style="display:none">
-          <span class="flabel" style="margin-left:10px">Reorder alert when Days Left &lt;</span>
-          <input type="number" id="stockThreshold" value="7" min="0" step="1" style="width:64px;padding:6px 8px">
-          <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer"><input type="checkbox" id="stockShowOlder"> Show older days</label>
-          <input type="search" id="stockSearch" placeholder="Search product..." style="min-width:180px">
-          <span class="flabel" style="margin-left:10px">Delete a day</span>
-          <select class="fsel" id="stockDelDay" style="min-width:150px"></select>
-          <button class="btn secondary" id="stockDelGo" title="Remove every product's figures for the selected date">✕ Delete</button>
-          <span style="flex:1"></span>
-          <button class="btn secondary" id="stockExport">⬇️ Export</button>
-          <button class="btn danger" id="stockClear">Clear all</button>
-        </div>
-      </div>
-      <div class="table-wrap" style="max-height:640px"><table id="stockTable"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
-    </div>
   </div>
 
   <!-- ============ PLS ============ -->
@@ -2206,7 +2207,7 @@ async function handleFiles(fileList, targetAcct){
      && !STATE.raw.amz_txn.length && !STATE.raw.amz_txn2.length && !STATE.raw.amz2_txn.length && !STATE.raw.amz2_txn2.length) missing.push('at least one sales file');
   const noCosts = !haveCosts();
   if(errors.length) showBanner('Some issues: ' + errors.join(' | '), 'error');
-  else if(dcStockLoaded && missing.length) showBanner('Stock data imported into SKU Management → Weekly Stock Tracking.' + (missing.length ? ' (No sales/P&L files in this batch.)' : ''), 'success');
+  else if(dcStockLoaded && missing.length) showBanner('Stock data imported into Inventory → Weekly Stock Tracking.' + (missing.length ? ' (No sales/P&L files in this batch.)' : ''), 'success');
   else if(missing.length) showBanner('Loaded. Still need: ' + missing.join(', '));
   else if(noCosts) showBanner('Dashboard built, but no cost data for this account yet - open Cost Manager and use Import to load your costs, for real profit figures.', 'error');
   else {
@@ -4626,7 +4627,7 @@ function kpiCard(c){
 
 // ================= pages =================
 const PAGE_TITLES = {cmppnl:'Comparison PNL', dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Product ROIs', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
-const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','inventory','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily','cmppnl']);
+const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily','cmppnl']);
 
 function showPage(id){
   STATE.page = id;
@@ -4654,9 +4655,9 @@ function renderPage(){
   document.querySelectorAll('.empty-note').forEach(n => n.remove());
   try{
     ({dashboard:renderDashboard, consolidated:()=>{renderConsolidated(); renderDailyTracker();}, orders:renderOrders, refunds:renderRefunds,
-      inventory:renderInventory, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
+      inventory:renderInventoryPage, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
       economics:renderEconomics, fees:renderFees, reports:renderReports, opex:renderOpex, advertising:renderAds,
-      grow:renderGrow, tasks:renderTasks, workspace:renderLoadedReports, products:renderProducts, skumgt:renderSkuMgtPage,
+      grow:renderGrow, tasks:renderTasks, workspace:renderLoadedReports, products:renderProducts, skumgt:renderSkuMgt,
       costbook:renderCostBook, daily:renderDaily, cmppnl:renderComparePL}[id] || (()=>{}))();
   } catch(err){
     showBanner('Render error: ' + err.message, 'error');
@@ -6028,7 +6029,8 @@ async function cloudSyncStock(){
       const obj = {};
       for(const r of data) obj[r.product_name] = { daily: r.daily || {}, inventory: r.inventory, actions: r.actions || '', alarm: r.alarm || '' };
       STOCK = obj;
-      if(STATE.page === 'skumgt'){ renderStock(); renderSkuMgt(); }
+      if(STATE.page === 'inventory') renderStock();
+      else if(STATE.page === 'skumgt') renderSkuMgt();
     } else if(Object.keys(STOCK).length){
       cloudSaveStock();
     }
@@ -6066,7 +6068,7 @@ function readStockFile(file, kind){
       }
       const res = parseStockSheet(rows, kind, parseDayName(file.name) || todayISO());
       saveStock();
-      renderStock(); renderSkuMgt();
+      renderStock();
       showBanner(`Imported ${kind==='sales'?'daily sales':'inventory'} from "${file.name}": ${res.matched} product(s)${res.note ? ' - ' + res.note : ''}.`, res.matched ? 'success' : 'error');
     }catch(err){ showBanner('Could not read that stock file: ' + err.message, 'error'); }
   };
@@ -6175,7 +6177,7 @@ ${fmtNum(prods)} product(s), ${fmtNum(units)} unit(s).
     if(!hasDaily && !hasElse) delete STOCK[n];
   }
   saveStock();
-  renderStock(); renderSkuMgt();
+  renderStock();
   showBanner(`Deleted ${day} — ${fmtNum(prods)} product(s), ${fmtNum(units)} unit(s).`, 'ok');
 }
 function stockAllDatesSorted(){
@@ -9879,13 +9881,14 @@ document.getElementById('skuMapSearch').addEventListener('input', renderSkuMgt);
 document.getElementById('skuMapChannel').addEventListener('change', renderSkuMgt);
 document.getElementById('skuMapStatus').addEventListener('change', renderSkuMgt);
 // SKU Management renders BOTH the mapping and the weekly stock tracking on one page.
-function renderSkuMgtPage(){ renderSkuMgt(); renderStock(); }
+// Weekly Stock Tracking lives on Inventory now; SKU Management is the mapping alone.
+function renderInventoryPage(){ renderInventory(); renderStock(); }
 // stock imports (dedicated buttons so sales vs inventory is never ambiguous)
 document.getElementById('stockImportSales').addEventListener('click', () => document.getElementById('stockSalesFile').click());
 document.getElementById('stockImportInv').addEventListener('click', () => document.getElementById('stockInvFile').click());
 document.getElementById('stockSalesFile').addEventListener('change', e => { if(e.target.files[0]) readStockFile(e.target.files[0], 'sales'); e.target.value=''; });
 document.getElementById('stockInvFile').addEventListener('change', e => { if(e.target.files[0]) readStockFile(e.target.files[0], 'inv'); e.target.value=''; });
-document.getElementById('stockThreshold').addEventListener('input', () => { renderStock(); renderSkuMgt(); });
+document.getElementById('stockThreshold').addEventListener('input', () => renderStock());
 document.getElementById('stockShowOlder').addEventListener('change', renderStock);
 document.getElementById('stockSearch').addEventListener('input', renderStock);
 document.getElementById('stockDelGo').addEventListener('click', () => {
@@ -9893,7 +9896,7 @@ document.getElementById('stockDelGo').addEventListener('click', () => {
 });
 document.getElementById('stockClear').addEventListener('click', () => {
   if(!confirm('Clear all weekly stock tracking data for this account?')) return;
-  STOCK = {}; saveStock(); renderStock(); renderSkuMgt(); showBanner('Stock tracking cleared for this account.');
+  STOCK = {}; saveStock(); renderStock(); showBanner('Stock tracking cleared for this account.');
 });
 document.getElementById('stockExport').addEventListener('click', () => {
   const allDates = stockAllDatesSorted().slice().reverse();
