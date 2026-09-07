@@ -5882,16 +5882,46 @@ function renderCostBook(){
   // never invented here, it is read from whatever names it, and only one Amazon file carries the
   // ASIN and the seller SKU on the same line.
   const nameGap = (() => {
+    // What the MASTER sheet knows about each id, so "it is not naming them" can be told apart
+    // from "the sheet does not contain them". The sheet is already a SKU source; when it holds
+    // an id its SKU is used, so an unnamed row means the sheet either lacks that id or has it
+    // with the SKU column left blank.
+    const inMaster = {has:new Set(), blankSku:new Set()};
+    for(const r of (STATE.raw.master || [])){
+      const fam = cbFam(fixText(r.platform));
+      const id = fam === 'amazon' ? (fixText(r.asin) || fixText(r.productid))
+               : fam === 'ebay'   ? (fixText(r.productid) || fixText(r.sku))
+               : fixText(r.sku);
+      if(!id) continue;
+      const k = fam + '|' + String(id).trim().toUpperCase();
+      inMaster.has.add(k);
+      if(!fixText(r.sku)) inMaster.blankSku.add(k);
+    }
     const byAcct = {};
+    let missingFromMaster = 0, blankInMaster = 0;
     for(const o of list){
       if(o.fam === 'tiktok' || o.fam === 'shopify') continue;   // the id already IS the SKU
       if(cbSkusFor(o).length) continue;
+      const mk = o.fam + '|' + String(o.id).trim().toUpperCase();
+      if(inMaster.blankSku.has(mk)) blankInMaster++;
+      else if(!inMaster.has.has(mk)) missingFromMaster++;
       const accts = o.fam === 'amazon'
         ? [...(o.asinOn && o.asinOn.size ? o.asinOn : (o.on || []))]
         : ['ebay'];
       const keys = accts.length ? accts : ['amazon'];
       for(const a of keys) byAcct[a] = (byAcct[a] || 0) + 1;
     }
+    const masterNote = (() => {
+      const rows = (STATE.raw.master || []).length;
+      if(!rows) return ' No master sheet is loaded, so it cannot name anything &mdash; costs alone come from the Cost Book.';
+      const bits = [];
+      if(missingFromMaster) bits.push(fmtNum(missingFromMaster) + ' not in the master sheet');
+      if(blankInMaster) bits.push(fmtNum(blankInMaster) + ' in the master sheet with the SKU column blank');
+      return bits.length
+        ? ' Of these, ' + bits.join(' and ') + ' — the sheet holds '
+          + fmtNum(rows) + ' row' + (rows === 1 ? '' : 's') + ' and is already read for SKUs, so anything it names shows.'
+        : '';
+    })();
     // Say whether the file that names SKUs is missing entirely or simply does not cover these
     // rows - "load it" is unhelpful advice when it is already loaded.
     const has = t => (STATE.raw[t] || []).length > 0;
@@ -5919,7 +5949,7 @@ function renderCostBook(){
       .map(([a, n]) => fmtNum(n) + ' on <b>' + (CH_NAME[a] || a) + '</b> &mdash; ' + fixFor(a));
     if(!parts.length) return '';
     return '<div class="notice" style="background:#fdf6e7;border-color:#f0d9a8">'
-      + '<b>Some rows show only their id.</b> ' + parts.join('; ')
+      + '<b>Some rows show only their id.</b>' + masterNote + ' ' + parts.join('; ')
       + '. Two options for any channel: add them to the master sheet, or add an <b>ASIN</b> / '
       + '<b>Item ID</b> column to your <b>SKU Management</b> sheet next to that account’s SKU '
       + 'columns — the mapping holds the SKUs already, it just has nothing saying which id each belongs to.</div>';
