@@ -5898,8 +5898,14 @@ function renderCostBook(){
     const fixFor = a => {
       if(a === 'amazon' || a === 'amazon2'){
         const t = a === 'amazon' ? 'amz_orders' : 'amz2_orders';
-        return has(t)
-          ? 'its <b>All Orders Report</b> is loaded but does not cover them &mdash; a wider date range would'
+        if(has(t)) return 'its <b>All Orders Report</b> is loaded but does not cover them &mdash; a wider date range would';
+        // Called out by name: the transaction report is the easy one to reach for, and it
+        // carries the SKU but no ASIN, so it can never name these however many are loaded.
+        const txn = (a === 'amazon' ? (has('amz_txn') || has('amz_txn2'))
+                                    : (has('amz2_txn') || has('amz2_txn2')));
+        return txn
+          ? 'a <b>transaction report</b> is loaded, but it lists the SKU against the <i>order</i>, never the ASIN &mdash; '
+            + 'only the <b>All Orders Report</b> pairs the two, so that is the one to add'
           : 'load its <b>All Orders Report</b>, the only Amazon file naming the SKU against the ASIN';
       }
       if(a === 'ebay'){
