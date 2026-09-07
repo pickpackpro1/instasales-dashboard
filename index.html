@@ -6021,7 +6021,32 @@ function renderCostBook(){
       + '<b>Item ID</b> column to your <b>SKU Management</b> sheet next to that account’s SKU '
       + 'columns — the mapping holds the SKUs already, it just has nothing saying which id each belongs to.</div>';
   })();
-  document.getElementById('cbNote').innerHTML = (gaps.length
+  // Always-on readout of what can name a SKU, so an unnamed row is never a mystery: it states
+  // how many rows on screen are named, and what each source actually holds.
+  const srcLine = (() => {
+    const shown = list.filter(o => o.fam !== 'tiktok' && o.fam !== 'shopify');
+    const named = shown.filter(o => cbSkusFor(o).length).length;
+    const mrows = (STATE.raw.master || []);
+    let mIds = 0;
+    for(const r of mrows){
+      const fam = cbFam(fixText(r.platform));
+      const id = fam === 'amazon' ? (fixText(r.asin) || fixText(r.productid))
+               : fam === 'ebay'   ? (fixText(r.productid) || fixText(r.sku)) : fixText(r.sku);
+      if(id && fixText(r.sku)) mIds++;
+    }
+    const n = t => (STATE.raw[t] || []).length;
+    const bits = [
+      'master sheet <b>' + fmtNum(mrows.length) + '</b> row(s), <b>' + fmtNum(mIds) + '</b> with an id and a SKU',
+      'All Orders <b>' + fmtNum(n('amz_orders')) + '</b> Vemart / <b>' + fmtNum(n('amz2_orders')) + '</b> Vefive line(s)',
+      'eBay transactions <b>' + fmtNum(n('ebay_txn')) + '</b> line(s)',
+      'SKU Management ids <b>' + fmtNum(Object.keys(mapSkuIdx()).length) + '</b>'
+    ];
+    return '<div class="notice" style="background:#f4f8fd;border-color:#cfe0f2;font-size:11.5px">'
+      + '<b>SKU naming:</b> ' + fmtNum(named) + ' of ' + fmtNum(shown.length)
+      + ' row(s) here are named by a seller SKU. Sources loaded &mdash; ' + bits.join(' &middot; ')
+      + '.</div>';
+  })();
+  document.getElementById('cbNote').innerHTML = srcLine + (gaps.length
     ? '<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>&#9888; ' + fmtNum(gaps.length) + ' offer(s) selling right now have no cost on ' + asAt + '.</b> They book &pound;0 COGS, so their profit is overstated - use the &ldquo;Missing a cost&rdquo; filter.</div>'
     : '') + nameGap + lens;
 
