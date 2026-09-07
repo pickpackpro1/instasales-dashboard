@@ -598,12 +598,6 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
 
   <!-- ============ INVENTORY ============ -->
   <div class="page" id="page-inventory">
-    <div class="notice">Stock levels come from the <b>eBay Promoted Listings report</b> ("Quantity available"). TikTok &amp; Amazon inventory needs their inventory exports - drop them in a future version.</div>
-    <div class="card">
-      <div class="toolbar"><h3 style="margin:0"><span class="dot"></span>eBay Stock on Hand</h3><input type="search" id="invSearch" placeholder="Search listing..."><div class="count" id="invCount"></div></div>
-      <div class="table-wrap"><table id="invTable"><thead><tr><th>Item ID</th><th>Listing</th><th class="num">Price</th><th class="num">Qty Available</th><th class="num">Sold (period)</th><th class="num">Weeks of Cover</th></tr></thead><tbody></tbody></table></div>
-    </div>
-
     <!-- ---- Weekly stock tracking section ---- -->
     <div id="skuStockView">
       <h3 style="margin:4px 0 12px;font-size:16px"><span class="dot" style="background:var(--amber)"></span> 📦 Weekly Stock Tracking <span style="font-weight:400;color:var(--muted);font-size:13px">— forecast reordering by product name</span></h3>
@@ -4662,7 +4656,7 @@ function renderPage(){
   document.querySelectorAll('.empty-note').forEach(n => n.remove());
   try{
     ({dashboard:renderDashboard, consolidated:()=>{renderConsolidated(); renderDailyTracker();}, orders:renderOrders, refunds:renderRefunds,
-      inventory:renderInventoryPage, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
+      inventory:renderStock, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
       economics:renderEconomics, fees:renderFees, reports:renderReports, opex:renderOpex, advertising:renderAds,
       grow:renderGrow, tasks:renderTasks, workspace:renderLoadedReports, products:renderProducts, skumgt:renderSkuMgt,
       costbook:renderCostBook, daily:renderDaily, cmppnl:renderComparePL}[id] || (()=>{}))();
@@ -6804,28 +6798,6 @@ function renderComparePL(){
   }));
 }
 
-// ---- Inventory ----
-function renderInventory(){
-  const pl = (STATE.extras.ebay && STATE.extras.ebay.pl) || {};
-  const soldBy = {};
-  if(STATE.channels.ebay) for(const r of STATE.channels.ebay) soldBy[r.key] = r.units;
-  let list = Object.entries(pl).filter(([,v]) => v.qtyAvail != null).map(([item,v]) => ({item, title:v.title, price:v.price, qty:v.qtyAvail, sold:soldBy[item]||0}));
-  const q = (document.getElementById('invSearch').value||'').toLowerCase();
-  if(q) list = list.filter(r => r.item.includes(q) || (r.title||'').toLowerCase().includes(q));
-  list.sort((a,b)=>b.sold-a.sold);
-  document.getElementById('invCount').textContent = `${list.length} listings`;
-  document.querySelector('#invTable tbody').innerHTML = list.map(r => {
-    const weekly = r.sold/4.345;
-    const cover = weekly > 0 ? r.qty/weekly : null;
-    const coverTxt = cover == null ? '-' : cover > 99 ? '99+' : cover.toFixed(1);
-    const warn = cover != null && cover < 2;
-    return `<tr><td>${r.item}</td>
-      <td title="${esc(r.title)}" style="max-width:420px;overflow:hidden;text-overflow:ellipsis">${esc((r.title||'').substr(0,65))}</td>
-      <td class="num">${r.price!=null?fmtGBP(r.price):'-'}</td>
-      <td class="num">${fmtNum(r.qty)}</td><td class="num">${fmtNum(r.sold)}</td>
-      <td class="num">${warn?`<span class="pill neg">${coverTxt} wk ⚠</span>`:coverTxt+' wk'}</td></tr>`;
-  }).join('');
-}
 
 // ---- Daily channel tracker ----
 // The day-by-day, channel-by-channel table kept by hand in Excel: Revenue, Profit, Orders and
@@ -8512,7 +8484,6 @@ function skuRowHTML(r, i, opt){
       ${isParent ? `<button class="act-link" data-fam="${opt.famIdx}">▸ Show ${opt.childCount} child ASIN${opt.childCount>1?'s':''}</button>` : `
       <button class="act-link" data-trend="${i}">📊 See Trend</button>
       <button class="act-link" data-eco="${esc(CH_NAME[r.channel]+' | '+r.key)}">🧮 See Economics</button>
-      ${r.channel==='ebay' ? `<button class="act-link" data-inv="${esc(r.key)}">📦 Inventory Stats</button>` : ''}
       ${r.ads>0 ? `<button class="act-link" data-adv="${esc(r.key)}">📣 See in Advertising</button>` : ''}`}
     </div>
   </div>${isParent ? '' : `
@@ -8673,10 +8644,6 @@ function renderSkuPerf(){
   document.getElementById('skuCards').querySelectorAll('[data-eco]').forEach(b => b.addEventListener('click', () => {
     document.getElementById('ecoPick').value = b.dataset.eco;
     showPage('economics');
-  }));
-  document.getElementById('skuCards').querySelectorAll('[data-inv]').forEach(b => b.addEventListener('click', () => {
-    document.getElementById('invSearch').value = b.dataset.inv;
-    showPage('inventory');
   }));
   document.getElementById('skuCards').querySelectorAll('[data-adv]').forEach(b => b.addEventListener('click', () => {
     document.getElementById('advSearch').value = b.dataset.adv;
@@ -9882,14 +9849,11 @@ document.getElementById('spSettings').addEventListener('click', () => document.g
 
 // searches
 document.getElementById('ordSearch').addEventListener('input', renderOrders);
-document.getElementById('invSearch').addEventListener('input', renderInventory);
 document.getElementById('feeSearch').addEventListener('input', renderFees);
 document.getElementById('skuMapSearch').addEventListener('input', renderSkuMgt);
 document.getElementById('skuMapChannel').addEventListener('change', renderSkuMgt);
 document.getElementById('skuMapStatus').addEventListener('change', renderSkuMgt);
 // SKU Management renders BOTH the mapping and the weekly stock tracking on one page.
-// Weekly Stock Tracking lives on Inventory now; SKU Management is the mapping alone.
-function renderInventoryPage(){ renderInventory(); renderStock(); }
 // stock imports (dedicated buttons so sales vs inventory is never ambiguous)
 document.getElementById('stockImportSales').addEventListener('click', () => document.getElementById('stockSalesFile').click());
 document.getElementById('stockImportInv').addEventListener('click', () => document.getElementById('stockInvFile').click());
