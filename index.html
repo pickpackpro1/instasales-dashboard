@@ -1557,6 +1557,49 @@ function normKeys(rows){
     return o;
   });
 }
+// The master sheet is read by exact lowercase key - r['asin'], r['sku'], r['platform'] - but a
+// sheet exported or typed by hand rarely uses that casing, and normKeys only trims whitespace.
+// A sheet headed "ASIN" / "SKU" / "Platform" therefore contributed NOTHING: every row was
+// skipped for having no id, so its SKUs never reached Cost Manager and its costs never reached
+// the P&L, silently. Alias the canonical names onto each row so any casing (and the common
+// spelling variants) is read. Non-destructive - original keys are left alone - and memoised on
+// the array, since it runs on every master build.
+const MASTER_ALIASES = {
+  sku:        ['sku', 'seller sku', 'seller-sku', 'sellersku', 'merchant sku', 'msku'],
+  asin:       ['asin', 'child asin', '(child) asin', 'asin1', 'amazon asin'],
+  productid:  ['productid', 'product id', 'product_id', 'item id', 'itemid', 'item number', 'listing id'],
+  platform:   ['platform', 'channel platform', 'marketplace', 'account'],
+  Name:       ['name', 'title', 'product name', 'product title', 'item title'],
+  buying_cost_per_unit:      ['buying_cost_per_unit', 'buying cost per unit', 'buying cost', 'cogs', 'cost'],
+  operational_cost_per_unit: ['operational_cost_per_unit', 'operational cost per unit', 'operational cost', 'operational'],
+  shipping_cost_per_unit:    ['shipping_cost_per_unit', 'shipping cost per unit', 'shipping cost', 'shipping'],
+  selling_price:             ['selling_price', 'selling price', 'price'],
+  'SKU CHANNEL':             ['sku channel', 'fulfilment channel', 'fulfillment channel', 'fulfilment', 'fulfillment']
+};
+let _mAliasFor = null;
+function aliasMasterRows(raw){
+  if(!raw || _mAliasFor === raw) return raw;
+  _mAliasFor = raw;
+  for(const r of raw){
+    // index this row's own headers once, lowercased and space-normalised
+    const byNorm = {};
+    for(const k of Object.keys(r)){
+      const n = String(k).trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+      if(!(n in byNorm)) byNorm[n] = k;
+    }
+    for(const [canon, names] of Object.entries(MASTER_ALIASES)){
+      if(r[canon] != null && String(r[canon]).trim() !== '') continue;   // already readable
+      for(const nm of names){
+        const src = byNorm[nm.replace(/[\s_-]+/g, ' ')];
+        if(src != null && src !== canon && r[src] != null && String(r[src]).trim() !== ''){
+          r[canon] = r[src];
+          break;
+        }
+      }
+    }
+  }
+  return raw;
+}
 function findKey(row, ...prefixes){
   const keys = Object.keys(row);
   for(const p of prefixes){
@@ -1798,7 +1841,7 @@ function mapSkuIdx(){
 }
 let _skuIdx = null, _skuIdxFor = null;
 function sellerSkusFor(channel, key, ful){
-  const raw = STATE.raw.master || [];
+  const raw = aliasMasterRows(STATE.raw.master || []);
   if(!key) return [];
   // Indexed off the RAW sheet, not M.list: the built master keys Amazon on the ASIN, so an
   // ASIN listed both FBM and FBA keeps only one of its two rows there and the other SKU would
@@ -2637,6 +2680,7 @@ function haveCosts(){
   return !!((STATE.raw.master && STATE.raw.master.length) || Object.keys(COSTBOOK || {}).length);
 }
 function buildMaster(){
+  aliasMasterRows(STATE.raw.master);
   const M = {tiktok:{bySku:{}, byPid:{}}, amazon:{byAsin:{}, bySku:{}}, ebay:{byItem:{}, bySku:{}}, shopify:{bySku:{}}};
   let n = 0;
   const all = [];
@@ -4460,6 +4504,28 @@ function selfTest(){
       _skuIdxFor = null; _ordIdx = null;
     }
   }
+  // ---- master sheet column names ----
+  // Read by exact lowercase key, so a sheet headed "ASIN"/"SKU"/"Platform" used to build ZERO
+  // rows - no SKUs, no costs, no error. Every spelling below must produce a usable row.
+  {
+    const sm = STATE.raw.master, mm = STATE.master;
+    try{
+      const shapes = {
+        'lowercase':   {Name:'T', platform:'amazon', sku:'S-1', asin:'B0CASE00001', buying_cost_per_unit:2},
+        'UPPERCASE':   {Name:'T', Platform:'amazon', SKU:'S-1', ASIN:'B0CASE00001', buying_cost_per_unit:2},
+        'TitleCase':   {Title:'T', Platform:'amazon', Sku:'S-1', Asin:'B0CASE00001', 'Buying Cost':2},
+        'spaced':      {'Product Name':'T', Marketplace:'amazon', 'Seller SKU':'S-1', '(Child) ASIN':'B0CASE00001', 'Buying cost per unit':2}
+      };
+      for(const [label, row] of Object.entries(shapes)){
+        STATE.raw.master = [Object.assign({}, row)];
+        _skuIdxFor = null; _mAliasFor = null;
+        STATE.master = buildMaster();
+        eq('master header "' + label + '" builds a row', STATE.master.count, 1);
+        eq('master header "' + label + '" names its SKU', sellerSkusFor('amazon','B0CASE00001').join(','), 'S-1');
+        eq('master header "' + label + '" carries its cost', (STATE.master.amazon.byAsin['B0CASE00001']||{}).buying, 2);
+      }
+    } finally { STATE.raw.master = sm; STATE.master = mm; _skuIdxFor = null; _mAliasFor = null; }
+  }
   // ---- zero-rated (non-VAT) products ----
   {
     const zv = STATE.raw.zero_vat, sm = STATE.raw.master;
@@ -5683,6 +5749,7 @@ const cbKey = a => String(a||'').trim().toUpperCase();
 // with its own costs. Sources: what is selling now, plus anything already in the book or the
 // uploaded sheet. Non-Amazon channels have a single offer and no FBA/FBM distinction.
 function cbOffers(){
+  aliasMasterRows(STATE.raw.master);
   const out = {};
   const touch = (fam, id, name, chan) => {
     if(!id) return null;
