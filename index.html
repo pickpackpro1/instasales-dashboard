@@ -4025,11 +4025,15 @@ function computeShopify(){
 
 // ================= master persistence =================
 const LS_MASTER = 'mcpd_master';
-const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit'];
+// Every column worth keeping when the sheet is cached. 'SKU CHANNEL' and 'FBA Fees' were
+// missing, so a reload restored the sheet without its fulfilment tag or its FBA fee: every
+// offer then costed as FBM at zero fulfilment fee, which moves real money.
+const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency'];
 // ==================== CLOUD SYNC (Supabase) ====================
-// Mirrors local saves into the instasales.* tables so nothing is local-only. Local
-// storage/IndexedDB stay as a fast cache + offline fallback; the CLOUD copy is
-// authoritative - on load, if the cloud already has data for this account, it wins
+// Mirrors local saves into the instasales.* tables so nothing is local-only. The cloud copy is
+// the fallback for a machine with nothing cached, NOT the authority: it is reconstructed from
+// named columns and so can only ever carry what those columns hold, whereas the local copy is
+// the sheet as loaded. Where both exist the local one wins and is pushed up
 // over whatever local/built-in data was shown first.
 function debounce(fn, ms){ let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const numOrNull = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
@@ -4173,10 +4177,14 @@ async function cloudSyncMaster(){
   // appeared to import, then silently reverted. It is also lossy (see the save below), so the
   // cloud copy must never overwrite a file-backed one. Push the new sheet up instead, and do
   // not spend the read at all.
-  {
-    const fromFile = (STATE.files.master || []).some(n => n && n !== '(saved copy)');
-    if(fromFile && (STATE.raw.master || []).length){ cloudSaveMaster(); return; }
-  }
+  // Any local sheet wins, not just one dropped this session. Guarding only the file-backed case
+  // left the reload broken: restoreMaster() marks the localStorage copy '(saved copy)', so the
+  // pull still replaced a full 2,393-row sheet with a stale 969-row cloud one on every refresh.
+  // localStorage holds the sheet losslessly - including SKU CHANNEL and FBA Fees, which the
+  // cloud round-trip only learned to carry today - so the cloud copy is never the better one to
+  // take when something is already loaded. Push the local sheet up instead, so the cloud
+  // converges rather than fighting it.
+  if((STATE.raw.master || []).length){ cloudSaveMaster(); return; }
   try{
     const { data, error } = await sb.from('master_products').select('*').eq('account_id', CUR_ACCT);
     if(error) throw error;
