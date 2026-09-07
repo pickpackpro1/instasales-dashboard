@@ -1724,11 +1724,23 @@ const CH_NAME    = {tiktok:'TikTok', amazon:'Amazon 1 (Vemart)', amazon2:'Amazon
 // account's SKU), and it answers for ASINs the master sheet never listed, including the
 // Cost-Book-only setups where there is no master sheet at all. Not date-filtered: a label is
 // a label, and an ASIN that sold under a SKU last month still IS that SKU today.
-let _ordIdx = null, _ordIdxA = null, _ordIdxB = null;
+let _ordIdx = null, _ordIdxA = null, _ordIdxB = null, _ordIdxE = null;
 function ordersSkuIdx(){
   const a1 = STATE.raw.amz_orders || [], a2 = STATE.raw.amz2_orders || [];
-  if(_ordIdx && _ordIdxA === a1 && _ordIdxB === a2) return _ordIdx;
-  _ordIdxA = a1; _ordIdxB = a2; _ordIdx = {};
+  // eBay names the seller SKU in the transaction report's "Custom label", against the Item ID.
+  // Without this an eBay row could only ever be named from the master sheet, so anything not
+  // in that sheet showed a bare item number.
+  const eb = STATE.raw.ebay_txn || [];
+  if(_ordIdx && _ordIdxA === a1 && _ordIdxB === a2 && _ordIdxE === eb) return _ordIdx;
+  _ordIdxA = a1; _ordIdxB = a2; _ordIdxE = eb; _ordIdx = {};
+  for(const r of eb){
+    const item = fixText(r['Item ID']).replace(/^--$/, '');
+    const sku  = fixText(r['Custom label']).replace(/^--$/, '');
+    if(!item || !sku) continue;
+    const k = 'ebay|' + item.trim().toUpperCase();
+    const list = (_ordIdx[k] = _ordIdx[k] || []);
+    if(!list.some(x => x.sku === sku)) list.push({sku, fba:false});
+  }
   const scan = (rows, ch) => {
     for(const r of rows){
       const status = fixText(r['order-status'] || r['order status']).toLowerCase();
@@ -5825,9 +5837,47 @@ function renderCostBook(){
   const lens = asAt !== engineDate
     ? '<div class="notice"><b>You are viewing costs as at ' + asAt + '.</b> Your loaded reports are costed as at <b>' + engineDate + '</b> - editing here writes a version dated ' + asAt + ', which only affects reports from that date onward.</div>'
     : '<div class="notice" style="background:#eefaf4;border-color:#bfe6d4">Your loaded reports are costed as at <b>' + engineDate + '</b>, which is what you are viewing.</div>';
+  // Offers showing only an id. Worth naming the file that would fix it, per account: the SKU is
+  // never invented here, it is read from whatever names it, and only one Amazon file carries the
+  // ASIN and the seller SKU on the same line.
+  const nameGap = (() => {
+    const byAcct = {};
+    for(const o of list){
+      if(o.fam === 'tiktok' || o.fam === 'shopify') continue;   // the id already IS the SKU
+      if(cbSkusFor(o).length) continue;
+      const accts = o.fam === 'amazon'
+        ? [...(o.asinOn && o.asinOn.size ? o.asinOn : (o.on || []))]
+        : ['ebay'];
+      const keys = accts.length ? accts : ['amazon'];
+      for(const a of keys) byAcct[a] = (byAcct[a] || 0) + 1;
+    }
+    // Say whether the file that names SKUs is missing entirely or simply does not cover these
+    // rows - "load it" is unhelpful advice when it is already loaded.
+    const has = t => (STATE.raw[t] || []).length > 0;
+    const fixFor = a => {
+      if(a === 'amazon' || a === 'amazon2'){
+        const t = a === 'amazon' ? 'amz_orders' : 'amz2_orders';
+        return has(t)
+          ? 'its <b>All Orders Report</b> is loaded but does not cover them &mdash; a wider date range would'
+          : 'load its <b>All Orders Report</b>, the only Amazon file naming the SKU against the ASIN';
+      }
+      if(a === 'ebay'){
+        return has('ebay_txn')
+          ? 'the loaded <b>transaction report</b> has no &ldquo;Custom label&rdquo; for them'
+          : 'load an eBay <b>transaction report</b> &mdash; its &ldquo;Custom label&rdquo; column carries the SKU';
+      }
+      return 'add them to the master sheet';
+    };
+    const parts = Object.entries(byAcct).filter(([,n]) => n > 0)
+      .map(([a, n]) => fmtNum(n) + ' on <b>' + (CH_NAME[a] || a) + '</b> &mdash; ' + fixFor(a));
+    if(!parts.length) return '';
+    return '<div class="notice" style="background:#fdf6e7;border-color:#f0d9a8">'
+      + '<b>Some rows show only their id.</b> ' + parts.join('; ')
+      + '. Adding them to the master sheet works for any channel.</div>';
+  })();
   document.getElementById('cbNote').innerHTML = (gaps.length
     ? '<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>&#9888; ' + fmtNum(gaps.length) + ' offer(s) selling right now have no cost on ' + asAt + '.</b> They book &pound;0 COGS, so their profit is overstated - use the &ldquo;Missing a cost&rdquo; filter.</div>'
-    : '') + lens;
+    : '') + nameGap + lens;
 
   const n2 = v => (v==null || v==='') ? '' : (+v).toFixed(2);
   const nRef = v => (v==null || v==='') ? '' : (+v > 1 ? (+v).toFixed(2) : (+v*100).toFixed(2));
