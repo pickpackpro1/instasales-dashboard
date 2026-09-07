@@ -277,18 +277,25 @@ input[type=range]{accent-color:var(--accent);width:150px}
 #stockTable tfoot td{position:sticky;bottom:0;background:#eef3f9;z-index:3;border-top:2px solid var(--rule-strong,#c3cdd9)}
 #stockTable tfoot td[style*="fff8d6"]{background:#f6efc8}
 #stockTable th.st-sort:hover{background:#e7eef7}
-/* Freeze the product column. With "Show older days" on there can be thirty-odd date columns,
-   and once the name scrolls off there is no way to tell whose row of numbers you are reading.
-   Layering matters here: the header is already sticky to the top and the totals to the bottom,
-   so the corner cells of each must sit above the frozen column, not behind it. */
-#stockTable th:first-child,
-#stockTable tbody td:first-child{position:sticky;left:0;z-index:3;background:#eaf2fb;
+/* Freeze the first column. Applied to any table wide enough that scrolling sideways loses the
+   column naming each row - thirty-odd date columns on the stock table, a dozen months on
+   Comparison PNL - leaving a row of numbers with nothing identifying it.
+   Layering matters: these tables already have a header stuck to the top and, some of them, a
+   totals row stuck to the bottom, so the corner cell of each must sit ABOVE the frozen column
+   rather than behind it. Only for tables whose FIRST column is the identity; where it is not
+   (Product ROIs leads with the channel chip) this rule would pin the wrong thing. */
+table.freeze-1 tbody td:first-child{position:sticky;left:0;z-index:3;background:#eaf2fb;
   border-right:2px solid #c6d8ec}
-#stockTable thead th:first-child{z-index:6;background:#d9e7f7;color:#2c4a70}
-#stockTable tfoot td:first-child{position:sticky;left:0;z-index:7;background:#d9e7f7;
+/* Only the FIRST header row's first cell. Comparison PNL stacks two header rows with the
+   product cell spanning both, so the second row's first cell belongs to the leftmost month -
+   pinning that too slid a month's "Units" underneath the Product heading. */
+table.freeze-1 thead tr:first-child th:first-child{position:sticky;left:0;z-index:6;
+  background:#d9e7f7;color:#2c4a70;border-right:2px solid #c6d8ec}
+table.freeze-1 tfoot td:first-child{position:sticky;left:0;z-index:7;background:#d9e7f7;
   border-right:2px solid #c6d8ec}
 /* the row tint has to be repainted on the frozen cell, which no longer shows the row behind it */
-#stockTable tbody tr:hover td:first-child{background:#dceaf8}
+table.freeze-1 tbody tr:hover td:first-child{background:#dceaf8}
+table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
 #stockTable tbody tr.row-missing td:first-child{background:#fbe6ea}
 /* Fulfilment column: a compact code (FBA/FBM/FBS/FBP/FBT) with the full name on hover. */
 .fchan-fixed{display:inline-block;font-size:11.5px;font-weight:700;color:var(--muted);white-space:nowrap}
@@ -620,7 +627,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
           <button class="btn danger" id="stockClear">Clear all</button>
         </div>
       </div>
-      <div class="table-wrap" style="max-height:640px"><table id="stockTable"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
+      <div class="table-wrap" style="max-height:640px"><table id="stockTable" class="freeze-1"><thead></thead><tbody></tbody><tfoot></tfoot></table></div>
     </div>
   </div>
 
@@ -703,7 +710,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
         recalculates. <b>This is the only place costs come from</b> - use <b>Import</b> to load them in bulk.
       </div>
       <div id="cbNote"></div>
-      <div class="table-wrap" style="max-height:640px"><table id="cbTable">
+      <div class="table-wrap" style="max-height:640px"><table id="cbTable" class="freeze-1">
         <thead><tr>
           <th>Product</th><th>Channel</th>
           <th class="num">COGS &pound;</th>
@@ -1073,7 +1080,7 @@ input[type=range]{accent-color:var(--accent);width:150px}
       </div>
       <div class="sub-title" id="cmpSub"></div>
       <div id="cmpNotice"></div>
-      <div class="table-wrap" style="max-height:720px"><table id="cmpTable">
+      <div class="table-wrap" style="max-height:720px"><table id="cmpTable" class="freeze-1">
         <thead></thead><tbody></tbody><tfoot></tfoot>
       </table></div>
     </div>
