@@ -4134,14 +4134,26 @@ async function cloudSaveMasterNow(){
       referral_pct: numOrNull(r['Refferal fee %'] != null ? r['Refferal fee %'] : r['Referral fee %']),
       affiliate_pct: numOrNull(r.affiliate_pct), shopads_pct: numOrNull(r.shopads_pct),
       regulatory_pct: numOrNull(r.regulatory_pct), fixed_fee_per_unit: numOrNull(r.fixed_fee_per_unit),
-      selling_price: numOrNull(r.selling_price)
+      selling_price: numOrNull(r.selling_price),
+      // Without these two the round-trip loses the FBA/FBM tag and the FBA fee, so a restored
+      // sheet costs every offer as FBM. Sent only when the table has the columns - see below.
+      sku_channel: (r['SKU CHANNEL'] != null && String(r['SKU CHANNEL']).trim() !== '') ? String(r['SKU CHANNEL']).trim() : null,
+      fba_fees: numOrNull(r['FBA Fees'] != null ? r['FBA Fees'] : r['FBA Fee'])
     }));
+    // Older accounts have a table without those two columns; the insert would fail wholesale
+    // and nothing would save. Drop them and retry rather than lose the whole sheet.
+    const stripExtras = list => list.map(o => { const c = Object.assign({}, o); delete c.sku_channel; delete c.fba_fees; return c; });
     const { error: delErr } = await sb.from('master_products').delete().eq('account_id', CUR_ACCT);
     if(delErr) throw delErr;
+    let extrasOk = true;
     for(let i = 0; i < rows.length; i += 500){
       const chunk = rows.slice(i, i + 500);
       if(!chunk.length) continue;
-      const { error } = await sb.from('master_products').insert(chunk);
+      let { error } = await sb.from('master_products').insert(extrasOk ? chunk : stripExtras(chunk));
+      if(error && extrasOk){                       // table predates the two columns
+        extrasOk = false;
+        ({ error } = await sb.from('master_products').insert(stripExtras(chunk)));
+      }
       if(error) throw error;
     }
     setSyncBadge('idle');
@@ -4156,6 +4168,15 @@ const cloudSaveMaster = debounce(cloudSaveMasterNow, 600);
 // it becomes the source of truth from now on.
 async function cloudSyncMaster(){
   if(!window.sb) return;
+  // A sheet dropped in this session WINS. This pull is async, so it used to land after the
+  // upload had finished and replace a just-loaded sheet with the older cloud copy - the file
+  // appeared to import, then silently reverted. It is also lossy (see the save below), so the
+  // cloud copy must never overwrite a file-backed one. Push the new sheet up instead, and do
+  // not spend the read at all.
+  {
+    const fromFile = (STATE.files.master || []).some(n => n && n !== '(saved copy)');
+    if(fromFile && (STATE.raw.master || []).length){ cloudSaveMaster(); return; }
+  }
   try{
     const { data, error } = await sb.from('master_products').select('*').eq('account_id', CUR_ACCT);
     if(error) throw error;
@@ -4166,7 +4187,8 @@ async function cloudSyncMaster(){
         buying_cost_per_unit: r.buying_cost_per_unit, operational_cost_per_unit: r.operational_cost_per_unit,
         shipping_cost_per_unit: r.shipping_cost_per_unit,
         'Refferal fee %': r.referral_pct, affiliate_pct: r.affiliate_pct, shopads_pct: r.shopads_pct,
-        regulatory_pct: r.regulatory_pct, fixed_fee_per_unit: r.fixed_fee_per_unit, selling_price: r.selling_price
+        regulatory_pct: r.regulatory_pct, fixed_fee_per_unit: r.fixed_fee_per_unit, selling_price: r.selling_price,
+        'SKU CHANNEL': r.sku_channel || '', 'FBA Fees': r.fba_fees
       }));
       STATE.files.master = ['(saved copy)'];
       STATE.master = buildMaster();
