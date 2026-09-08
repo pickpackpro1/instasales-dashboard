@@ -4031,7 +4031,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-08-c';
+const BUILD_ID = '2026-09-08-e';
 const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency'];
 // ==================== CLOUD SYNC (Supabase) ====================
 // Mirrors local saves into the instasales.* tables so nothing is local-only. The cloud copy is
@@ -10435,12 +10435,14 @@ function hideGate(){ document.getElementById('accessGate').style.display = 'none
 async function initAccessGate(){
   showGate('checking', 'Connecting…');
   try{
-    const { data: { session } } = await sb.auth.getSession();
-    if(!session){
-      const { error } = await sb.auth.signInAnonymously();
-      if(error) throw error;
+    const sess = await gateTimeout(sb.auth.getSession(), 8000, {data:{session:null}, timedOut:true});
+    if(sess && sess.timedOut) throw new Error('timeout');
+    if(!(sess && sess.data && sess.data.session)){
+      const r = await gateTimeout(sb.auth.signInAnonymously(), 8000, {error:{message:'timeout'}});
+      if(r && r.error) throw r.error;
     }
-    const { data: verified, error: vErr } = await sb.rpc('am_i_verified');
+    const v = await gateTimeout(sb.rpc('am_i_verified'), 8000, {data:null, error:{message:'timeout'}});
+    const verified = v && v.data, vErr = v && v.error;
     if(vErr) throw vErr;
     if(verified){ await loadAccessRole(); hideGate(); startApp(); applyAccessRole(); return; }
     showGate('password');
@@ -10450,11 +10452,34 @@ async function initAccessGate(){
 }
 
 // Absent on a database that has not run migration 0011, which simply means 'full'.
-async function loadAccessRole(){
-  try{
-    const { data, error } = await sb.rpc('my_access_role');
-    if(!error && data) ACCESS_ROLE = String(data);
-  }catch(e){ /* older database - stays 'full' */ }
+// NEVER allowed to hold up the login. This sits between a correct password and the app
+// starting, so anything slow or hanging here locks the user out of their own dashboard -
+// which is exactly what happened. Capped at 2.5s, and it resolves rather than rejects, so a
+// missing function, a slow network or an outage all just leave the role at 'full'.
+// Every call in the login path gets a ceiling. Without one a stalled request leaves the gate
+// on "Connecting..." or the button on "Checking..." for ever, with no way in and nothing said -
+// the worst failure this app can have, since it locks the owner out of their own data.
+function gateTimeout(promise, ms, fallback){
+  return new Promise(resolve => {
+    let done = false;
+    const finish = v => { if(!done){ done = true; resolve(v); } };
+    setTimeout(() => finish(fallback), ms);
+    try{ Promise.resolve(promise).then(finish, () => finish(fallback)); }
+    catch(e){ finish(fallback); }
+  });
+}
+function loadAccessRole(){
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => { if(!done){ done = true; resolve(); } };
+    setTimeout(finish, 2500);
+    try{
+      Promise.resolve(sb.rpc('my_access_role'))
+        .then(({data, error}) => { if(!error && data) ACCESS_ROLE = String(data); })
+        .catch(() => {})
+        .then(finish, finish);
+    }catch(e){ finish(); }
+  });
 }
 document.getElementById('gateForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -10464,12 +10489,16 @@ document.getElementById('gateForm').addEventListener('submit', async (e) => {
   const btn = document.getElementById('gateSubmit');
   btn.disabled = true; btn.textContent = 'Checking…';
   try{
-    const { data: ok, error } = await sb.rpc('verify_access_password', { attempt: pw });
+    const r = await gateTimeout(sb.rpc('verify_access_password', { attempt: pw }), 12000,
+                                {data:null, error:{message:'timeout'}});
+    const ok = r && r.data, error = r && r.error;
     if(error) throw error;
     if(ok){ await loadAccessRole(); hideGate(); startApp(); applyAccessRole(); }
     else { showGate('password', 'Incorrect password - try again.'); pwEl.value = ''; }
   }catch(e){
-    showGate('password', 'Something went wrong - try again.');
+    showGate('password', (e && e.message === 'timeout')
+      ? 'The server did not answer in time - check your connection and try again.'
+      : 'Something went wrong - try again.');
   } finally {
     btn.disabled = false; btn.textContent = 'Enter';
   }
