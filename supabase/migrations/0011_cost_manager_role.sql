@@ -1,50 +1,68 @@
 -- A second password that grants COST MANAGER ONLY access.
 --
--- Why this is a database change and not a UI one: every table's policy checks
--- membership of verified_users, so hiding menu items in the browser would restrict
--- nothing - the data is still fetchable. Restricting it properly means giving the
--- session a role and writing that role into the policies.
+-- Why this is a database change and not a UI one: every table's policy checks whether the
+-- session is verified, so hiding menu items in the browser would restrict nothing - the data
+-- is still fetchable. Restricting it properly means giving the session a role and writing that
+-- role into the policies.
 --
 -- 'full'  - unchanged, everything as before.
--- 'costs' - may read and write the Cost Book (settings), and READ master_products and
---           accounts so products can be identified. Cannot touch sales history, OpEx,
---           stock, tasks, the SKU map or uploaded report files, so no revenue, profit
---           or order data is reachable at all.
+-- 'costs' - may read and write the Cost Book (settings), and READ master_products and accounts
+--           so products can be identified. Cannot touch sales history, OpEx, stock, tasks, the
+--           SKU map or the uploaded report files, so no revenue, profit or order data is
+--           reachable at all.
+--
+-- Two things this file must respect, both learned the hard way in earlier migrations:
+--   * pgcrypto lives in the "extensions" schema, so crypt/gen_salt are written as
+--     extensions.crypt(...) - see 0009.
+--   * policies must call a SECURITY DEFINER function, never an inline subquery against
+--     verified_users: "authenticated" has no grants on that table, so an inline subquery is
+--     itself blocked and the whole policy fails shut - see 0010.
 
--- ---------- 1. roles on the verified list ----------
-alter table instasales.verified_users
-  add column if not exists role text not null default 'full';
+-- ---------- 1. access_gate must be able to hold more than one row ----------
+-- It was created with check (id = 1), which would reject the second password outright.
+do $$
+declare
+  c text;
+begin
+  for c in
+    select con.conname
+    from pg_constraint con
+    join pg_class rel on rel.oid = con.conrelid
+    join pg_namespace ns on ns.oid = rel.relnamespace
+    where ns.nspname = 'instasales' and rel.relname = 'access_gate' and con.contype = 'c'
+  loop
+    execute format('alter table instasales.access_gate drop constraint %I;', c);
+  end loop;
+end $$;
 
--- ---------- 2. a second password ----------
--- access_gate holds one row per role. Row 1 is the existing full-access password and is
--- left exactly as it is.
-alter table instasales.access_gate
-  add column if not exists role text not null default 'full';
+alter table instasales.access_gate  add column if not exists role text not null default 'full';
+alter table instasales.verified_users add column if not exists role text not null default 'full';
 
-update instasales.access_gate set role = 'full' where id = 1 and role is distinct from 'full';
+update instasales.access_gate set role = 'full' where id = 1;
 
--- Set the Cost-Manager password here. Change 'CHANGE-ME' before running, or run the
--- update at the bottom of this file afterwards.
+-- ---------- 2. the Cost-Manager password ----------
 insert into instasales.access_gate (id, password_hash, role)
-values (2, crypt('CHANGE-ME', gen_salt('bf')), 'costs')
-on conflict (id) do nothing;
+values (2, extensions.crypt('soungiyoun', extensions.gen_salt('bf')), 'costs')
+on conflict (id) do update
+  set password_hash = extensions.crypt('soungiyoun', extensions.gen_salt('bf')),
+      role = 'costs';
 
 -- ---------- 3. verify against any role's password ----------
 create or replace function instasales.verify_access_password(attempt text)
 returns boolean
 language plpgsql
 security definer
-set search_path = instasales, pg_temp
+set search_path = instasales, public, extensions, pg_temp
 as $$
 declare
   r record;
 begin
-  -- Check every configured password, most privileged first, so a shared browser that
-  -- knows the full password is never downgraded by also matching a weaker one.
+  -- Most privileged first, so a browser that knows the full password is never downgraded
+  -- by also happening to match a weaker one.
   for r in select password_hash, role from instasales.access_gate
            order by case when role = 'full' then 0 else 1 end, id
   loop
-    if r.password_hash is not null and r.password_hash = crypt(attempt, r.password_hash) then
+    if r.password_hash is not null and r.password_hash = extensions.crypt(attempt, r.password_hash) then
       insert into instasales.verified_users (user_id, role)
       values (auth.uid(), r.role)
       on conflict (user_id) do update set verified_at = now(), role = excluded.role;
@@ -58,7 +76,7 @@ $$;
 revoke all on function instasales.verify_access_password(text) from public, anon;
 grant execute on function instasales.verify_access_password(text) to authenticated;
 
--- ---------- 4. let the app ask which role it has ----------
+-- ---------- 4. role helpers (SECURITY DEFINER - the policies call these) ----------
 create or replace function instasales.my_access_role()
 returns text
 language sql
@@ -68,13 +86,27 @@ as $$
   select role from instasales.verified_users where user_id = auth.uid();
 $$;
 
-revoke all on function instasales.my_access_role() from public, anon;
-grant execute on function instasales.my_access_role() to authenticated;
+create or replace function instasales.has_full_access()
+returns boolean
+language sql
+security definer
+set search_path = instasales, pg_temp
+as $$
+  select exists(
+    select 1 from instasales.verified_users
+    where user_id = auth.uid() and role = 'full'
+  );
+$$;
 
--- am_i_verified stays true for either role, so the existing load path is unchanged.
+revoke all on function instasales.my_access_role()  from public, anon;
+revoke all on function instasales.has_full_access() from public, anon;
+grant execute on function instasales.my_access_role()  to authenticated;
+grant execute on function instasales.has_full_access() to authenticated;
+
+-- am_i_verified() stays true for either role, so the existing load path is unchanged.
 
 -- ---------- 5. policies ----------
--- Everything the 'costs' role must NOT see: full access stays limited to role 'full'.
+-- Everything the 'costs' role must not reach.
 do $$
 declare
   t text;
@@ -84,46 +116,47 @@ begin
   ])
   loop
     execute format('drop policy if exists "password_verified_full_access" on instasales.%I;', t);
+    execute format('drop policy if exists "full_role_only" on instasales.%I;', t);
     execute format(
       $f$create policy "full_role_only" on instasales.%I
         for all to authenticated
-        using (auth.uid() in (select user_id from instasales.verified_users where role = 'full'))
-        with check (auth.uid() in (select user_id from instasales.verified_users where role = 'full'));$f$,
+        using (instasales.has_full_access())
+        with check (instasales.has_full_access());$f$,
       t
     );
   end loop;
 end $$;
 
--- settings holds the Cost Book, so both roles may read and write it.
+-- settings holds the Cost Book, so both roles read and write it.
 drop policy if exists "password_verified_full_access" on instasales.settings;
+drop policy if exists "any_verified_role" on instasales.settings;
 create policy "any_verified_role" on instasales.settings
   for all to authenticated
-  using (auth.uid() in (select user_id from instasales.verified_users))
-  with check (auth.uid() in (select user_id from instasales.verified_users));
+  using (instasales.am_i_verified())
+  with check (instasales.am_i_verified());
 
--- accounts: both roles read; only 'full' writes.
-drop policy if exists "password_verified_full_access" on instasales.accounts;
-create policy "any_verified_read" on instasales.accounts
-  for select to authenticated
-  using (auth.uid() in (select user_id from instasales.verified_users));
-create policy "full_role_write" on instasales.accounts
-  for all to authenticated
-  using (auth.uid() in (select user_id from instasales.verified_users where role = 'full'))
-  with check (auth.uid() in (select user_id from instasales.verified_users where role = 'full'));
+-- accounts and master_products: both roles read, only 'full' writes.
+do $$
+declare
+  t text;
+begin
+  for t in select unnest(array['accounts','master_products'])
+  loop
+    execute format('drop policy if exists "password_verified_full_access" on instasales.%I;', t);
+    execute format('drop policy if exists "any_verified_read" on instasales.%I;', t);
+    execute format('drop policy if exists "full_role_write" on instasales.%I;', t);
+    execute format(
+      $f$create policy "any_verified_read" on instasales.%I
+        for select to authenticated
+        using (instasales.am_i_verified());$f$, t);
+    execute format(
+      $f$create policy "full_role_write" on instasales.%I
+        for all to authenticated
+        using (instasales.has_full_access())
+        with check (instasales.has_full_access());$f$, t);
+  end loop;
+end $$;
 
--- master_products: 'costs' reads it so products can be named; only 'full' changes it.
-drop policy if exists "password_verified_full_access" on instasales.master_products;
-create policy "any_verified_read" on instasales.master_products
-  for select to authenticated
-  using (auth.uid() in (select user_id from instasales.verified_users));
-create policy "full_role_write" on instasales.master_products
-  for all to authenticated
-  using (auth.uid() in (select user_id from instasales.verified_users where role = 'full'))
-  with check (auth.uid() in (select user_id from instasales.verified_users where role = 'full'));
-
--- ---------- 6. set the Cost-Manager password ----------
--- Run this on its own, with your own password, then delete it from your SQL history:
---
---   update instasales.access_gate
---      set password_hash = crypt('your-cost-manager-password', gen_salt('bf'))
---    where id = 2;
+-- ---------- 6. check ----------
+-- Should return one row per role: 1/full and 2/costs.
+select id, role from instasales.access_gate order by id;
