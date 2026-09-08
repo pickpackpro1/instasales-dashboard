@@ -4031,7 +4031,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-08-f';
+const BUILD_ID = '2026-09-08-g';
 const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency'];
 // ==================== CLOUD SYNC (Supabase) ====================
 // Mirrors local saves into the instasales.* tables so nothing is local-only. The cloud copy is
@@ -4177,25 +4177,26 @@ const cloudSaveMaster = debounce(cloudSaveMasterNow, 600);
 let _masterPushedFp = null;   // what was last sent up, so an unchanged sheet is not re-sent
 async function cloudSyncMaster(){
   if(!window.sb) return;
-  // A sheet dropped in this session WINS. This pull is async, so it used to land after the
-  // upload had finished and replace a just-loaded sheet with the older cloud copy - the file
-  // appeared to import, then silently reverted. It is also lossy (see the save below), so the
-  // cloud copy must never overwrite a file-backed one. Push the new sheet up instead, and do
-  // not spend the read at all.
-  // Any local sheet wins, not just one dropped this session. Guarding only the file-backed case
-  // left the reload broken: restoreMaster() marks the localStorage copy '(saved copy)', so the
-  // pull still replaced a full 2,393-row sheet with a stale 969-row cloud one on every refresh.
-  // localStorage holds the sheet losslessly - including SKU CHANNEL and FBA Fees, which the
-  // cloud round-trip only learned to carry today - so the cloud copy is never the better one to
-  // take when something is already loaded. Push the local sheet up instead, so the cloud
-  // converges rather than fighting it.
-  if((STATE.raw.master || []).length){
-    // Push it up only when it has actually changed. Making the local copy win meant every page
-    // load re-sent the whole sheet - a DELETE plus 2,393 INSERTs each time - which is pointless
-    // work against the database and needless load on it.
-    const fp = STATE.raw.master.length + ':' + (STATE.files.master || []).join(',');
-    if(fp !== _masterPushedFp){ _masterPushedFp = fp; cloudSaveMaster(); }
-    return;
+  // Who wins, and why it matters that this is the SHARED copy.
+  //
+  // A sheet dropped from a FILE in this session wins and is pushed up: the pull is async, so it
+  // used to land after an upload finished and put the older cloud copy back, making an import
+  // appear to work and then silently revert.
+  //
+  // Anything else - a copy restored from this browser's cache - LOSES to the cloud. Briefly it
+  // did not, and that broke worse than the bug it fixed: with every browser preferring its own
+  // cache, two people saw different products and different costs and neither converged. One
+  // shared account has to mean one shared sheet, so the cloud is the authority for everyone who
+  // has not just uploaded.
+  {
+    const fromFile = (STATE.files.master || []).some(n => n && n !== '(saved copy)');
+    if(fromFile && (STATE.raw.master || []).length){
+      // Push only when it has actually changed: re-sending on every load is a DELETE plus
+      // thousands of INSERTs each time, which is real load on the database for no gain.
+      const fp = STATE.raw.master.length + ':' + (STATE.files.master || []).join(',');
+      if(fp !== _masterPushedFp){ _masterPushedFp = fp; cloudSaveMaster(); }
+      return;
+    }
   }
   try{
     const { data, error } = await sb.from('master_products').select('*').eq('account_id', CUR_ACCT);
@@ -4212,6 +4213,12 @@ async function cloudSyncMaster(){
       }));
       STATE.files.master = ['(saved copy)'];
       STATE.master = buildMaster();
+      // The shared copy is only as good as the columns the table has. Without sku_channel the
+      // FBA/FBM tag is gone and every offer costs as FBM, which is worth saying out loud rather
+      // than letting the numbers quietly drift.
+      if(data.length && !('sku_channel' in data[0]))
+        console.warn('master_products has no sku_channel/fba_fees column - the shared copy '
+          + 'cannot carry the FBA/FBM tag or the FBA fee. Run migration 0012.');
       const el = document.querySelector('.fs-item[data-t="master"]');
       if(el){ el.classList.add('ok'); el.querySelector('.check').textContent = '✓'; el.querySelector('.cnt').textContent = `${data.length} rows (cloud)`; }
       if(STATE.page === 'products') renderProducts();
