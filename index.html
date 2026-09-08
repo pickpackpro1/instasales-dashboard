@@ -4031,7 +4031,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-08-a';
+const BUILD_ID = '2026-09-08-c';
 const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency'];
 // ==================== CLOUD SYNC (Supabase) ====================
 // Mirrors local saves into the instasales.* tables so nothing is local-only. The cloud copy is
@@ -6082,7 +6082,12 @@ function renderCostBook(){
       + ' row(s) here are named by a seller SKU. Sources loaded &mdash; ' + bits.join(' &middot; ')
       + '.</div>';
   })();
-  document.getElementById('cbNote').innerHTML = srcLine + (gaps.length
+  const roleNote = ACCESS_ROLE === 'costs'
+    ? '<div class="notice" style="background:#eef3f9;border-color:#cfe0f2"><b>Cost Manager access.</b> '
+      + 'This sign-in reaches product costs only &mdash; sales, profit, orders and reports are not '
+      + 'available to it. Costs saved here apply to every report the account owner runs.</div>'
+    : '';
+  document.getElementById('cbNote').innerHTML = roleNote + srcLine + (gaps.length
     ? '<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>&#9888; ' + fmtNum(gaps.length) + ' offer(s) selling right now have no cost on ' + asAt + '.</b> They book &pound;0 COGS, so their profit is overstated - use the &ldquo;Missing a cost&rdquo; filter.</div>'
     : '') + nameGap + lens;
 
@@ -10374,6 +10379,42 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { db: { schema: 'instasales' } });
 window.sb = sb;   // reused by the sync layer (next phase)
 
+// ---- Access role ----
+// 'full' is everything, as before. 'costs' is a second password that reaches only the Cost
+// Manager. The real restriction is in the database - the policies added in migration 0011 stop
+// that role fetching sales, history, OpEx, stock or the uploaded reports at all - so this is
+// only the matching UI, not the security itself. Defaults to 'full' when the RPC is absent, so
+// the app keeps working against a database that has not run the migration.
+let ACCESS_ROLE = 'full';
+const ROLE_PAGES = {costs: ['costbook']};
+function applyAccessRole(){
+  const allowed = ROLE_PAGES[ACCESS_ROLE];
+  if(!allowed) return;                       // full access, nothing to hide
+  document.querySelectorAll('.nav-item[data-page]').forEach(b => {
+    if(!allowed.includes(b.dataset.page)) b.remove();
+  });
+  document.querySelectorAll('.nav-item.has-sub, .submenu').forEach(el => {
+    if(!el.querySelector || !el.querySelector('.nav-item[data-page]')) el.remove();
+  });
+  // The date and channel filters drive the sales engines, which this role cannot load at all -
+  // leaving them on screen would offer controls that quietly do nothing. Removed by their real
+  // ids: an earlier guess at the class names took nothing away.
+  const bar = document.querySelector('.topbar');
+  if(bar){
+    ['gDateFrom','gDateTo','gDateApply','gDateClear','chChips','exportBtn','excelBtn'].forEach(id => {
+      const el = document.getElementById(id);
+      if(el) (el.parentElement && el.parentElement.children.length === 1 ? el.parentElement : el).remove();
+    });
+    // the date group is a bare wrapper div; drop it once its inputs have gone
+    bar.querySelectorAll('div').forEach(d => {
+      if(d.id) return;
+      if(!d.children.length && !d.textContent.trim()) d.remove();
+      else if(d.children.length && ![...d.children].some(c => c.id || c.className)) d.remove();
+    });
+  }
+  document.body.classList.add('role-costs');
+  showPage('costbook');
+}
 function showGate(mode, message){
   const el = document.getElementById('accessGate');
   const status = document.getElementById('gateStatus');
@@ -10401,13 +10442,20 @@ async function initAccessGate(){
     }
     const { data: verified, error: vErr } = await sb.rpc('am_i_verified');
     if(vErr) throw vErr;
-    if(verified){ hideGate(); startApp(); return; }
+    if(verified){ await loadAccessRole(); hideGate(); startApp(); applyAccessRole(); return; }
     showGate('password');
   }catch(e){
     showGate('password', 'Connection issue - you can still try the password.');
   }
 }
 
+// Absent on a database that has not run migration 0011, which simply means 'full'.
+async function loadAccessRole(){
+  try{
+    const { data, error } = await sb.rpc('my_access_role');
+    if(!error && data) ACCESS_ROLE = String(data);
+  }catch(e){ /* older database - stays 'full' */ }
+}
 document.getElementById('gateForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const pwEl = document.getElementById('gatePassword');
@@ -10418,7 +10466,7 @@ document.getElementById('gateForm').addEventListener('submit', async (e) => {
   try{
     const { data: ok, error } = await sb.rpc('verify_access_password', { attempt: pw });
     if(error) throw error;
-    if(ok){ hideGate(); startApp(); }
+    if(ok){ await loadAccessRole(); hideGate(); startApp(); applyAccessRole(); }
     else { showGate('password', 'Incorrect password - try again.'); pwEl.value = ''; }
   }catch(e){
     showGate('password', 'Something went wrong - try again.');
