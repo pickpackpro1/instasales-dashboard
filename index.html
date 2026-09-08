@@ -4031,7 +4031,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-08-e';
+const BUILD_ID = '2026-09-08-f';
 const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency'];
 // ==================== CLOUD SYNC (Supabase) ====================
 // Mirrors local saves into the instasales.* tables so nothing is local-only. The cloud copy is
@@ -4174,6 +4174,7 @@ const cloudSaveMaster = debounce(cloudSaveMasterNow, 600);
 // flash). If the cloud already has rows, they replace the local/built-in data. If the
 // cloud is empty (first login), pushes whatever's currently loaded UP to the cloud so
 // it becomes the source of truth from now on.
+let _masterPushedFp = null;   // what was last sent up, so an unchanged sheet is not re-sent
 async function cloudSyncMaster(){
   if(!window.sb) return;
   // A sheet dropped in this session WINS. This pull is async, so it used to land after the
@@ -4188,7 +4189,14 @@ async function cloudSyncMaster(){
   // cloud round-trip only learned to carry today - so the cloud copy is never the better one to
   // take when something is already loaded. Push the local sheet up instead, so the cloud
   // converges rather than fighting it.
-  if((STATE.raw.master || []).length){ cloudSaveMaster(); return; }
+  if((STATE.raw.master || []).length){
+    // Push it up only when it has actually changed. Making the local copy win meant every page
+    // load re-sent the whole sheet - a DELETE plus 2,393 INSERTs each time - which is pointless
+    // work against the database and needless load on it.
+    const fp = STATE.raw.master.length + ':' + (STATE.files.master || []).join(',');
+    if(fp !== _masterPushedFp){ _masterPushedFp = fp; cloudSaveMaster(); }
+    return;
+  }
   try{
     const { data, error } = await sb.from('master_products').select('*').eq('account_id', CUR_ACCT);
     if(error) throw error;
