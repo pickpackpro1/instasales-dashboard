@@ -4051,7 +4051,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-09-d';
+const BUILD_ID = '2026-09-09-e';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -6215,6 +6215,37 @@ function renderCostBook(){
       }
       L.push('master rows ' + mr.length + ', with id+sku ' + withIdSku
         + ' | files.master ' + JSON.stringify(STATE.files.master || []));
+      // A fingerprint of the COSTS, so two browsers can be compared directly. When one has
+      // loaded a shared copy that dropped columns, the sales figures match and only these
+      // differ - which is exactly what a "same revenue, different profit" report looks like.
+      {
+        const sum = k => mr.reduce((a, r) => a + (parseFloat(r[k]) || 0), 0);
+        const tagged = mr.filter(r => fixText(r['SKU CHANNEL'])).length;
+        const withFee = mr.filter(r => (parseFloat(r['FBA Fees']) || 0) > 0).length;
+        const withBship = mr.filter(r => (parseFloat(r.buyer_shipping_per_unit) || 0) > 0).length;
+        L.push('cost fingerprint buying=' + sum('buying_cost_per_unit').toFixed(2)
+          + ' oper=' + sum('operational_cost_per_unit').toFixed(2)
+          + ' ship=' + sum('shipping_cost_per_unit').toFixed(2)
+          + ' | SKU CHANNEL set on ' + tagged
+          + ' | FBA Fees > 0 on ' + withFee
+          + ' | buyer shipping set on ' + withBship
+          + ' | cost book entries ' + Object.keys(COSTBOOK || {}).length);
+      }
+      // What each channel actually computed for the current filters, so a difference in the
+      // figures on screen can be told from a difference in the data behind them.
+      {
+        const bits = [];
+        for(const ch of ALL_CH){
+          const rows = STATE.channels[ch];
+          if(!rows || !rows.length) continue;
+          const t = totalsOf(rows);
+          bits.push(CH_NAME[ch] + ' rev=' + (t.revenue_gross||0).toFixed(0)
+            + ' profit=' + (t.net_profit_ex||0).toFixed(0)
+            + ' units=' + (t.units||0));
+        }
+        L.push('computed now [' + (STATE.dateFrom||'all') + '..' + (STATE.dateTo||'all') + '] '
+          + (bits.length ? bits.join(' | ') : 'no channels computed'));
+      }
       L.push('master platforms ' + JSON.stringify(perPlat));
       L.push('master headers ' + JSON.stringify(mr.length ? Object.keys(mr[0]) : []));
       const n = t => (STATE.raw[t] || []).length;
