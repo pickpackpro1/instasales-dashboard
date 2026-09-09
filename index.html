@@ -4051,7 +4051,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-09-e';
+const BUILD_ID = '2026-09-09-f';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5669,6 +5669,37 @@ function TYPE_CH_FROM_NAME(name){
 // with whatever was effective on 4 Aug, even after you enter a new price today.
 //   COSTBOOK[asin] = {name, fbm:[{from,buy,ship,oper,ref}], fba:[{from,buy,fee,oper,ref}]}
 // Versions are kept sorted oldest-first; the one in force is the last with from <= date.
+// ---- Price Book ----
+// Selling prices you set by hand, kept OUTSIDE the master sheet.
+//
+// They used to be written onto the master row as selling_price, which meant a re-upload of the
+// sheet wiped them: the sheet has no selling_price column, so every product was rebuilt without
+// one and the figure silently fell back to the average taken from the order files. Held here
+// instead - keyed the same way the Cost Book is - a price survives re-uploading the sheet, and
+// only changes when you change it.
+const LS_PRICEBOOK = 'mcpd_pricebook';
+let PRICEBOOK = {};        // "fam|ID" -> number
+function loadPriceBook(){
+  try{ PRICEBOOK = JSON.parse(store.get(lsKey(LS_PRICEBOOK))) || {}; }catch(e){ PRICEBOOK = {}; }
+}
+function savePriceBook(){
+  try{ store.set(lsKey(LS_PRICEBOOK), JSON.stringify(PRICEBOOK)); }catch(e){}
+  cloudSaveCostBook();     // rides along in the same settings row
+}
+// The id a price is filed under: whatever that channel keys its sales on, so it lines up with
+// the reports and with the Cost Book.
+function priceKeyFor(e){
+  const ck = chOfPlat(e.plat);
+  const fam = ck === 'amazon2' ? 'amazon' : ck;
+  const id = fam === 'amazon' ? (e.asin || e.pid || e.sku)
+           : fam === 'ebay'   ? (e.pid || e.sku) : (e.sku || e.pid);
+  return id ? cbId(fam, id) : '';
+}
+function manualPriceFor(e){
+  const k = priceKeyFor(e);
+  const v = k ? PRICEBOOK[k] : null;
+  return (v != null && v !== '' && +v > 0) ? +v : null;
+}
 const LS_COSTBOOK = 'mcpd_costbook';
 let COSTBOOK = {};
 function loadCostBook(){
@@ -5685,7 +5716,7 @@ async function cloudSaveCostBookNow(){
   try{
     await cloudEnsureAccount();
     const { error } = await sb.from('settings')
-      .upsert({ account_id: CUR_ACCT, data: { costBook: COSTBOOK }, updated_at: new Date().toISOString() });
+      .upsert({ account_id: CUR_ACCT, data: { costBook: COSTBOOK, priceBook: PRICEBOOK }, updated_at: new Date().toISOString() });
     if(error) throw error;
     setSyncBadge('idle');
   }catch(e){ console.warn('cloud sync (cost book) failed:', e); setSyncBadge('error'); }
@@ -5696,6 +5727,11 @@ async function cloudSyncCostBook(){
   try{
     const { data, error } = await sb.from('settings').select('data').eq('account_id', CUR_ACCT).maybeSingle();
     if(error) throw error;
+    const pb = data && data.data && data.data.priceBook;
+    if(pb && Object.keys(pb).length){
+      PRICEBOOK = pb;
+      try{ store.set(lsKey(LS_PRICEBOOK), JSON.stringify(PRICEBOOK)); }catch(e){}
+    }
     const cb = data && data.data && data.data.costBook;
     if(cb && Object.keys(cb).length){
       COSTBOOK = cb;
@@ -8363,6 +8399,11 @@ function renderProducts(){
   // achieved average over whatever was entered, so a saved edit looked like it had reverted.
   // With no price set it still falls back to what the product actually sold at.
   const priceOf = e => {
+    // Price Book first - that is the one you set by hand, and nothing else may overwrite it.
+    // Then the sheet, for anyone whose master DOES carry a selling_price column. Only with
+    // neither does the average from the order files stand in.
+    const m = manualPriceFor(e);
+    if(m != null) return m;
     if(e.selling_price != null && e.selling_price > 0) return e.selling_price;
     return achievedPrice(e);
   };
@@ -8432,8 +8473,16 @@ function renderProducts(){
     <td title="${esc(e.name)}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc((e.name||'').substr(0,34))}</td>
     <td class="num" style="background:#eef6fd">${numIn(i,'price', P != null ? P : '', '0.01')}${(() => {
       const a = achievedPrice(e);
-      if(a == null || P == null) return '';
-      if(Math.abs(a - P) < 0.005) return '<div style="font-size:10px;color:var(--muted)">as sold</div>';
+      const manual = manualPriceFor(e) != null;
+      if(P == null) return '';
+      // Whether this figure is yours or the order file's, said plainly - the old label showed
+      // only the achieved average, so a set price and a derived one looked identical.
+      if(manual) return `<div style="font-size:10px;color:#1c7c54" title="${
+        esc('Set by you and kept in the Price Book, so re-uploading the master sheet will not change it'
+          + (a != null ? '. Actually sold at ' + fmtGBP(a) + ' over the loaded period.' : '.'))
+        }">set by you${a != null && Math.abs(a - P) >= 0.005 ? ' \u00b7 sold at ' + fmtGBP(a) : ''}</div>`;
+      if(a == null) return '';
+      if(Math.abs(a - P) < 0.005) return '<div style="font-size:10px;color:var(--muted)" title="Taken from your order files - type a price here to fix it instead">as sold</div>';
       return `<div style="font-size:10px;color:var(--muted)" title="Average actually achieved per unit over the loaded period. Your typed price is what the ROI below is based on.">sold at ${fmtGBP(a)}</div>`;
     })()}</td>
     <td class="num" style="background:#eef6fd">${chOf(e.plat) === 'tiktok'
@@ -8473,7 +8522,15 @@ function renderProducts(){
               : ['ref','aff','sads','reg'].includes(f) ? v/100 : v;
     const tgt = ensureMasterRow(e);
     for(const r of tgt.rows) r[field] = (val == null ? '' : val);
-    if(f==='price') e.selling_price = val;
+    if(f==='price'){
+      e.selling_price = val;
+      // and into the Price Book, which the sheet cannot overwrite
+      const pk = priceKeyFor(e);
+      if(pk){
+        if(val == null || !(val > 0)) delete PRICEBOOK[pk]; else PRICEBOOK[pk] = val;
+        savePriceBook();
+      }
+    }
     else if(f==='bship') e.bship = val;
     else if(f==='buy') e.buying = val;
     else if(f==='oper') e.oper = val;
@@ -8553,7 +8610,8 @@ function renderProducts(){
       if(td) td.innerHTML = P != null ? '<b>' + fmtGBP(P + bship) + '</b>' : '<span style="color:var(--muted)">–</span>';
     }
     const saved = {
-      price: e.selling_price, buy: base.buying, oper: base.oper, ship: base.shipping,
+      price: manualPriceFor(e) != null ? manualPriceFor(e) : e.selling_price,
+      buy: base.buying, oper: base.oper, ship: base.shipping,
       ref: base.referral, aff: e.aff, sads: e.shopads, reg: e.reg, fixed: e.fixedu,
       bship: (e.bship != null && e.bship !== '') ? +e.bship : (chOf(e.plat) === 'tiktok' ? TT_BUYER_SHIPPING : null)
     };
@@ -10468,6 +10526,7 @@ function switchAccount(id){
   restoreSkuMap();
   loadStock();
   loadCmpNotes();
+  loadPriceBook();
   loadPnlHist();
   loadCostBook();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
@@ -10518,6 +10577,7 @@ function startApp(){
   restoreSkuMap();
   loadStock();
   loadCmpNotes();
+  loadPriceBook();
   loadPnlHist();
   loadCostBook();
   // background: cloud copy wins over local/built-in once each arrives
