@@ -782,7 +782,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
       <div class="sub-title">Edit any value and it saves instantly &mdash; Profit/ROI/Margin per unit recalculate live. <b>Buying, Operational, Shipping and Referral write straight into Cost Manager</b>, dated the day your loaded reports are costed against, so the change drives the P&amp;L and past reports keep the cost that applied at the time. Everything else (selling price, the eBay and TikTok rates) is stored on the product itself. Selling £ comes from your sales files when loaded, or type it here.</div>
       <div id="costGaps"></div>
       <div class="table-wrap" style="max-height:620px"><table id="prodTable">
-        <thead><tr><th>Platform</th><th title="An Amazon ASIN is two offers - FBM and FBA - and they cost different amounts, so each has its own row">Fulfilment</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="What the fee actually costs at the selling price, VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
+        <thead><tr><th>Platform</th><th title="An Amazon ASIN is two offers - FBM and FBA - and they cost different amounts, so each has its own row">Fulfilment</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num" style="background:#eef6fd" title="TikTok: what the buyer pays for delivery. TikTok revenue is the SKU subtotal, which leaves this out, so it is added back before profit. Blank uses the £3.77 default.">Buyer shipping £</th><th class="num" style="background:#eef6fd" title="Selling £ plus Buyer shipping - what the buyer actually pays, and what profit is worked out on">Total selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="What the fee actually costs at the selling price, VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
         <tbody></tbody>
       </table></div>
     </div>
@@ -1574,6 +1574,8 @@ const MASTER_ALIASES = {
   operational_cost_per_unit: ['operational_cost_per_unit', 'operational cost per unit', 'operational cost', 'operational'],
   shipping_cost_per_unit:    ['shipping_cost_per_unit', 'shipping cost per unit', 'shipping cost', 'shipping'],
   selling_price:             ['selling_price', 'selling price', 'price'],
+  buyer_shipping_per_unit:   ['buyer_shipping_per_unit', 'buyer shipping per unit', 'buyer shipping',
+                              'buyer paid shipping', 'shipping charged to buyer', 'delivery charged'],
   'SKU CHANNEL':             ['sku channel', 'fulfilment channel', 'fulfillment channel', 'fulfilment', 'fulfillment']
 };
 let _mAliasFor = null;
@@ -2717,6 +2719,7 @@ function buildMaster(){
     const fba = /fba|afn|amazon/i.test(chanRaw) || (!chanRaw && /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(sku));
     const e = {name: fixText(r['Name']), buying: cleanMoney(r['buying_cost_per_unit']), oper: cleanMoney(r['operational_cost_per_unit']), shipping: cleanMoney(r['shipping_cost_per_unit']), referral: ref,
       selling_price: opt('selling_price'),
+      bship: opt('buyer_shipping_per_unit'),
       aff: opt('affiliate_pct'), shopads: opt('shopads_pct'), reg: opt('regulatory_pct'), fixedu: opt('fixed_fee_per_unit'),
       fbaFee: opt('FBA Fees') != null ? opt('FBA Fees') : opt('FBA Fee'),
       chan: chanRaw, fba,
@@ -2784,6 +2787,7 @@ function buildMaster(){
         // TikTok rates. Dropping them blanked Selling £ (and with it Profit/ROI/Margin) on
         // every product the book covers, and silently reverted those rates to the defaults.
         e.selling_price = prior.selling_price;
+        e.bship = prior.bship;
         e.aff = prior.aff; e.shopads = prior.shopads; e.reg = prior.reg; e.fixedu = prior.fixedu;
         e.chan = prior.chan;
         // a version with no referral % of its own must not wipe the sheet's rate
@@ -4047,8 +4051,11 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-09-b';
-const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency'];
+const BUILD_ID = '2026-09-09-d';
+// What a TikTok buyer pays for delivery, where the product carries no figure of its own.
+// Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
+const TT_BUYER_SHIPPING = 3.77;
+const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency','buyer_shipping_per_unit'];
 // ==================== CLOUD SYNC (Supabase) ====================
 // Mirrors local saves into the instasales.* tables so nothing is local-only. The cloud copy is
 // the fallback for a machine with nothing cached, NOT the authority: it is reconstructed from
@@ -4162,11 +4169,12 @@ async function cloudSaveMasterNow(){
       // Without these two the round-trip loses the FBA/FBM tag and the FBA fee, so a restored
       // sheet costs every offer as FBM. Sent only when the table has the columns - see below.
       sku_channel: (r['SKU CHANNEL'] != null && String(r['SKU CHANNEL']).trim() !== '') ? String(r['SKU CHANNEL']).trim() : null,
-      fba_fees: numOrNull(r['FBA Fees'] != null ? r['FBA Fees'] : r['FBA Fee'])
+      fba_fees: numOrNull(r['FBA Fees'] != null ? r['FBA Fees'] : r['FBA Fee']),
+      buyer_shipping_per_unit: numOrNull(r.buyer_shipping_per_unit)
     }));
     // Older accounts have a table without those two columns; the insert would fail wholesale
     // and nothing would save. Drop them and retry rather than lose the whole sheet.
-    const stripExtras = list => list.map(o => { const c = Object.assign({}, o); delete c.sku_channel; delete c.fba_fees; return c; });
+    const stripExtras = list => list.map(o => { const c = Object.assign({}, o); delete c.sku_channel; delete c.fba_fees; delete c.buyer_shipping_per_unit; return c; });
     const { error: delErr } = await sb.from('master_products').delete().eq('account_id', CUR_ACCT);
     if(delErr) throw delErr;
     let extrasOk = true;
@@ -4225,7 +4233,8 @@ async function cloudSyncMaster(){
         shipping_cost_per_unit: r.shipping_cost_per_unit,
         'Refferal fee %': r.referral_pct, affiliate_pct: r.affiliate_pct, shopads_pct: r.shopads_pct,
         regulatory_pct: r.regulatory_pct, fixed_fee_per_unit: r.fixed_fee_per_unit, selling_price: r.selling_price,
-        'SKU CHANNEL': r.sku_channel || '', 'FBA Fees': r.fba_fees
+        'SKU CHANNEL': r.sku_channel || '', 'FBA Fees': r.fba_fees,
+        buyer_shipping_per_unit: r.buyer_shipping_per_unit
       }));
       STATE.files.master = ['(saved copy)'];
       STATE.master = buildMaster();
@@ -8266,7 +8275,7 @@ function renderProducts(){
   renderCostGaps();
   const tb = document.querySelector('#prodTable tbody');
   if(!STATE.raw.master.length){
-    tb.innerHTML = '<tr><td colspan="19" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="21" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
     document.getElementById('prodCount').textContent = '';
     return;
   }
@@ -8327,6 +8336,13 @@ function renderProducts(){
     return achievedPrice(e);
   };
   // c = that offer's costs (its own Cost Book channel), so FBA and FBM price out separately.
+  // Buyer-paid delivery, TikTok only. Their revenue figure is the SKU subtotal, so this is
+  // genuinely on top rather than already counted; every other channel reports a price the
+  // buyer's postage is already inside, and adding anything there would double-count it.
+  const buyerShipOf = e => {
+    if(chOf(e.plat) !== 'tiktok') return 0;
+    return (e.bship != null && e.bship !== '') ? +e.bship : TT_BUYER_SHIPPING;
+  };
   const prodEcon = (e, P, c) => {
     if(P == null || !(P > 0)) return null;
     c = c || e;
@@ -8357,7 +8373,9 @@ function renderProducts(){
     const e = o.e, chan = o.chan;
     const P = priceOf(e);
     const c = costFor(e, chan);
-    const ec = prodEcon(e, P, c);
+    const bship = buyerShipOf(e);
+    // Profit, ROI and margin are worked out on what the buyer actually pays.
+    const ec = prodEcon(e, P == null ? null : P + bship, c);
     const fam = chOf(e.plat) === 'amazon2' ? 'amazon' : chOf(e.plat);
     const isFba = chan === 'fba';
     const tag = fam === 'amazon'
@@ -8387,6 +8405,11 @@ function renderProducts(){
       if(Math.abs(a - P) < 0.005) return '<div style="font-size:10px;color:var(--muted)">as sold</div>';
       return `<div style="font-size:10px;color:var(--muted)" title="Average actually achieved per unit over the loaded period. Your typed price is what the ROI below is based on.">sold at ${fmtGBP(a)}</div>`;
     })()}</td>
+    <td class="num" style="background:#eef6fd">${chOf(e.plat) === 'tiktok'
+      ? numIn(i,'bship', e.bship != null && e.bship !== '' ? e.bship : TT_BUYER_SHIPPING, '0.01')
+      : '<span style="color:var(--muted)">–</span>'}</td>
+    <td class="num prod-eco" style="background:#eef6fd" data-eco-i="${i}" data-eco="total">${
+      P != null ? `<b>${fmtGBP(P + bship)}</b>` : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${numIn(i,'buy',c.buying,'0.01')}</td>
     <td class="num">${numIn(i,'oper',c.oper,'0.01')}</td>
     <td class="num"${isFba?' title="FBA fulfilment fee"':''}>${numIn(i,'ship',c.shipping,'0.01')}</td>
@@ -8409,12 +8432,18 @@ function renderProducts(){
     const e = o.e, rowChan = o.chan;
     let v = parseFloat(rawValue);
     if(isNaN(v) || v < 0) v = 0;
-    const field = {price:'selling_price', buy:'buying_cost_per_unit', oper:'operational_cost_per_unit', ship:'shipping_cost_per_unit', ref:'Refferal fee %', aff:'affiliate_pct', sads:'shopads_pct', reg:'regulatory_pct', fixed:'fixed_fee_per_unit'}[f];
+    // Buyer shipping is the one field where blank is meaningful: it means "use the default",
+    // whereas a typed 0 means delivery really is free. Coercing blank to 0 like the others did
+    // both hid the default and left no way back to it.
+    const blank = String(rawValue == null ? '' : rawValue).trim() === '';
+    const field = {price:'selling_price', bship:'buyer_shipping_per_unit', buy:'buying_cost_per_unit', oper:'operational_cost_per_unit', ship:'shipping_cost_per_unit', ref:'Refferal fee %', aff:'affiliate_pct', sads:'shopads_pct', reg:'regulatory_pct', fixed:'fixed_fee_per_unit'}[f];
     if(!field) return {toBook:'', created:false};
-    const val = ['ref','aff','sads','reg'].includes(f) ? v/100 : v;
+    const val = (f === 'bship' && blank) ? null
+              : ['ref','aff','sads','reg'].includes(f) ? v/100 : v;
     const tgt = ensureMasterRow(e);
-    for(const r of tgt.rows) r[field] = val;
+    for(const r of tgt.rows) r[field] = (val == null ? '' : val);
     if(f==='price') e.selling_price = val;
+    else if(f==='bship') e.bship = val;
     else if(f==='buy') e.buying = val;
     else if(f==='oper') e.oper = val;
     else if(f==='ship') e.shipping = val;
@@ -8484,16 +8513,25 @@ function renderProducts(){
     };
     const typedPrice = val('price');
     const P = typedPrice != null && typedPrice > 0 ? typedPrice : priceOf(e);
-    const ec = prodEcon(draft, P, costs);
+    const typedShip = val('bship');
+    draft.bship = typedShip != null ? typedShip : e.bship;
+    const bship = buyerShipOf(draft);
+    const ec = prodEcon(draft, P == null ? null : P + bship, costs);
+    {   // keep the total column in step while typing
+      const td = tb.querySelector('.prod-eco[data-eco-i="' + i + '"][data-eco="total"]');
+      if(td) td.innerHTML = P != null ? '<b>' + fmtGBP(P + bship) + '</b>' : '<span style="color:var(--muted)">–</span>';
+    }
     const saved = {
       price: e.selling_price, buy: base.buying, oper: base.oper, ship: base.shipping,
-      ref: base.referral, aff: e.aff, sads: e.shopads, reg: e.reg, fixed: e.fixedu
+      ref: base.referral, aff: e.aff, sads: e.shopads, reg: e.reg, fixed: e.fixedu,
+      bship: (e.bship != null && e.bship !== '') ? +e.bship : (chOf(e.plat) === 'tiktok' ? TT_BUYER_SHIPPING : null)
     };
     const same = (a, b) => (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 0.0001);
     const dirty = !same(typedPrice, saved.price) || !same(val('buy'), saved.buy)
       || !same(val('oper'), saved.oper) || !same(val('ship'), saved.ship)
       || !same(pct('ref'), saved.ref) || !same(pct('aff'), saved.aff)
-      || !same(pct('sads'), saved.sads) || !same(pct('reg'), saved.reg) || !same(val('fixed'), saved.fixed);
+      || !same(pct('sads'), saved.sads) || !same(pct('reg'), saved.reg) || !same(val('fixed'), saved.fixed)
+      || !same(typedShip, saved.bship);
     const put = (which, html) => {
       const td = tb.querySelector('.prod-eco[data-eco-i="' + i + '"][data-eco="' + which + '"]');
       if(!td) return;
