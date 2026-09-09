@@ -1839,6 +1839,19 @@ function mapSkuIdx(){
   }
   return _mapIdx;
 }
+// A SKU that is just the listing id - "WS-356796795633" against item 356796795633 - names
+// nothing you could type into a channel. The master sheet carries 66 of these on eBay, standing
+// in for listings whose real SKU was never filled in. Recognised so a genuine name from the
+// transaction report's Custom label is preferred, while the placeholder still shows when it is
+// the only thing available: hiding it would leave the row nameless, which is worse.
+function isPlaceholderSku(sku, id){
+  const t = String(sku == null ? '' : sku).trim().toUpperCase();
+  const k = String(id == null ? '' : id).trim().toUpperCase();
+  if(!t || !k) return false;
+  if(t === k) return true;
+  const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('^[A-Z]{0,4}[-_ ]?' + esc + '$').test(t);
+}
 let _skuIdx = null, _skuIdxFor = null;
 function sellerSkusFor(channel, key, ful){
   const raw = aliasMasterRows(STATE.raw.master || []);
@@ -1891,7 +1904,10 @@ function sellerSkusFor(channel, key, ful){
   // ful: undefined = every offer, true = FBA only, false = FBM only
   if(ful === true || ful === false) hit = hit.filter(x => x.fba === ful);
   // a key that IS the sku (TikTok, Shopify) needs no second line
-  return hit.map(x => x.sku).filter(x => String(x).trim().toUpperCase() !== K);
+  const names = hit.map(x => x.sku).filter(x => String(x).trim().toUpperCase() !== K);
+  // Stable partition, not a full sort: a real name wins over a placeholder, and the order
+  // within each group is left as the sources supplied it.
+  return names.filter(x => !isPlaceholderSku(x, key)).concat(names.filter(x => isPlaceholderSku(x, key)));
 }
 // ================= zero-rated (non-VAT) products =================
 // UK zero-rated goods - sanitary/period products, and barley straw as animal feed. Zero-rated
@@ -4031,7 +4047,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-08-g';
+const BUILD_ID = '2026-09-09-a';
 const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency'];
 // ==================== CLOUD SYNC (Supabase) ====================
 // Mirrors local saves into the instasales.* tables so nothing is local-only. The cloud copy is
@@ -8350,7 +8366,19 @@ function renderProducts(){
     return `<tr>
     <td><span class="chip ${chOf(e.plat)}">${CH_NAME[chOf(e.plat)]}</span></td>
     <td>${tag}</td>
-    <td title="${esc(e.sku)}">${esc((e.sku||'').substr(0,26))}</td>
+    <td>${(() => {
+      // Show the sheet's SKU unless it is a placeholder standing in for the listing id, in
+      // which case a real name from the reports wins. The sheet's own value stays on hover, so
+      // nothing is hidden - you can still see what the row actually says.
+      const ck2 = chOf(e.plat);
+      const idv = (ck2 === 'amazon' || ck2 === 'amazon2') ? (e.asin || e.pid) : ck2 === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid);
+      const own = e.sku || '';
+      if(!isPlaceholderSku(own, idv)) return `<span title="${esc(own)}">${esc(own.substr(0,26))}</span>`;
+      const better = sellerSkusFor(ck2, idv).find(x => !isPlaceholderSku(x, idv));
+      return better
+        ? `<span title="${esc('From your reports. The master sheet has "' + own + '" here, which is just the listing id.')}">${esc(better.substr(0,26))}<span style="color:var(--muted)"> ✦</span></span>`
+        : `<span title="${esc(own + ' - a placeholder for the listing id; no report names this listing')}" style="color:var(--muted)">${esc(own.substr(0,26))}</span>`;
+    })()}</td>
     <td>${esc(e.asin || e.pid || '')}</td>
     <td title="${esc(e.name)}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc((e.name||'').substr(0,34))}</td>
     <td class="num" style="background:#eef6fd">${numIn(i,'price', P != null ? P : '', '0.01')}${(() => {
