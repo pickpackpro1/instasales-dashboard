@@ -4047,7 +4047,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-09-a';
+const BUILD_ID = '2026-09-09-b';
 const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per_unit','operational_cost_per_unit','shipping_cost_per_unit','Refferal fee %','Referral fee %','selling_price','affiliate_pct','shopads_pct','regulatory_pct','fixed_fee_per_unit','SKU CHANNEL','FBA Fees','country','currency'];
 // ==================== CLOUD SYNC (Supabase) ====================
 // Mirrors local saves into the instasales.* tables so nothing is local-only. The cloud copy is
@@ -8396,9 +8396,9 @@ function renderProducts(){
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'sads', (e.shopads != null ? e.shopads : 0.02)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'reg', (e.reg != null ? e.reg : EBAY_REG_PCT)*100, '0.05') : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'fixed', e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER, '0.01') : '<span style="color:var(--muted)">–</span>'}</td>
-    <td class="num" style="background:#f4fbf7">${ec ? pill(ec.profit, fmtGBP) : '<span class="pill zero">no price</span>'}</td>
-    <td class="num" style="background:#f4fbf7">${ec && ec.roi != null ? pill(ec.roi, fmtPct) : '-'}</td>
-    <td class="num" style="background:#f4fbf7">${ec && ec.margin != null ? pill(ec.margin, fmtPct) : '-'}</td>
+    <td class="num prod-eco" data-eco-i="${i}" data-eco="profit" style="background:#f4fbf7">${ec ? pill(ec.profit, fmtGBP) : '<span class="pill zero">no price</span>'}</td>
+    <td class="num prod-eco" data-eco-i="${i}" data-eco="roi" style="background:#f4fbf7">${ec && ec.roi != null ? pill(ec.roi, fmtPct) : '-'}</td>
+    <td class="num prod-eco" data-eco-i="${i}" data-eco="margin" style="background:#f4fbf7">${ec && ec.margin != null ? pill(ec.margin, fmtPct) : '-'}</td>
     <td style="white-space:nowrap"><button class="btn" style="padding:4px 9px;font-size:11px;background:var(--green);border-color:var(--green)" data-psave="${i}" title="Save every figure in this row now, including one you are still typing">✓</button>
       <button class="btn danger" style="padding:4px 9px;font-size:11px;margin-left:4px" data-pdel="${i}" title="Delete this product from the master sheet">✕</button></td>
   </tr>`;
@@ -8451,6 +8451,67 @@ function renderProducts(){
     keepFocus('#prodTable', renderProducts);   // refresh the computed Profit / ROI / Margin columns
     showBanner(msg, 'success');
   };
+  // Profit, ROI and margin used to move only once a field had been committed, so there was no
+  // way to see what a price WOULD do before saving it. Recomputed on every keystroke from what
+  // is in the boxes right now - nothing is written, so this is purely a preview; the figures
+  // are marked as such until the row is saved and revert on Escape.
+  const prodPreview = (i) => {
+    const o = PROD_VIEW[parseInt(i)];
+    if(!o) return;
+    const row = tb.querySelector('input[data-f][data-i="' + i + '"]');
+    if(!row) return;
+    const val = f => {
+      const el = tb.querySelector('input[data-f="' + f + '"][data-i="' + i + '"]');
+      if(!el || el.value.trim() === '') return null;
+      const v = parseFloat(el.value);
+      return isNaN(v) ? null : v;
+    };
+    const pct = f => { const v = val(f); return v == null ? null : v/100; };
+    // A draft of the entry and its costs, exactly as prodEcon would see them after saving.
+    const e = o.e;
+    const draft = Object.assign({}, e, {
+      aff:     pct('aff')  != null ? pct('aff')  : e.aff,
+      shopads: pct('sads') != null ? pct('sads') : e.shopads,
+      reg:     pct('reg')  != null ? pct('reg')  : e.reg,
+      fixedu:  val('fixed') != null ? val('fixed') : e.fixedu
+    });
+    const base = costFor(e, o.chan);
+    const costs = {
+      buying:   val('buy')  != null ? val('buy')  : base.buying,
+      oper:     val('oper') != null ? val('oper') : base.oper,
+      shipping: val('ship') != null ? val('ship') : base.shipping,
+      referral: pct('ref')  != null ? pct('ref')  : base.referral
+    };
+    const typedPrice = val('price');
+    const P = typedPrice != null && typedPrice > 0 ? typedPrice : priceOf(e);
+    const ec = prodEcon(draft, P, costs);
+    const saved = {
+      price: e.selling_price, buy: base.buying, oper: base.oper, ship: base.shipping,
+      ref: base.referral, aff: e.aff, sads: e.shopads, reg: e.reg, fixed: e.fixedu
+    };
+    const same = (a, b) => (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 0.0001);
+    const dirty = !same(typedPrice, saved.price) || !same(val('buy'), saved.buy)
+      || !same(val('oper'), saved.oper) || !same(val('ship'), saved.ship)
+      || !same(pct('ref'), saved.ref) || !same(pct('aff'), saved.aff)
+      || !same(pct('sads'), saved.sads) || !same(pct('reg'), saved.reg) || !same(val('fixed'), saved.fixed);
+    const put = (which, html) => {
+      const td = tb.querySelector('.prod-eco[data-eco-i="' + i + '"][data-eco="' + which + '"]');
+      if(!td) return;
+      td.innerHTML = html;
+      td.style.background = dirty ? '#fff8d6' : '#f4fbf7';
+      td.title = dirty ? 'Unsaved - what this row would make at the figures currently typed in. Press Enter or the tick to save, Escape to undo.' : '';
+    };
+    put('profit', ec ? pill(ec.profit, fmtGBP) : '<span class="pill zero">no price</span>');
+    put('roi',    ec && ec.roi    != null ? pill(ec.roi, fmtPct)    : '-');
+    put('margin', ec && ec.margin != null ? pill(ec.margin, fmtPct) : '-');
+  };
+  tb.querySelectorAll('input[data-f]').forEach(inp => {
+    inp.addEventListener('input', () => prodPreview(inp.dataset.i));
+    // Escape puts the row back to what is saved, so a what-if can be abandoned cleanly.
+    inp.addEventListener('keydown', ev => {
+      if(ev.key === 'Escape'){ ev.preventDefault(); keepFocus('#prodTable', renderProducts); }
+    });
+  });
   tb.querySelectorAll('input[data-f]').forEach(inp => inp.addEventListener('change', () => {
     const o = PROD_VIEW[parseInt(inp.dataset.i)];
     const res = prodWriteField(o, inp.dataset.f, inp.value);
