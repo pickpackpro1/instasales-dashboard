@@ -1430,9 +1430,29 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
 // the app keeps working - persistence is just disabled instead of crashing the whole script.
 const store = {
   get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
-  set(k,v){ try{ localStorage.setItem(k,v); return true; }catch(e){ return false; } },
+  // A full store used to fail silently here, and no caller checks the result.
+  set(k,v){ try{ localStorage.setItem(k,v); return true; }catch(e){ storeFailed(k, e); return false; } },
   remove(k){ try{ localStorage.removeItem(k); }catch(e){} }
 };
+// Reported once per kind of data per session, rather than on every attempt.
+var STORE_FAIL_SEEN = {};
+function storeFailed(k, e){
+  const base = String(k).replace(/__.*$/, '');
+  if(STORE_FAIL_SEEN[base]) return;
+  STORE_FAIL_SEEN[base] = true;
+  const NAMES = {mcpd_master:'the master sheet', mcpd_costbook:'the Cost Book', mcpd_pricebook:'set selling prices',
+    mcpd_history:'saved history', mcpd_stock:'stock tracking', mcpd_opex:'OpEx', mcpd_tasks:'tasks',
+    mcpd_skumap:'the SKU map', mcpd_cmp_notes:'Comparison PNL notes', mcpd_pnl_hist:'imported P&L history',
+    mcpd_acct_settings:'VAT and fee settings'};
+  const what = NAMES[base] || base;
+  const full = e && (e.name === 'QuotaExceededError' || e.code === 22 || /quota/i.test(e.message || ''));
+  console.warn('local save failed for ' + base + ':', e);
+  setTimeout(() => { try{
+    showBanner('\u26a0 ' + (full ? "This browser's storage is full, so " + what + ' could not be kept here.'
+                                 : 'This browser refused to keep ' + what + '.')
+      + ' It still goes to the cloud while sync works, but this browser will not have it after a reload.', 'error');
+  }catch(err){} }, 0);
+}
 // IndexedDB key-value store for LARGE data (uploaded files) - localStorage caps at ~5MB,
 // IndexedDB holds far more. Stores objects directly (structured clone, no JSON needed).
 const IDB = (() => {
@@ -2640,9 +2660,12 @@ async function cloudSaveFileRowsNow(){
     if(listErr) throw listErr;
     const localKeys = new Set(rows.map(r => r.file_type + '|' + r.file_name));
     const staleIds = (cloudFiles || []).filter(f => !localKeys.has(f.file_type + '|' + f.file_name)).map(f => f.id);
-    if(staleIds.length) await sb.from('uploaded_files').delete().in('id', staleIds);
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (uploaded files) failed:', e); setSyncBadge('error'); }
+    if(staleIds.length){
+      const { error: staleErr } = await sb.from('uploaded_files').delete().in('id', staleIds);
+      if(staleErr) throw staleErr;
+    }
+    syncOk('uploaded files');
+  }catch(e){ syncFailed('uploaded files', cloudSaveFileRowsNow, e); }
 }
 const cloudSaveFileRows = debounce(cloudSaveFileRowsNow, 1200);
 async function cloudSyncFileRows(){
@@ -4051,7 +4074,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-09-f';
+const BUILD_ID = '2026-09-10-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -4064,10 +4087,79 @@ const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per
 // over whatever local/built-in data was shown first.
 function debounce(fn, ms){ let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const numOrNull = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
+// ---- Failed cloud saves ----
+// Every save used to catch its own failure, log it, and set the badge to "Sync failed -
+// retrying". Nothing retried. The save was dropped, and stayed dropped until that same data
+// happened to be edited again - so anything that failed during a timeout or an outage was never
+// sent, while the screen said it was being dealt with.
+//
+// Now a failure is retried with backoff (2s, 4s, 8s ... capped at 60s), again whenever the
+// browser comes back online or the tab is looked at, and the badge names what is still unsaved.
+// Each save sends the whole current state, so running one again is always safe.
+// `var`: setSyncBadge is a hoisted declaration and can run before these lines do.
+var SYNC_RETRY = {};                 // label -> {tries, timer, fn, gaveUp}
+var SYNC_MAX_TRIES = 10;
+var SYNC_WHAT = {'cost book': 'Costs, set selling prices, VAT settings and Comparison PNL notes',
+  'master sheet': 'The master sheet', 'SKU map': 'The SKU map', 'uploaded files': 'Uploaded files',
+  'stock': 'Stock tracking', 'history': 'Saved history', 'OpEx': 'OpEx', 'tasks': 'Tasks',
+  'account list': 'The account list', 'dashboard settings': 'Dashboard settings'};
+function syncFailed(label, fn, err){
+  console.warn('cloud sync (' + label + ') failed:', err);
+  const r = SYNC_RETRY[label] = SYNC_RETRY[label] || {tries:0, timer:null, fn, gaveUp:false};
+  r.fn = fn;
+  r.tries++;
+  if(r.timer){ clearTimeout(r.timer); r.timer = null; }
+  if(r.tries >= SYNC_MAX_TRIES){
+    if(!r.gaveUp){
+      r.gaveUp = true;
+      const why = err && (err.message || err.details || err.code);
+      try{ showBanner('\u26a0 ' + (SYNC_WHAT[label] || label) + ' did not reach the cloud after '
+        + SYNC_MAX_TRIES + ' attempts' + (why ? ' (' + why + ')' : '') + '. It is kept in this browser and '
+        + 'will be sent when the connection is back - until then other browsers will not see it.', 'error'); }catch(e){}
+    }
+    setSyncBadge('error');
+    return;
+  }
+  setSyncBadge('error');
+  r.timer = setTimeout(() => runSyncRetry(label), Math.min(60000, 2000 * Math.pow(2, r.tries - 1)));
+}
+function syncOk(label){
+  const r = SYNC_RETRY[label];
+  if(r){ if(r.timer) clearTimeout(r.timer); delete SYNC_RETRY[label]; }
+  setSyncBadge('idle');
+}
+async function runSyncRetry(label){
+  const r = SYNC_RETRY[label];
+  if(!r || typeof r.fn !== 'function') return;
+  r.timer = null;
+  try{ await r.fn(); }catch(e){}
+  // Neither a success nor a new failure recorded: the save had nothing left to do.
+  if(SYNC_RETRY[label] === r && !r.timer && !r.gaveUp){ delete SYNC_RETRY[label]; setSyncBadge('idle'); }
+}
+function retryAllPendingSyncs(){
+  for(const label of Object.keys(SYNC_RETRY)){
+    const r = SYNC_RETRY[label];
+    if(r.gaveUp){ r.gaveUp = false; r.tries = SYNC_MAX_TRIES - 3; }
+    if(!r.timer) runSyncRetry(label);
+  }
+}
+window.addEventListener('online', retryAllPendingSyncs);
+document.addEventListener('visibilitychange', () => { if(!document.hidden) retryAllPendingSyncs(); });
 function setSyncBadge(state){
   const el = document.getElementById('cloudSyncBadge'); if(!el) return;
+  // Never "Synced" while something else is still waiting to get there.
+  const pending = Object.keys(SYNC_RETRY || {});
+  if(state === 'idle' && pending.length) state = 'error';
   el.className = 'cloud-sync-badge ' + state;
-  el.textContent = state === 'saving' ? '☁ Saving…' : state === 'error' ? '⚠ Sync failed - retrying' : '☁ Synced';
+  if(state === 'saving') el.textContent = '\u2601 Saving\u2026';
+  else if(state === 'error'){
+    const gave = pending.filter(l => SYNC_RETRY[l].gaveUp);
+    el.textContent = gave.length ? '\u26a0 Not saved: ' + gave.join(', ')
+                   : pending.length ? '\u26a0 Retrying: ' + pending.join(', ')
+                   : '\u26a0 Sync failed';
+  }
+  else el.textContent = '\u2601 Synced';
+  el.title = pending.length ? 'Waiting to reach the cloud: ' + pending.map(l => SYNC_WHAT[l] || l).join('; ') : '';
 }
 async function cloudEnsureAccount(){
   try{
@@ -4085,8 +4177,8 @@ async function cloudSaveAccountsNow(){
   try{
     const { error } = await sb.from('accounts').upsert(ACCOUNTS.map(a => ({ id: a.id, name: a.name })));
     if(error) throw error;
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (accounts) failed:', e); setSyncBadge('error'); }
+    syncOk('account list');
+  }catch(e){ syncFailed('account list', cloudSaveAccountsNow, e); }
 }
 const cloudSaveAccounts = debounce(cloudSaveAccountsNow, 600);
 function saveAccounts(){ store.set('mcpd_accounts', JSON.stringify(ACCOUNTS)); cloudSaveAccounts(); }
@@ -4119,8 +4211,8 @@ async function cloudSaveGlobalSettingsNow(){
     const data = { dash_kpis: getEnabledKpis() };
     const { error } = await sb.from('settings').upsert({ account_id: GLOBAL_SETTINGS_ID, data, updated_at: new Date().toISOString() });
     if(error) throw error;
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (settings) failed:', e); setSyncBadge('error'); }
+    syncOk('dashboard settings');
+  }catch(e){ syncFailed('dashboard settings', cloudSaveGlobalSettingsNow, e); }
 }
 const cloudSaveGlobalSettings = debounce(cloudSaveGlobalSettingsNow, 600);
 // Orders the background cloud pulls. The master sheet supplies every per-unit cost and
@@ -4128,6 +4220,7 @@ const cloudSaveGlobalSettings = debounce(cloudSaveGlobalSettingsNow, 600);
 // otherwise the P&L is computed against whichever master happened to arrive first, and two
 // browsers with identical filters disagree on Referral/Shipping/Profit.
 async function cloudSyncAll(){
+  cloudSyncAcctSettings();   // small, and wanted before anyone types a note or ticks a VAT box
   try{ await Promise.all([cloudSyncMaster(), cloudSyncSkuMap()]); }catch(e){ console.warn('cloud sync (cost data) failed:', e); }
   try{ await cloudSyncFileRows(); }catch(e){ console.warn('cloud sync (files) failed:', e); }
   cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncGlobalSettings(); cloudSyncCostBook();
@@ -4188,8 +4281,8 @@ async function cloudSaveMasterNow(){
       }
       if(error) throw error;
     }
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (master products) failed:', e); setSyncBadge('error'); }
+    syncOk('master sheet');
+  }catch(e){ syncFailed('master sheet', cloudSaveMasterNow, e); }
 }
 const cloudSaveMaster = debounce(cloudSaveMasterNow, 600);
 
@@ -4300,8 +4393,8 @@ async function cloudSaveSkuMapNow(){
       const { error } = await sb.from('sku_map').insert([{ account_id: CUR_ACCT, data: STATE.raw.sku_map }]);
       if(error) throw error;
     }
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (sku_map) failed:', e); setSyncBadge('error'); }
+    syncOk('SKU map');
+  }catch(e){ syncFailed('SKU map', cloudSaveSkuMapNow, e); }
 }
 const cloudSaveSkuMap = debounce(cloudSaveSkuMapNow, 600);
 async function cloudSyncSkuMap(){
@@ -4889,8 +4982,8 @@ async function cloudSaveHistoryNow(){
       const { error } = await sb.from('history_snapshots').insert(snapRows);
       if(error) throw error;
     }
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (history) failed:', e); setSyncBadge('error'); }
+    syncOk('history');
+  }catch(e){ syncFailed('history', cloudSaveHistoryNow, e); }
 }
 const cloudSaveHistory = debounce(cloudSaveHistoryNow, 600);
 async function cloudSyncHistory(){
@@ -5683,6 +5776,7 @@ function loadPriceBook(){
   try{ PRICEBOOK = JSON.parse(store.get(lsKey(LS_PRICEBOOK))) || {}; }catch(e){ PRICEBOOK = {}; }
 }
 function savePriceBook(){
+  COST_EDIT_SEQ++;
   try{ store.set(lsKey(LS_PRICEBOOK), JSON.stringify(PRICEBOOK)); }catch(e){}
   cloudSaveCostBook();     // rides along in the same settings row
 }
@@ -5700,6 +5794,189 @@ function manualPriceFor(e){
   const v = k ? PRICEBOOK[k] : null;
   return (v != null && v !== '' && +v > 0) ? +v : null;
 }
+// ---- Account settings ----
+// Three things the database was never given:
+//   * the VAT settings and the fallback fee rates. Their controls changed the figures on screen
+//     and nothing else - no local save, no cloud save - so every reload put them back to the
+//     defaults, and a browser where someone had moved one showed different profit from the rest.
+//   * the Comparison PNL reasoning notes, and
+//   * the P&L history imported from the hand-kept sheet - both kept in one browser only.
+// All three now travel in the account's settings row beside the Cost Book and Price Book.
+const LS_ACCTSETTINGS = 'mcpd_acct_settings';
+const VAT_DEFAULTS = JSON.parse(JSON.stringify({
+  rate: STATE.vat.rate, revIncVAT: STATE.vat.revIncVAT,
+  costsWithVAT: STATE.vat.costsWithVAT, feesExVat: STATE.vat.feesExVat,
+  exVatSource: STATE.vat.exVatSource || {},
+  ttRate: STATE.ttRate, amzRef: STATE.amzRef, amzRefund: STATE.amzRefund, shopFee: STATE.shopFee
+}));
+// The row as last read from or written to the cloud; null = not read yet. A save replaces the
+// whole row, so it is rebuilt on top of this - a key this browser does not handle is kept.
+let ACCT_SETTINGS_REMOTE = null;
+let SETTINGS_PULLED = false;       // VAT, notes and history taken from the cloud this session
+let COSTS_PULLED = false;          // likewise the Cost Book and Price Book
+let VAT_SETTINGS_LOCAL = false;    // this browser holds VAT settings - its own or the shared ones
+// Changes made here that the cloud has not confirmed, per section, kept across reloads. While
+// a section is dirty this browser's copy is the newest and wins; once a save lands, the cloud's.
+let ACCT_DIRTY = {vat:0, notes:0, hist:0};
+let ACCT_EDIT_SEQ = 0;
+let ACCT_SAVE_GEN = 0;             // bumped on every save that lands
+let COST_EDIT_SEQ = 0, COST_SAVED_SEQ = 0;   // cost / price edits made, and sent
+const isEmptyObj = o => !o || (typeof o === 'object' && !Object.keys(o).length);
+const settingsRowData = row => (row && row.data && typeof row.data === 'object') ? row.data : {};
+function mergeHist(base, over){      // `over` wins month by month
+  const out = {};
+  base = base || {}; over = over || {};
+  for(const name of new Set([...Object.keys(base), ...Object.keys(over)]))
+    out[name] = Object.assign({}, base[name] || {}, over[name] || {});
+  return out;
+}
+function currentVatSettings(){
+  return {
+    rate: STATE.vat.rate, revIncVAT: !!STATE.vat.revIncVAT,
+    costsWithVAT: Object.assign({}, STATE.vat.costsWithVAT),
+    feesExVat: Object.assign({}, STATE.vat.feesExVat),
+    exVatSource: Object.assign({}, STATE.vat.exVatSource || {}),
+    ttRate: STATE.ttRate, amzRef: STATE.amzRef, amzRefund: STATE.amzRefund, shopFee: STATE.shopFee
+  };
+}
+// Laid onto the defaults one checked field at a time: a damaged or partial copy can only ever
+// leave a default in place, never put a nonsense rate into the P&L.
+function applyVatSettings(v){
+  const d = VAT_DEFAULTS;
+  const inRange = (x, lo, hi) => typeof x === 'number' && isFinite(x) && x >= lo && x <= hi;
+  STATE.vat.rate = (v && inRange(v.rate, 0, 0.25)) ? v.rate : d.rate;
+  STATE.vat.revIncVAT = (v && typeof v.revIncVAT === 'boolean') ? v.revIncVAT : d.revIncVAT;
+  for(const grp of ['costsWithVAT', 'feesExVat', 'exVatSource']){
+    const out = Object.assign({}, d[grp]);
+    const src = v && v[grp];
+    if(src && typeof src === 'object') for(const k of Object.keys(src)) if(typeof src[k] === 'boolean') out[k] = src[k];
+    STATE.vat[grp] = out;
+  }
+  STATE.ttRate    = (v && inRange(v.ttRate, 0, 0.2))     ? v.ttRate    : d.ttRate;
+  STATE.amzRef    = (v && inRange(v.amzRef, 0, 0.2))     ? v.amzRef    : d.amzRef;
+  STATE.amzRefund = (v && inRange(v.amzRefund, 0, 0.15)) ? v.amzRefund : d.amzRefund;
+  STATE.shopFee   = (v && inRange(v.shopFee, 0, 0.1))    ? v.shopFee   : d.shopFee;
+  applyVatControls();
+}
+// The drawer's controls had their values written into the markup and were never set from
+// state, so even a restored setting would have looked like the default.
+function applyVatControls(){
+  const slider = (id, label, x) => {
+    const el = document.getElementById(id), lb = document.getElementById(label);
+    if(el) el.value = +(x * 100).toFixed(2);
+    if(lb) lb.textContent = (x * 100).toFixed(1) + '%';
+  };
+  slider('vatSlider', 'vatLabel', STATE.vat.rate);
+  slider('ttRateSlider', 'ttRateLabel', STATE.ttRate);
+  slider('amzRefSlider', 'amzRefLabel', STATE.amzRef);
+  slider('amzRefundSlider', 'amzRefundLabel', STATE.amzRefund);
+  slider('shopFeeSlider', 'shopFeeLabel', STATE.shopFee);
+  const inc = document.getElementById('revIncVat'); if(inc) inc.checked = !!STATE.vat.revIncVAT;
+  document.querySelectorAll('.vat-cost').forEach(cb => cb.checked = !!STATE.vat.costsWithVAT[cb.dataset.c]);
+  document.querySelectorAll('.vat-fee').forEach(cb => cb.checked = !!STATE.vat.feesExVat[cb.dataset.c]);
+  document.querySelectorAll('.vat-gross').forEach(cb => cb.checked = !!(STATE.vat.exVatSource || {})[cb.dataset.c]);
+}
+function writeLocalAcctSettings(){
+  store.set(lsKey(LS_ACCTSETTINGS), JSON.stringify({
+    savedAt: new Date().toISOString(),
+    vat: VAT_SETTINGS_LOCAL ? currentVatSettings() : null,
+    dirty: ACCT_DIRTY
+  }));
+}
+function markAcctDirty(section){
+  ACCT_DIRTY[section] = ++ACCT_EDIT_SEQ;
+  writeLocalAcctSettings();
+}
+// Runs after the notes and history are loaded: it needs to know whether they were ever sent.
+function loadAcctSettings(){
+  ACCT_SETTINGS_REMOTE = null; SETTINGS_PULLED = false; COSTS_PULLED = false;
+  COST_EDIT_SEQ = 0; COST_SAVED_SEQ = 0;
+  let saved = null;
+  try{ saved = JSON.parse(store.get(lsKey(LS_ACCTSETTINGS))); }catch(e){ saved = null; }
+  const d = (saved && saved.dirty && typeof saved.dirty === 'object') ? saved.dirty : {};
+  ACCT_DIRTY = {vat: +d.vat || 0, notes: +d.notes || 0, hist: +d.hist || 0};
+  ACCT_EDIT_SEQ = Math.max(ACCT_DIRTY.vat, ACCT_DIRTY.notes, ACCT_DIRTY.hist);
+  VAT_SETTINGS_LOCAL = !!(saved && saved.vat);
+  applyVatSettings(saved && saved.vat ? saved.vat : null);
+  // Notes and history from before they were ever sent anywhere: the cloud has never had them,
+  // so they are unsaved changes and go up on the first sync.
+  if(!saved){
+    if(!isEmptyObj(CMP_NOTES)) ACCT_DIRTY.notes = ++ACCT_EDIT_SEQ;
+    if(!isEmptyObj(PNL_HIST))  ACCT_DIRTY.hist  = ++ACCT_EDIT_SEQ;
+    if(ACCT_DIRTY.notes || ACCT_DIRTY.hist) writeLocalAcctSettings();
+  }
+}
+const saveAcctSettingsSoon = debounce(() => { writeLocalAcctSettings(); cloudSaveCostBook(); }, 500);
+function onVatSettingEdited(){
+  VAT_SETTINGS_LOCAL = true;
+  ACCT_DIRTY.vat = ++ACCT_EDIT_SEQ;     // at once, so a pull arriving meanwhile cannot undo it
+  saveAcctSettingsSoon();
+}
+// What this browser sends. Before the row has been read, the cloud's copy of each section goes
+// back as it was, plus only what was changed here - never an empty "not loaded yet" in its place.
+function acctSettingsPayload(){
+  const remote = ACCT_SETTINGS_REMOTE || {};
+  const out = Object.assign({}, remote);
+  out.costBook  = (COSTS_PULLED || !isEmptyObj(COSTBOOK))  ? COSTBOOK  : remote.costBook;
+  out.priceBook = (COSTS_PULLED || !isEmptyObj(PRICEBOOK)) ? PRICEBOOK : remote.priceBook;
+  if(SETTINGS_PULLED){
+    out.cmpNotes = CMP_NOTES;
+    out.pnlHist = PNL_HIST;
+    if(VAT_SETTINGS_LOCAL) out.vatSettings = currentVatSettings();
+  } else {
+    out.cmpNotes = ACCT_DIRTY.notes ? Object.assign({}, remote.cmpNotes || {}, CMP_NOTES) : (remote.cmpNotes || CMP_NOTES);
+    out.pnlHist  = ACCT_DIRTY.hist  ? mergeHist(remote.pnlHist, PNL_HIST)                 : (remote.pnlHist  || PNL_HIST);
+    if(ACCT_DIRTY.vat || (!remote.vatSettings && VAT_SETTINGS_LOCAL)) out.vatSettings = currentVatSettings();
+  }
+  for(const k of Object.keys(out)) if(out[k] === undefined) delete out[k];
+  return out;
+}
+// The cloud's copy arriving. Anything changed here and not yet confirmed wins and goes straight
+// back up; otherwise the cloud's copy replaces this browser's, deletions included.
+function applyRemoteAcctSettings(d){
+  d = d || {};
+  let pushBack = false;
+  const vatBefore = JSON.stringify(currentVatSettings());
+  if(ACCT_DIRTY.vat) pushBack = true;
+  else if(d.vatSettings && typeof d.vatSettings === 'object'){ applyVatSettings(d.vatSettings); VAT_SETTINGS_LOCAL = true; }
+  else if(VAT_SETTINGS_LOCAL) pushBack = true;
+
+  const cloudNotes = (d.cmpNotes && typeof d.cmpNotes === 'object') ? d.cmpNotes : null;
+  if(ACCT_DIRTY.notes){ CMP_NOTES = Object.assign({}, cloudNotes || {}, CMP_NOTES); pushBack = true; }
+  else if(cloudNotes) CMP_NOTES = Object.assign({}, cloudNotes);
+  else if(!isEmptyObj(CMP_NOTES)) pushBack = true;
+
+  const cloudHist = (d.pnlHist && typeof d.pnlHist === 'object') ? d.pnlHist : null;
+  if(ACCT_DIRTY.hist){ PNL_HIST = mergeHist(cloudHist, PNL_HIST); pushBack = true; }
+  else if(cloudHist) PNL_HIST = mergeHist(cloudHist, null);
+  else if(!isEmptyObj(PNL_HIST)) pushBack = true;
+
+  SETTINGS_PULLED = true;
+  store.set(lsKey(LS_CMPNOTES), JSON.stringify(CMP_NOTES));
+  store.set(lsKey(LS_PNLHIST), JSON.stringify(PNL_HIST));
+  writeLocalAcctSettings();
+  _cmpCache = null; _histFamMap = null;
+  if(pushBack) cloudSaveCostBook();
+  if(JSON.stringify(currentVatSettings()) !== vatBefore) refresh();
+  else if(STATE.page === 'cmppnl' && STATE.master) renderComparePL();
+}
+// Read early, beside the master sheet - the cost-book pull waits for the uploaded files, which
+// can take long enough for a note to be typed or a VAT box ticked in the meantime.
+async function cloudSyncAcctSettings(attempt){
+  if(!window.sb) return;
+  const acct = CUR_ACCT, gen = ACCT_SAVE_GEN;
+  try{
+    const { data, error } = await sb.from('settings').select('data').eq('account_id', acct).maybeSingle();
+    if(error) throw error;
+    if(acct !== CUR_ACCT || SETTINGS_PULLED) return;
+    if(gen !== ACCT_SAVE_GEN){     // a save landed while this was travelling: it is already old
+      if((attempt || 0) < 6) setTimeout(() => cloudSyncAcctSettings((attempt || 0) + 1), 1500);
+      return;
+    }
+    ACCT_SETTINGS_REMOTE = settingsRowData(data);
+    applyRemoteAcctSettings(ACCT_SETTINGS_REMOTE);
+  }catch(e){ console.warn('cloud sync (account settings) pull failed:', e); }
+}
 const LS_COSTBOOK = 'mcpd_costbook';
 let COSTBOOK = {};
 function loadCostBook(){
@@ -5707,26 +5984,59 @@ function loadCostBook(){
   migrateCostBook();
 }
 function saveCostBook(){
+  COST_EDIT_SEQ++;
   try{ store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK)); }catch(e){}
   cloudSaveCostBook();
 }
 async function cloudSaveCostBookNow(){
   if(!window.sb) return;
   setSyncBadge('saving');
+  const acct = CUR_ACCT;
   try{
     await cloudEnsureAccount();
+    if(ACCT_SETTINGS_REMOTE == null){
+      // Not read yet. The save replaces the whole row, so writing blind would drop whatever
+      // this browser has not loaded - read it first.
+      const { data, error: readErr } = await sb.from('settings').select('data').eq('account_id', acct).maybeSingle();
+      if(readErr) throw readErr;
+      if(acct === CUR_ACCT) ACCT_SETTINGS_REMOTE = settingsRowData(data);
+    }
+    if(acct !== CUR_ACCT){ setSyncBadge('idle'); return; }   // switched account on the way
+    const dirtyAtSend = Object.assign({}, ACCT_DIRTY), costSeqAtSend = COST_EDIT_SEQ;
+    const payload = acctSettingsPayload();
     const { error } = await sb.from('settings')
-      .upsert({ account_id: CUR_ACCT, data: { costBook: COSTBOOK, priceBook: PRICEBOOK }, updated_at: new Date().toISOString() });
+      .upsert({ account_id: acct, data: payload, updated_at: new Date().toISOString() });
     if(error) throw error;
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (cost book) failed:', e); setSyncBadge('error'); }
+    if(acct === CUR_ACCT){
+      ACCT_SETTINGS_REMOTE = payload;
+      ACCT_SAVE_GEN++;
+      COST_SAVED_SEQ = Math.max(COST_SAVED_SEQ, costSeqAtSend);
+      let cleared = false;
+      for(const k of Object.keys(ACCT_DIRTY))
+        if(ACCT_DIRTY[k] && ACCT_DIRTY[k] === dirtyAtSend[k]){ ACCT_DIRTY[k] = 0; cleared = true; }
+      if(cleared) writeLocalAcctSettings();
+    }
+    syncOk('cost book');
+  }catch(e){ syncFailed('cost book', cloudSaveCostBookNow, e); }
 }
 const cloudSaveCostBook = debounce(cloudSaveCostBookNow, 800);
-async function cloudSyncCostBook(){
+async function cloudSyncCostBook(attempt){
   if(!window.sb) return;
+  const acct = CUR_ACCT, gen = ACCT_SAVE_GEN;
   try{
-    const { data, error } = await sb.from('settings').select('data').eq('account_id', CUR_ACCT).maybeSingle();
+    const { data, error } = await sb.from('settings').select('data').eq('account_id', acct).maybeSingle();
     if(error) throw error;
+    if(acct !== CUR_ACCT) return;          // switched account while this was on its way
+    // A cost typed here that has not reached the cloud yet, or a save landing while this was
+    // travelling, makes this copy older than the screen. Applying it put the old figure back
+    // over the new one - and the next save then sent the old figure up. Ask again shortly.
+    if(gen !== ACCT_SAVE_GEN || COST_EDIT_SEQ !== COST_SAVED_SEQ){
+      if((attempt || 0) < 6) setTimeout(() => cloudSyncCostBook((attempt || 0) + 1), 2500);
+      return;
+    }
+    ACCT_SETTINGS_REMOTE = settingsRowData(data);
+    if(!SETTINGS_PULLED) applyRemoteAcctSettings(ACCT_SETTINGS_REMOTE);   // the early read did not get through
+    COSTS_PULLED = true;
     const pb = data && data.data && data.data.priceBook;
     if(pb && Object.keys(pb).length){
       PRICEBOOK = pb;
@@ -6436,8 +6746,8 @@ async function cloudSaveStockNow(){
         if(error) throw error;
       }
     }
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (stock) failed:', e); setSyncBadge('error'); }
+    syncOk('stock');
+  }catch(e){ syncFailed('stock', cloudSaveStockNow, e); }
 }
 const cloudSaveStock = debounce(cloudSaveStockNow, 600);
 async function cloudSyncStock(){
@@ -6786,7 +7096,7 @@ function renderStock(){
 const LS_PNLHIST = 'mcpd_pnl_hist';
 let PNL_HIST = {};       // item name -> { 'YYYY-MM': {units:{ch:n}, profit:{ch:n}, note} }
 function loadPnlHist(){ try{ PNL_HIST = JSON.parse(store.get(lsKey(LS_PNLHIST))) || {}; }catch(e){ PNL_HIST = {}; } }
-function savePnlHist(){ try{ store.set(lsKey(LS_PNLHIST), JSON.stringify(PNL_HIST)); }catch(e){} }
+function savePnlHist(){ try{ store.set(lsKey(LS_PNLHIST), JSON.stringify(PNL_HIST)); }catch(e){} markAcctDirty('hist'); cloudSaveCostBook(); }
 
 const PNL_MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
 // The sheet names months without a year. Blocks run newest-first, so the leftmost is the most
@@ -6926,7 +7236,7 @@ let CMP_N = 3;               // months shown, 0 = every month in the data
 let CMP_SORT = 'profit';
 let CMP_Q = '';
 function loadCmpNotes(){ try{ CMP_NOTES = JSON.parse(store.get(lsKey(LS_CMPNOTES))) || {}; }catch(e){ CMP_NOTES = {}; } }
-function saveCmpNotes(){ try{ store.set(lsKey(LS_CMPNOTES), JSON.stringify(CMP_NOTES)); }catch(e){} }
+function saveCmpNotes(){ try{ store.set(lsKey(LS_CMPNOTES), JSON.stringify(CMP_NOTES)); }catch(e){} markAcctDirty('notes'); cloudSaveCostBook(); }
 
 // seller SKU -> product family, from the SKU Management map. Routed and un-routed both count:
 // an un-routed SKU is one not currently selling, which is exactly the history being compared.
@@ -9340,8 +9650,8 @@ async function cloudSaveOpexNow(){
       const { error } = await sb.from('opex').insert(rows);
       if(error) throw error;
     }
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (opex) failed:', e); setSyncBadge('error'); }
+    syncOk('OpEx');
+  }catch(e){ syncFailed('OpEx', cloudSaveOpexNow, e); }
 }
 const cloudSaveOpex = debounce(cloudSaveOpexNow, 600);
 async function cloudSyncOpex(){
@@ -9444,8 +9754,8 @@ async function cloudSaveTasksNow(){
       const { error } = await sb.from('tasks').insert(rows);
       if(error) throw error;
     }
-    setSyncBadge('idle');
-  }catch(e){ console.warn('cloud sync (tasks) failed:', e); setSyncBadge('error'); }
+    syncOk('tasks');
+  }catch(e){ syncFailed('tasks', cloudSaveTasksNow, e); }
 }
 const cloudSaveTasks = debounce(cloudSaveTasksNow, 600);
 async function cloudSyncTasks(){
@@ -9744,6 +10054,12 @@ document.querySelectorAll('.vat-gross').forEach(cb => cb.addEventListener('chang
   (STATE.vat.exVatSource = STATE.vat.exVatSource || {})[e.target.dataset.c] = e.target.checked;
   recompute(); refresh();   // rebuild rows: the gross-up happens as they are finalized
 }));
+// Registered after the handlers above, so STATE already holds the change when these run.
+['vatSlider','ttRateSlider','amzRefSlider','amzRefundSlider','shopFeeSlider'].forEach(id => {
+  const el = document.getElementById(id); if(el) el.addEventListener('input', onVatSettingEdited);
+});
+{ const el = document.getElementById('revIncVat'); if(el) el.addEventListener('change', onVatSettingEdited); }
+document.querySelectorAll('.vat-cost, .vat-fee, .vat-gross').forEach(cb => cb.addEventListener('change', onVatSettingEdited));
 document.getElementById('ttRateSlider').addEventListener('input', e => { STATE.ttRate = parseFloat(e.target.value)/100; document.getElementById('ttRateLabel').textContent = (STATE.ttRate*100).toFixed(1)+'%'; refresh(); });
 document.getElementById('amzRefSlider').addEventListener('input', e => { STATE.amzRef = parseFloat(e.target.value)/100; document.getElementById('amzRefLabel').textContent = (STATE.amzRef*100).toFixed(1)+'%'; refresh(); });
 document.getElementById('amzRefundSlider').addEventListener('input', e => { STATE.amzRefund = parseFloat(e.target.value)/100; document.getElementById('amzRefundLabel').textContent = (STATE.amzRefund*100).toFixed(1)+'%'; refresh(); });
@@ -10528,6 +10844,7 @@ function switchAccount(id){
   loadCmpNotes();
   loadPriceBook();
   loadPnlHist();
+  loadAcctSettings();
   loadCostBook();
   const chSel = document.getElementById('skuMapChannel'); if(chSel) chSel.dataset.built = '';   // force rebuild for the new account's channels
   if(haveCosts()) STATE.master = buildMaster();
@@ -10579,6 +10896,7 @@ function startApp(){
   loadCmpNotes();
   loadPriceBook();
   loadPnlHist();
+  loadAcctSettings();
   loadCostBook();
   // background: cloud copy wins over local/built-in once each arrives
   cloudSyncAccounts();   // account list is global - only pulled here, not on every switch
