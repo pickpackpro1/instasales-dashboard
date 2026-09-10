@@ -2275,7 +2275,12 @@ async function handleFiles(fileList, targetAcct){
         // top; multiple sheets of the SAME workbook concatenate.
         const t = f.type;
         if(seenThisFile.has(t)) STATE.fileRows[t][r.name] = STATE.fileRows[t][r.name].concat(f.rows);
-        else STATE.fileRows[t] = {[r.name]: f.rows.slice()};
+        else {
+          for(const old of Object.keys(STATE.fileRows[t] || {})) if(old !== r.name) markFileChanged(t, old, 'del');
+          STATE.fileRows[t] = {[r.name]: f.rows.slice()};
+        }
+        markFileChanged(t, r.name, 'put');
+        if(t === 'master') markMasterPending();
       } else {
         if(!STATE.fileRows[f.type]) STATE.fileRows[f.type] = {};
         const storeName = typeCounts[f.type] > 1 ? `${r.name} [${f.sheet}]` : r.name;
@@ -2303,6 +2308,7 @@ async function handleFiles(fileList, targetAcct){
           logLines.push(`⚠️ ${storeName} - identical to "${dupOf[0]}", skipped`);
         } else {
           STATE.fileRows[f.type][storeName] = f.rows.slice();
+          markFileChanged(f.type, storeName, 'put');
           const m = fileMeta(f.type, f.rows);
           logLines.push(`✅ ${storeName} → ${TYPE_LABEL[f.type]} (${fmtNum(f.rows.length)} rows)${m.dates ? ` · 📅 ${m.dates}` : ''}${m.value > 0.004 ? ` · ${m.vl}${fmtGBP0(m.value)}` : ''}`);
         }
@@ -2562,7 +2568,7 @@ function renderLoadedReports(){
       const folder = b.dataset.frmfolder;
       for(const [type, files] of Object.entries(STATE.fileRows || {})){
         for(const name of Object.keys(files)){
-          if(name.startsWith(folder + '/')) delete STATE.fileRows[type][name];
+          if(name.startsWith(folder + '/')){ delete STATE.fileRows[type][name]; markFileChanged(type, name, 'del'); }
         }
         if(!Object.keys(STATE.fileRows[type]).length) delete STATE.fileRows[type];
       }
@@ -2572,9 +2578,13 @@ function renderLoadedReports(){
     }));
   }
 }
+function markAllFilesRemoved(){
+  for(const [t, fs] of Object.entries(STATE.fileRows || {})) for(const n of Object.keys(fs)) markFileChanged(t, n, 'del');
+}
 function removeFile(type, name){
   if(!STATE.fileRows[type]) return;
   delete STATE.fileRows[type][name];
+  markFileChanged(type, name, 'del');
   if(!Object.keys(STATE.fileRows[type]).length) delete STATE.fileRows[type];
   rebuildFromFileStore();
   persistFileRows();
@@ -2637,32 +2647,85 @@ function rebuildFromFileStore(){
   }
 }
 // ---- cloud sync: uploaded files (per-file rows, largest payloads) ----
-// One cloud row per (file_type, file_name). Upsert whatever is currently loaded, then
-// delete any cloud rows whose (type,name) is no longer present locally - this covers
-// single-file removal, folder removal, and "remove all files" with one code path.
+// One cloud row per (file_type, file_name).
+//
+// Every save used to upsert EVERY loaded file and every load downloaded every one. With 800+
+// daily reports that was 160-odd uploads for one dropped file and a download of the lot on each
+// page load - long enough to time out, and a save cut short left the cloud with some changes and
+// not others. Now each browser keeps a small record per account:
+//   files   - what it knows the cloud holds, with the time each file was last written
+//   pending - changes made here that have not reached the cloud yet (kept across reloads)
+// A save sends only the pending changes. A load lists the cloud's files (names and times, no
+// data) and downloads only those that are new or were changed by another browser.
+const LS_FILESYNC = 'mcpd_file_sync';
+var FILE_SYNC = null, FILE_SYNC_ACCT = null, FILE_SEQ = 0;
+const fileKey = (type, name) => type + '|' + name;
+const splitFileKey = k => { const i = k.indexOf('|'); return [k.slice(0, i), k.slice(i + 1)]; };
+// the one entry that is a local mirror of another table, never an uploaded file of its own
+const isMirrorEntry = name => name === '(saved copy)';
+function fileSyncState(){
+  if(FILE_SYNC && FILE_SYNC_ACCT === CUR_ACCT) return FILE_SYNC;
+  let st = null;
+  try{ st = JSON.parse(store.get(lsKey(LS_FILESYNC))); }catch(e){ st = null; }
+  FILE_SYNC = (st && st.files && st.pending) ? st : {init:false, files:{}, pending:{}};
+  FILE_SYNC_ACCT = CUR_ACCT;
+  for(const x of Object.values(FILE_SYNC.pending)) FILE_SEQ = Math.max(FILE_SEQ, +x.seq || 0);
+  return FILE_SYNC;
+}
+function saveFileSyncState(){
+  if(FILE_SYNC && FILE_SYNC_ACCT === CUR_ACCT) store.set(lsKey(LS_FILESYNC), JSON.stringify(FILE_SYNC));
+}
+// Called wherever a file is added, replaced or removed here.
+function markFileChanged(type, name, op){
+  if(isMirrorEntry(name)) return;
+  const st = fileSyncState();
+  st.pending[fileKey(type, name)] = {op, seq: ++FILE_SEQ};
+  saveFileSyncState();
+}
 async function cloudSaveFileRowsNow(){
   if(!window.sb) return;
   setSyncBadge('saving');
+  const acct = CUR_ACCT;
   try{
     await cloudEnsureAccount();
+    const st = fileSyncState();
     const fr = STATE.fileRows || {};
-    const rows = [];
-    for(const [type, files] of Object.entries(fr)){
-      for(const [name, data] of Object.entries(files)){
-        rows.push({ account_id: CUR_ACCT, file_type: type, file_name: name, rows: data, row_count: (data||[]).length });
-      }
+    const puts = [], dels = [];
+    for(const [k, x] of Object.entries(st.pending)){
+      const [t, n] = splitFileKey(k);
+      const rows = fr[t] && fr[t][n];
+      if(x.op === 'put' && rows) puts.push({k, t, n, rows, seq: x.seq});
+      else dels.push({k, t, n, seq: x.seq});
     }
-    for(let i = 0; i < rows.length; i += 5){   // small chunks - each "row" here is a whole file's data
-      const { error } = await sb.from('uploaded_files').upsert(rows.slice(i, i+5), { onConflict: 'account_id,file_type,file_name' });
+    for(let i = 0; i < puts.length; i += 5){   // small chunks - each "row" here is a whole file's data
+      const chunk = puts.slice(i, i + 5);
+      const at = new Date().toISOString();   // written explicitly: an upsert leaves the default alone
+      const { error } = await sb.from('uploaded_files').upsert(chunk.map(x => ({
+        account_id: acct, file_type: x.t, file_name: x.n, rows: x.rows, row_count: x.rows.length, uploaded_at: at
+      })), { onConflict: 'account_id,file_type,file_name' });
       if(error) throw error;
+      if(acct !== CUR_ACCT){ setSyncBadge('idle'); return; }
+      for(const x of chunk){
+        st.files[x.k] = Date.parse(at);
+        if(st.pending[x.k] && st.pending[x.k].seq === x.seq) delete st.pending[x.k];
+      }
+      saveFileSyncState();    // progress is kept, so a retry resumes rather than starting over
     }
-    const { data: cloudFiles, error: listErr } = await sb.from('uploaded_files').select('id, file_type, file_name').eq('account_id', CUR_ACCT);
-    if(listErr) throw listErr;
-    const localKeys = new Set(rows.map(r => r.file_type + '|' + r.file_name));
-    const staleIds = (cloudFiles || []).filter(f => !localKeys.has(f.file_type + '|' + f.file_name)).map(f => f.id);
-    if(staleIds.length){
-      const { error: staleErr } = await sb.from('uploaded_files').delete().in('id', staleIds);
-      if(staleErr) throw staleErr;
+    const byType = {};
+    for(const x of dels) (byType[x.t] = byType[x.t] || []).push(x);
+    for(const [t, list] of Object.entries(byType)){
+      for(let i = 0; i < list.length; i += 50){
+        const part = list.slice(i, i + 50);
+        const { error } = await sb.from('uploaded_files').delete()
+          .eq('account_id', acct).eq('file_type', t).in('file_name', part.map(x => x.n));
+        if(error) throw error;
+        if(acct !== CUR_ACCT){ setSyncBadge('idle'); return; }
+        for(const x of part){
+          delete st.files[x.k];
+          if(st.pending[x.k] && st.pending[x.k].seq === x.seq) delete st.pending[x.k];
+        }
+        saveFileSyncState();
+      }
     }
     syncOk('uploaded files');
   }catch(e){ syncFailed('uploaded files', cloudSaveFileRowsNow, e); }
@@ -2670,20 +2733,97 @@ async function cloudSaveFileRowsNow(){
 const cloudSaveFileRows = debounce(cloudSaveFileRowsNow, 1200);
 async function cloudSyncFileRows(){
   if(!window.sb) return;
+  const acct = CUR_ACCT;
   try{
-    const { data, error } = await sb.from('uploaded_files').select('file_type, file_name, rows').eq('account_id', CUR_ACCT);
+    const { data: listing, error } = await pagedSelect(() => sb.from('uploaded_files')
+      .select('id, file_type, file_name, uploaded_at').eq('account_id', acct).order('id', {ascending: true}));
     if(error) throw error;
-    if(data && data.length){
-      const fr = {};
-      for(const r of data){ if(!fr[r.file_type]) fr[r.file_type] = {}; fr[r.file_type][r.file_name] = r.rows; }
+    if(acct !== CUR_ACCT) return;
+    const st = fileSyncState();
+    const local = STATE.fileRows || {};
+    const has = (t, n) => !!(local[t] && Object.prototype.hasOwnProperty.call(local[t], n));
+    const localKeys = [];
+    for(const [t, fs] of Object.entries(local)) for(const n of Object.keys(fs)) localKeys.push(fileKey(t, n));
+
+    if(!listing.length){
+      // nothing in the cloud yet: everything here goes up
+      for(const k of localKeys){ const n = splitFileKey(k)[1]; if(!isMirrorEntry(n) && !st.pending[k]) st.pending[k] = {op:'put', seq: ++FILE_SEQ}; }
+      st.init = true; saveFileSyncState();
+      if(Object.keys(st.pending).length) cloudSaveFileRows();
+      return;
+    }
+    const cloud = new Map(listing.map(c => [fileKey(c.file_type, c.file_name), c]));
+    const need = [];
+    for(const [k, c] of cloud){
+      if(st.pending[k]) continue;                                   // changed here - ours goes up instead
+      const [t, n] = splitFileKey(k);
+      if(st.init && has(t, n) && st.files[k] === Date.parse(c.uploaded_at)) continue;   // already have this version
+      need.push(c);
+    }
+    const got = [];
+    for(let i = 0; i < need.length; i += 20){                      // a few files per request
+      const { data, error: getErr } = await sb.from('uploaded_files')
+        .select('id, file_type, file_name, rows, uploaded_at').in('id', need.slice(i, i + 20).map(c => c.id));
+      if(getErr) throw getErr;
+      if(acct !== CUR_ACCT) return;
+      got.push(...(data || []));
+    }
+    const fr = {};
+    for(const [t, fs] of Object.entries(local)) fr[t] = Object.assign({}, fs);
+    let changed = false;
+    const gotKeys = new Set();
+    for(const r of got){
+      const k = fileKey(r.file_type, r.file_name);
+      if(st.pending[k]) continue;                                   // edited here while downloading
+      (fr[r.file_type] = fr[r.file_type] || {})[r.file_name] = r.rows;
+      st.files[k] = Date.parse(r.uploaded_at);
+      gotKeys.add(k);
+      changed = true;
+    }
+    for(const [k, c] of cloud) if(!gotKeys.has(k) && !st.pending[k] && has(...splitFileKey(k))) st.files[k] = Date.parse(c.uploaded_at);
+    // local files the cloud does not have
+    for(const k of localKeys){
+      if(cloud.has(k)) continue;
+      const [t, n] = splitFileKey(k);
+      const x = st.pending[k];
+      if(x && x.op === 'put') continue;                             // added here, on its way up
+      if(isMirrorEntry(n)) continue;
+      if(!st.init || st.files[k] != null){
+        // This browser's first sync - the cloud is the shared copy, as it always was - or a
+        // file the cloud used to hold that has since been removed in another browser.
+        if(fr[t]){ delete fr[t][n]; if(!Object.keys(fr[t]).length) delete fr[t]; }
+        delete st.files[k];
+        changed = true;
+      } else {
+        st.pending[k] = {op:'put', seq: ++FILE_SEQ};                // never sent anywhere: send it
+      }
+    }
+    // One master sheet and one SKU map: when the cloud holds one, no other local entry of that
+    // type survives beside it - two would be read as a single sheet twice the size.
+    for(const t of ['master', 'sku_map']){
+      const names = listing.filter(c => c.file_type === t).map(c => c.file_name);
+      if(!names.length || !fr[t]) continue;
+      for(const n of Object.keys(fr[t])){
+        const x = st.pending[fileKey(t, n)];
+        if(names.includes(n) || (x && x.op === 'put')) continue;
+        delete fr[t][n]; changed = true;
+      }
+      if(!Object.keys(fr[t]).length) delete fr[t];
+    }
+    for(const k of Object.keys(st.files)){
+      const [t, n] = splitFileKey(k);
+      if(!cloud.has(k) && !(fr[t] && fr[t][n])) delete st.files[k];
+    }
+    st.init = true;
+    saveFileSyncState();
+    if(changed){
       STATE.fileRows = fr;
       await IDB.set(lsKey(LS_FILEROWS), fr);
       rebuildFromFileStore();
       STATE.dataSource = 'live';
       renderPage();
-    } else if(Object.keys(STATE.fileRows || {}).length){
-      cloudSaveFileRows();   // cloud empty but we have local data - bootstrap the cloud
     }
+    if(Object.keys(st.pending).length) cloudSaveFileRows();
   }catch(e){ console.warn('cloud sync (uploaded files) pull failed:', e); }
 }
 // ---- persist the raw uploaded files so they survive a browser close/reopen (per account) ----
@@ -4074,7 +4214,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-10-a';
+const BUILD_ID = '2026-09-10-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -4085,6 +4225,21 @@ const MASTER_KEYS = ['Name','platform','sku','asin','productid','buying_cost_per
 // named columns and so can only ever carry what those columns hold, whereas the local copy is
 // the sheet as loaded. Where both exist the local one wins and is pushed up
 // over whatever local/built-in data was shown first.
+// A request returns at most the project's row limit (Supabase's default is 1,000) and says
+// nothing when it cuts the rest off. Reads that can grow past that go through here, a page at a
+// time until an empty page comes back - which also copes with a limit lower than the page size.
+async function pagedSelect(makeQuery, pageSize){
+  pageSize = pageSize || 1000;
+  const out = [];
+  for(let from = 0; ; ){
+    const { data, error } = await makeQuery().range(from, from + pageSize - 1);
+    if(error) return { data: null, error };
+    if(!data || !data.length) break;
+    out.push(...data);
+    from += data.length;
+  }
+  return { data: out, error: null };
+}
 function debounce(fn, ms){ let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const numOrNull = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
 // ---- Failed cloud saves ----
@@ -4244,6 +4399,7 @@ async function cloudSyncGlobalSettings(){
 async function cloudSaveMasterNow(){
   if(!window.sb) return;
   setSyncBadge('saving');
+  const acct = CUR_ACCT, pendingAtSend = store.get(lsKey(LS_MASTER_PENDING));
   try{
     await cloudEnsureAccount();
     const rows = (STATE.raw.master || []).map(r => ({
@@ -4268,19 +4424,37 @@ async function cloudSaveMasterNow(){
     // Older accounts have a table without those two columns; the insert would fail wholesale
     // and nothing would save. Drop them and retry rather than lose the whole sheet.
     const stripExtras = list => list.map(o => { const c = Object.assign({}, o); delete c.sku_channel; delete c.fba_fees; delete c.buyer_shipping_per_unit; return c; });
-    const { error: delErr } = await sb.from('master_products').delete().eq('account_id', CUR_ACCT);
-    if(delErr) throw delErr;
+    // New copy first, old copy out only once the new one is complete. This used to delete
+    // everything and then insert in batches, so a save cut short - a closed tab, a timeout -
+    // left the shared sheet with only the first batches in it, and every browser loading it got
+    // no costs for the rest. That is how it ended up at 1,000 rows. Ids only grow, so "the old
+    // copy" is simply everything at or below the highest id before this save began.
+    const { data: top, error: topErr } = await sb.from('master_products').select('id')
+      .eq('account_id', acct).order('id', {ascending: false}).limit(1);
+    if(topErr) throw topErr;
+    const oldMax = (top && top.length) ? top[0].id : 0;
     let extrasOk = true;
-    for(let i = 0; i < rows.length; i += 500){
-      const chunk = rows.slice(i, i + 500);
-      if(!chunk.length) continue;
-      let { error } = await sb.from('master_products').insert(extrasOk ? chunk : stripExtras(chunk));
-      if(error && extrasOk){                       // table predates the two columns
-        extrasOk = false;
-        ({ error } = await sb.from('master_products').insert(stripExtras(chunk)));
+    try{
+      for(let i = 0; i < rows.length; i += 500){
+        const chunk = rows.slice(i, i + 500);
+        if(!chunk.length) continue;
+        let { error } = await sb.from('master_products').insert(extrasOk ? chunk : stripExtras(chunk));
+        if(error && extrasOk){                       // table predates the extra columns
+          extrasOk = false;
+          ({ error } = await sb.from('master_products').insert(stripExtras(chunk)));
+        }
+        if(error) throw error;
       }
-      if(error) throw error;
+    }catch(insErr){
+      // take back the part of the new copy that did land; the old copy is still whole
+      try{ await sb.from('master_products').delete().eq('account_id', acct).gt('id', oldMax); }catch(e){}
+      throw insErr;
     }
+    if(oldMax){
+      const { error: delErr } = await sb.from('master_products').delete().eq('account_id', acct).lte('id', oldMax);
+      if(delErr) throw delErr;
+    }
+    if(acct === CUR_ACCT && store.get(lsKey(LS_MASTER_PENDING)) === pendingAtSend) store.remove(lsKey(LS_MASTER_PENDING));
     syncOk('master sheet');
   }catch(e){ syncFailed('master sheet', cloudSaveMasterNow, e); }
 }
@@ -4291,7 +4465,13 @@ const cloudSaveMaster = debounce(cloudSaveMasterNow, 600);
 // flash). If the cloud already has rows, they replace the local/built-in data. If the
 // cloud is empty (first login), pushes whatever's currently loaded UP to the cloud so
 // it becomes the source of truth from now on.
-let _masterPushedFp = null;   // what was last sent up, so an unchanged sheet is not re-sent
+// A master sheet dropped or edited here that the cloud has not confirmed yet. Only that is sent.
+// Sending a copy merely restored from this browser's store - which used to happen on every page
+// load, and on every file drop via buildAll() - re-wrote 2,000+ rows each time, and whichever
+// browser loaded last put its copy over everyone else's however old it was.
+const LS_MASTER_PENDING = 'mcpd_master_pending';
+function markMasterPending(){ store.set(lsKey(LS_MASTER_PENDING), Date.now() + ':' + Math.random().toString(36).slice(2, 8)); }
+const masterPending = () => !!store.get(lsKey(LS_MASTER_PENDING));
 async function cloudSyncMaster(){
   if(!window.sb) return;
   // Who wins, and why it matters that this is the SHARED copy.
@@ -4306,17 +4486,13 @@ async function cloudSyncMaster(){
   // shared account has to mean one shared sheet, so the cloud is the authority for everyone who
   // has not just uploaded.
   {
+    // a change made here that has not reached the cloud: it is the newest copy, send it
+    if((STATE.raw.master || []).length && masterPending()){ cloudSaveMaster(); return; }
     const fromFile = (STATE.files.master || []).some(n => n && n !== '(saved copy)');
-    if(fromFile && (STATE.raw.master || []).length){
-      // Push only when it has actually changed: re-sending on every load is a DELETE plus
-      // thousands of INSERTs each time, which is real load on the database for no gain.
-      const fp = STATE.raw.master.length + ':' + (STATE.files.master || []).join(',');
-      if(fp !== _masterPushedFp){ _masterPushedFp = fp; cloudSaveMaster(); }
-      return;
-    }
+    if(fromFile && (STATE.raw.master || []).length) return;
   }
   try{
-    const { data, error } = await sb.from('master_products').select('*').eq('account_id', CUR_ACCT);
+    const { data, error } = await pagedSelect(() => sb.from('master_products').select('*').eq('account_id', CUR_ACCT).order('id', {ascending: true}));
     if(error) throw error;
     if(data && data.length){
       STATE.raw.master = data.map(r => ({
@@ -4356,7 +4532,8 @@ function persistMaster(force){
     return o;
   });
   try{ store.set(lsKey(LS_MASTER), JSON.stringify({savedAt: todayISO(), rows: compact})); }catch(e){}
-  cloudSaveMaster();
+  if(force) markMasterPending();      // an edit made here
+  if(masterPending()) cloudSaveMaster();
 }
 function restoreMaster(){
   try{
@@ -4989,7 +5166,7 @@ const cloudSaveHistory = debounce(cloudSaveHistoryNow, 600);
 async function cloudSyncHistory(){
   if(!window.sb) return;
   try{
-    const { data: dailyData, error: dErr } = await sb.from('history_daily').select('*').eq('account_id', CUR_ACCT);
+    const { data: dailyData, error: dErr } = await pagedSelect(() => sb.from('history_daily').select('*').eq('account_id', CUR_ACCT).order('date', {ascending: true}).order('channel', {ascending: true}));
     if(dErr) throw dErr;
     const { data: snapData, error: sErr } = await sb.from('history_snapshots').select('*').eq('account_id', CUR_ACCT).order('id', {ascending:true});
     if(sErr) throw sErr;
@@ -6753,7 +6930,7 @@ const cloudSaveStock = debounce(cloudSaveStockNow, 600);
 async function cloudSyncStock(){
   if(!window.sb) return;
   try{
-    const { data, error } = await sb.from('stock').select('*').eq('account_id', CUR_ACCT);
+    const { data, error } = await pagedSelect(() => sb.from('stock').select('*').eq('account_id', CUR_ACCT).order('id', {ascending: true}));
     if(error) throw error;
     if(data && data.length){
       const obj = {};
@@ -8612,7 +8789,9 @@ function ensureMasterRow(e){
 function syncMasterStore(){
   const name = (STATE.files.master && STATE.files.master[0]) || '(saved copy)';
   if(!STATE.fileRows) STATE.fileRows = {};
+  for(const old of Object.keys(STATE.fileRows.master || {})) if(old !== name) markFileChanged('master', old, 'del');
   STATE.fileRows.master = {[name]: STATE.raw.master};
+  markFileChanged('master', name, 'put');
   STATE.files.master = [name];
   persistMaster(true);
   STATE.master = buildMaster();
@@ -9864,6 +10043,7 @@ document.getElementById('srcHist').addEventListener('click', () => {
 });
 document.getElementById('filesClear').addEventListener('click', () => {
   if(!confirm('Remove ALL loaded files from this session? (Saved history and the master products are kept.)')) return;
+  markAllFilesRemoved();
   STATE.fileRows = {};
   STATE.ttAdsMode = null;
   rebuildFromFileStore();
@@ -9875,7 +10055,12 @@ document.getElementById('filesClear').addEventListener('click', () => {
 function clearMasterProducts(){
   STATE.raw.master = [];
   STATE.files.master = undefined;
-  if(STATE.fileRows) delete STATE.fileRows.master;
+  if(STATE.fileRows && STATE.fileRows.master){
+    for(const n of Object.keys(STATE.fileRows.master)) markFileChanged('master', n, 'del');
+    delete STATE.fileRows.master;
+    persistFileRows();
+  }
+  store.remove(lsKey(LS_MASTER_PENDING));
   STATE.master = null;
   // persist a "cleared" marker so the built-in sheet does NOT come back on reload
   store.set(lsKey(LS_MASTER), JSON.stringify({cleared:true, savedAt: todayISO(), rows:[]}));
@@ -9897,6 +10082,7 @@ document.getElementById('rsGo').addEventListener('click', () => {
   const parts = [doFiles && 'loaded files', doHist && 'saved history', doMaster && 'master products'].filter(Boolean).join(', ');
   if(!confirm(`Remove ${parts} for this account? This cannot be undone.`)) return;
   if(doFiles){
+    markAllFilesRemoved();
     STATE.fileRows = {}; STATE.raw = EMPTY_RAW(); STATE.files = {}; STATE.ttAdsMode = null;
     STATE.channels = {}; STATE.extras = {}; STATE.diagText = 'Load files to see diagnostics.';
     document.querySelectorAll('.fs-item').forEach(el => {
