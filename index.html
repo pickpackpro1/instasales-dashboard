@@ -779,7 +779,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
         <button class="btn danger" id="prodClearAll">🗑 Clear all products</button>
         <div class="count" id="prodCount"></div>
       </div>
-      <div class="sub-title">Edit any value and it saves instantly &mdash; Profit/ROI/Margin per unit recalculate live. <b>Buying, Operational, Shipping and Referral write straight into Cost Manager</b>, dated the day your loaded reports are costed against, so the change drives the P&amp;L and past reports keep the cost that applied at the time. Everything else (selling price, the eBay and TikTok rates) is stored on the product itself. Selling £ comes from your sales files when loaded, or type it here.</div>
+      <div class="sub-title">Try figures here to see what they do to Profit, ROI and Margin. <b>This page is for your own view: nothing typed here changes Cost Manager or the dashboard</b> &mdash; real costs are set in Cost Manager. Each box starts at the real figure; one you change is kept and shown highlighted, and clearing a highlighted box puts the real figure back. Selling £ comes from your sales files when loaded, or type your own.</div>
       <div id="costGaps"></div>
       <div class="table-wrap" style="max-height:620px"><table id="prodTable">
         <thead><tr><th>Platform</th><th title="An Amazon ASIN is two offers - FBM and FBA - and they cost different amounts, so each has its own row">Fulfilment</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num" style="background:#eef6fd" title="TikTok: what the buyer pays for delivery. TikTok revenue is the SKU subtotal, which leaves this out, so it is added back before profit. Blank uses the £3.77 default.">Buyer shipping £</th><th class="num" style="background:#eef6fd" title="Selling £ plus Buyer shipping - what the buyer actually pays, and what profit is worked out on">Total selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="What the fee actually costs at the selling price, VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
@@ -4214,7 +4214,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-10-b';
+const BUILD_ID = '2026-09-21-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5971,6 +5971,29 @@ function manualPriceFor(e){
   const v = k ? PRICEBOOK[k] : null;
   return (v != null && v !== '' && +v > 0) ? +v : null;
 }
+// ---- ROI Book ----
+// Product ROIs is a what-if page: figures typed there are for looking at, not for the books.
+// They used to be written into the master sheet AND the Cost Book, so a cost tried out on that
+// page changed Cost Manager and every dashboard figure along with it. They are kept here instead,
+// one entry per offer, and nothing but Product ROIs reads them. Cost Manager stays the only place
+// a cost is set for real.
+const LS_ROIBOOK = 'mcpd_roibook';
+let ROIBOOK = {};          // offer key -> {buy, oper, ship, ref, aff, sads, reg, fixed, bship}
+const ROI_FIELDS = ['buy','oper','ship','ref','aff','sads','reg','fixed','bship'];
+function loadRoiBook(){
+  try{ ROIBOOK = JSON.parse(store.get(lsKey(LS_ROIBOOK))) || {}; }catch(e){ ROIBOOK = {}; }
+}
+function saveRoiBook(){
+  COST_EDIT_SEQ++;
+  try{ store.set(lsKey(LS_ROIBOOK), JSON.stringify(ROIBOOK)); }catch(e){}
+  cloudSaveCostBook();     // the same settings row as the Cost Book, under a key of its own
+}
+// Keyed like the Price Book, plus the offer on Amazon, where FBA and FBM cost different amounts.
+function roiKeyFor(e, chan){
+  const pk = priceKeyFor(e);
+  if(!pk) return '';
+  return pk.startsWith('amazon|') ? pk + '|' + (chan || 'fbm') : pk;
+}
 // ---- Account settings ----
 // Three things the database was never given:
 //   * the VAT settings and the fallback fee rates. Their controls changed the figures on screen
@@ -6096,6 +6119,7 @@ function acctSettingsPayload(){
   const out = Object.assign({}, remote);
   out.costBook  = (COSTS_PULLED || !isEmptyObj(COSTBOOK))  ? COSTBOOK  : remote.costBook;
   out.priceBook = (COSTS_PULLED || !isEmptyObj(PRICEBOOK)) ? PRICEBOOK : remote.priceBook;
+  out.roiBook   = (COSTS_PULLED || !isEmptyObj(ROIBOOK))   ? ROIBOOK   : remote.roiBook;
   if(SETTINGS_PULLED){
     out.cmpNotes = CMP_NOTES;
     out.pnlHist = PNL_HIST;
@@ -6214,11 +6238,19 @@ async function cloudSyncCostBook(attempt){
     ACCT_SETTINGS_REMOTE = settingsRowData(data);
     if(!SETTINGS_PULLED) applyRemoteAcctSettings(ACCT_SETTINGS_REMOTE);   // the early read did not get through
     COSTS_PULLED = true;
+    const roiBefore = JSON.stringify([PRICEBOOK, ROIBOOK]);
     const pb = data && data.data && data.data.priceBook;
     if(pb && Object.keys(pb).length){
       PRICEBOOK = pb;
       try{ store.set(lsKey(LS_PRICEBOOK), JSON.stringify(PRICEBOOK)); }catch(e){}
     }
+    const rb = data && data.data && data.data.roiBook;
+    if(rb && typeof rb === 'object'){
+      ROIBOOK = rb;
+      try{ store.set(lsKey(LS_ROIBOOK), JSON.stringify(ROIBOOK)); }catch(e){}
+    } else if(!isEmptyObj(ROIBOOK)) cloudSaveCostBook();
+    if(STATE.page === 'products' && STATE.master && JSON.stringify([PRICEBOOK, ROIBOOK]) !== roiBefore)
+      keepFocus('#prodTable', renderProducts);
     const cb = data && data.data && data.data.costBook;
     if(cb && Object.keys(cb).length){
       COSTBOOK = cb;
@@ -8823,7 +8855,7 @@ function renderCostGaps(){
     <div style="font-weight:800;font-size:13px;margin-bottom:4px">⚠ ${missing.length+blank.length} selling product(s) need cost data — their profit is understated until you add it</div>
     ${missing.length ? `<div style="font-weight:700;margin:8px 0 2px;font-size:12px">Not in the master (add a row):</div>` + missing.slice(0,50).map(g=>line(g,'no cost row',false)).join('') : ''}
     ${blank.length ? `<div style="font-weight:700;margin:8px 0 2px;font-size:12px">In the master but a cost is blank / £0 (click to open it below):</div>` + blank.slice(0,50).map(g=>line(g, g.gaps.join(' + ')+' = £0', true)).join('') : ''}
-    <div style="font-size:11px;color:var(--muted);margin-top:6px">Blank costs are treated as £0 (not free) — fill them in the table below. Missing products can be added with the form under the table, or drop an updated master Excel.</div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">Blank costs are treated as £0 (not free) — add them in <b>Cost Manager</b>; figures typed in the table below are for this page only. Missing products can be added with the form under the table, or drop an updated master Excel.</div>
   </div>`;
   el.querySelectorAll('.cost-gap.clk').forEach(d => d.addEventListener('click', () => { document.getElementById('prodSearch').value = d.dataset.gapkey; document.getElementById('prodPlat').value = 'all'; renderProducts(); }));
 }
@@ -8896,6 +8928,24 @@ function renderProducts(){
     if(e.selling_price != null && e.selling_price > 0) return e.selling_price;
     return achievedPrice(e);
   };
+  // Every box starts at the REAL figure - Cost Manager's, else the sheet's - and shows a figure
+  // tried here only when there is one in the ROI Book. `own` is what was tried, `real` what the
+  // books say, `fig` what this page works with.
+  const PCT_F = ['ref','aff','sads','reg'];
+  const realFig = (e, chan) => {
+    const c = costFor(e, chan);
+    return {buy: c.buying, oper: c.oper, ship: c.shipping, ref: c.referral,
+      aff: e.aff != null ? e.aff : 0.15, sads: e.shopads != null ? e.shopads : 0.02,
+      reg: e.reg != null ? e.reg : EBAY_REG_PCT, fixed: e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER,
+      bship: (e.bship != null && e.bship !== '') ? +e.bship : TT_BUYER_SHIPPING};
+  };
+  const figOf = (e, chan) => {
+    const real = realFig(e, chan), own = ROIBOOK[roiKeyFor(e, chan)] || {}, fig = {};
+    for(const f of ROI_FIELDS) fig[f] = (own[f] != null && own[f] !== '') ? +own[f] : real[f];
+    return {fig, real, own};
+  };
+  const shownReal = (f, v) => v == null || v === '' ? 'none set (the channel default applies)'
+    : PCT_F.includes(f) ? (+v * 100).toFixed(2) + '%' : '\u00a3' + (+v).toFixed(2);
   // c = that offer's costs (its own Cost Book channel), so FBA and FBM price out separately.
   // Buyer-paid delivery, TikTok only. Their revenue figure is the SKU subtotal, so this is
   // genuinely on top rather than already counted; every other channel reports a price the
@@ -8929,14 +8979,25 @@ function renderProducts(){
             feeGross, feeEx, feeVat: feeGross - feeEx};
   };
   const pill = (v, fmt) => `<span class="pill ${v > 0.005 ? 'pos' : v < -0.005 ? 'neg' : 'zero'}">${fmt(v)}</span>`;
-  const numIn = (i, f, v, step) => `<input type="number" data-i="${i}" data-f="${f}" value="${(v != null && v !== '') ? +(+v).toFixed(2) : ''}" step="${step}" min="0" style="width:82px;padding:5px 8px;text-align:right">`;
+  // F given: a box that can hold a figure of your own. Highlighted when it does, and it says what
+  // the real figure is, so the two are never confused.
+  const numIn = (i, f, v, step, F) => {
+    const mine = F && F.own[f] != null && F.own[f] !== '';
+    const tip = !F ? '' : mine
+      ? `Your figure, for this page only. The real one is ${shownReal(f, F.real[f])} - clear the box to go back to it.`
+      : 'The real figure. Type a different one to see what it would do - Cost Manager and the dashboard are not changed.';
+    return `<input type="number" data-i="${i}" data-f="${f}" value="${(v != null && v !== '') ? +(+v).toFixed(2) : ''}" step="${step}" min="0"${
+      tip ? ` title="${esc(tip)}"` : ''} style="width:82px;padding:5px 8px;text-align:right${mine ? ';background:#fff3cd;border-color:#d9a400' : ''}">`;
+  };
   tb.innerHTML = PROD_VIEW.map((o, i) => {
     const e = o.e, chan = o.chan;
     const P = priceOf(e);
-    const c = costFor(e, chan);
-    const bship = buyerShipOf(e);
+    const F = figOf(e, chan);
+    const c = {buying: F.fig.buy, oper: F.fig.oper, shipping: F.fig.ship, referral: F.fig.ref};
+    const ee = Object.assign({}, e, {aff: F.fig.aff, shopads: F.fig.sads, reg: F.fig.reg, fixedu: F.fig.fixed, bship: F.fig.bship});
+    const bship = buyerShipOf(ee);
     // Profit, ROI and margin are worked out on what the buyer actually pays.
-    const ec = prodEcon(e, P == null ? null : P + bship, c);
+    const ec = prodEcon(ee, P == null ? null : P + bship, c);
     const fam = chOf(e.plat) === 'amazon2' ? 'amazon' : chOf(e.plat);
     const isFba = chan === 'fba';
     const tag = fam === 'amazon'
@@ -8975,19 +9036,19 @@ function renderProducts(){
       return `<div style="font-size:10px;color:var(--muted)" title="Average actually achieved per unit over the loaded period. Your typed price is what the ROI below is based on.">sold at ${fmtGBP(a)}</div>`;
     })()}</td>
     <td class="num" style="background:#eef6fd">${chOf(e.plat) === 'tiktok'
-      ? numIn(i,'bship', e.bship != null && e.bship !== '' ? e.bship : TT_BUYER_SHIPPING, '0.01')
+      ? numIn(i,'bship', F.fig.bship, '0.01', F)
       : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num prod-eco" style="background:#eef6fd" data-eco-i="${i}" data-eco="total">${
       P != null ? `<b>${fmtGBP(P + bship)}</b>` : '<span style="color:var(--muted)">–</span>'}</td>
-    <td class="num">${numIn(i,'buy',c.buying,'0.01')}</td>
-    <td class="num">${numIn(i,'oper',c.oper,'0.01')}</td>
-    <td class="num"${isFba?' title="FBA fulfilment fee"':''}>${numIn(i,'ship',c.shipping,'0.01')}</td>
-    <td class="num">${numIn(i,'ref', c.referral != null ? c.referral*100 : '', '0.1')}</td>
+    <td class="num">${numIn(i,'buy',c.buying,'0.01',F)}</td>
+    <td class="num">${numIn(i,'oper',c.oper,'0.01',F)}</td>
+    <td class="num"${isFba?' title="FBA fulfilment fee"':''}>${numIn(i,'ship',c.shipping,'0.01',F)}</td>
+    <td class="num">${numIn(i,'ref', c.referral != null ? c.referral*100 : '', '0.1', F)}</td>
     <td class="num" style="background:#eef6fd">${ec ? fmtGBP(ec.feeGross) : '<span style="color:var(--muted)">&mdash;</span>'}</td>
-    <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'aff', (e.aff != null ? e.aff : 0.15)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
-    <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'sads', (e.shopads != null ? e.shopads : 0.02)*100, '0.1') : '<span style="color:var(--muted)">–</span>'}</td>
-    <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'reg', (e.reg != null ? e.reg : EBAY_REG_PCT)*100, '0.05') : '<span style="color:var(--muted)">–</span>'}</td>
-    <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'fixed', e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER, '0.01') : '<span style="color:var(--muted)">–</span>'}</td>
+    <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'aff', F.fig.aff*100, '0.1', F) : '<span style="color:var(--muted)">–</span>'}</td>
+    <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'sads', F.fig.sads*100, '0.1', F) : '<span style="color:var(--muted)">–</span>'}</td>
+    <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'reg', F.fig.reg*100, '0.05', F) : '<span style="color:var(--muted)">–</span>'}</td>
+    <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'fixed', F.fig.fixed, '0.01', F) : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num prod-eco" data-eco-i="${i}" data-eco="profit" style="background:#f4fbf7">${ec ? pill(ec.profit, fmtGBP) : '<span class="pill zero">no price</span>'}</td>
     <td class="num prod-eco" data-eco-i="${i}" data-eco="roi" style="background:#f4fbf7">${ec && ec.roi != null ? pill(ec.roi, fmtPct) : '-'}</td>
     <td class="num prod-eco" data-eco-i="${i}" data-eco="margin" style="background:#f4fbf7">${ec && ec.margin != null ? pill(ec.margin, fmtPct) : '-'}</td>
@@ -8996,66 +9057,54 @@ function renderProducts(){
   </tr>`;
   }).join('');
   // Write ONE field of one offer. Shared by the save-on-blur and by the row's tick button, so
-  // both land the value in exactly the same places and cannot drift apart.
+  // both land the value in exactly the same place and cannot drift apart.
+  //
+  // That place is this page's own store and nothing else. Edits here used to be written into the
+  // master sheet and the Cost Book, so trying a cost on this page changed Cost Manager and every
+  // figure on the dashboard. Returns what changed: 'price', 'roi' or '' for nothing.
   const prodWriteField = (o, f, rawValue) => {
-    const e = o.e, rowChan = o.chan;
-    let v = parseFloat(rawValue);
-    if(isNaN(v) || v < 0) v = 0;
-    // Buyer shipping is the one field where blank is meaningful: it means "use the default",
-    // whereas a typed 0 means delivery really is free. Coercing blank to 0 like the others did
-    // both hid the default and left no way back to it.
+    const e = o.e;
     const blank = String(rawValue == null ? '' : rawValue).trim() === '';
-    const field = {price:'selling_price', bship:'buyer_shipping_per_unit', buy:'buying_cost_per_unit', oper:'operational_cost_per_unit', ship:'shipping_cost_per_unit', ref:'Refferal fee %', aff:'affiliate_pct', sads:'shopads_pct', reg:'regulatory_pct', fixed:'fixed_fee_per_unit'}[f];
-    if(!field) return {toBook:'', created:false};
-    const val = (f === 'bship' && blank) ? null
-              : ['ref','aff','sads','reg'].includes(f) ? v/100 : v;
-    const tgt = ensureMasterRow(e);
-    for(const r of tgt.rows) r[field] = (val == null ? '' : val);
-    if(f==='price'){
-      e.selling_price = val;
-      // and into the Price Book, which the sheet cannot overwrite
+    let v = parseFloat(rawValue);
+    if(!blank && (isNaN(v) || v < 0)) v = 0;
+    if(f === 'price'){
       const pk = priceKeyFor(e);
-      if(pk){
-        if(val == null || !(val > 0)) delete PRICEBOOK[pk]; else PRICEBOOK[pk] = val;
-        savePriceBook();
+      if(!pk) return '';
+      const had = manualPriceFor(e);
+      if(blank || !(v > 0)){ if(had == null) return ''; delete PRICEBOOK[pk]; return 'price'; }
+      if(had != null && Math.abs(had - v) < 0.0001) return '';
+      // Saving a row whose price you never set must not freeze today's average as "yours".
+      if(had == null){
+        const auto = (e.selling_price != null && e.selling_price > 0) ? e.selling_price : achievedPrice(e);
+        if(auto != null && Math.abs(+(+auto).toFixed(2) - v) < 0.0001) return '';
       }
+      PRICEBOOK[pk] = v;
+      return 'price';
     }
-    else if(f==='bship') e.bship = val;
-    else if(f==='buy') e.buying = val;
-    else if(f==='oper') e.oper = val;
-    else if(f==='ship') e.shipping = val;
-    else if(f==='aff') e.aff = val;
-    else if(f==='sads') e.shopads = val;
-    else if(f==='reg') e.reg = val;
-    else if(f==='fixed') e.fixedu = val;
-    else e.referral = val;
-    // Costs live in the Cost Book, which overlays the sheet in buildMaster(). Writing only to
-    // the sheet meant the overlay put the old figure straight back on the next rebuild and the
-    // edit appeared not to save. Mirror cost edits into the book, dated the same day the
-    // loaded reports are costed against, so this page and Cost Manager stay one source.
-    const CB_FIELD = {buy:'buy', oper:'oper', ship:'ship', ref:'ref'};
-    let toBook = '';
-    if(CB_FIELD[f]){
-      const ck = chOfPlat(e.plat);
-      const fam = ck === 'amazon2' ? 'amazon' : ck;
-      const id = fam === 'amazon' ? (e.asin || e.pid || e.sku) : fam === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid);
-      if(id){
-        const when = costRefDate();
-        // FBA stores its fulfilment fee under 'fee', FBM its own postage under 'ship'
-        const bookField = (f === 'ship' && rowChan === 'fba') ? 'fee' : CB_FIELD[f];
-        cbSetCost(fam, id, rowChan, bookField, val, when, e.name);
-        toBook = ` Cost Manager updated, effective ${when}.`;
-      }
-    }
-    return {toBook, created:tgt.created};
+    if(!ROI_FIELDS.includes(f)) return '';
+    const k = roiKeyFor(e, o.chan);
+    if(!k) return '';
+    const {real, own} = figOf(e, o.chan);
+    const rec = Object.assign({}, own);
+    // The real figure typed back (as the box shows it, to 2 places) is not a what-if. Keeping
+    // it would pin this row to today's cost, and a later change in Cost Manager would never show
+    // here - so only a figure that actually differs is kept.
+    const realShown = real[f] == null ? null : +(PCT_F.includes(f) ? +real[f] * 100 : +real[f]).toFixed(2);
+    if(blank || (realShown != null && Math.abs(v - realShown) < 0.0001)) delete rec[f];
+    else rec[f] = PCT_F.includes(f) ? v / 100 : v;
+    if(JSON.stringify(rec) === JSON.stringify(own)) return '';
+    if(Object.keys(rec).length) ROIBOOK[k] = rec; else delete ROIBOOK[k];
+    return 'roi';
   };
-  // One rebuild for however many fields were just written, rather than one rebuild per field.
-  const prodCommit = (msg) => {
-    syncMasterStore();
-    STATE.master = buildMaster();
-    if(loadedChannels().length){ recompute(); diagnostics(); }
+  // Nothing is rebuilt: the P&L never reads these, so there is nothing to recompute.
+  const prodCommit = (kinds, what) => {
+    const k = new Set(kinds.filter(Boolean));
+    if(k.has('price')) savePriceBook();
+    if(k.has('roi')) saveRoiBook();
     keepFocus('#prodTable', renderProducts);   // refresh the computed Profit / ROI / Margin columns
-    showBanner(msg, 'success');
+    showBanner(k.size
+      ? 'Saved on Product ROIs' + (what ? ' for ' + what : '') + '. Cost Manager and the dashboard are unchanged.'
+      : 'Nothing to save - these are already the figures in use.', 'success');
   };
   // Profit, ROI and margin used to move only once a field had been committed, so there was no
   // way to see what a price WOULD do before saving it. Recomputed on every keystroke from what
@@ -9075,13 +9124,14 @@ function renderProducts(){
     const pct = f => { const v = val(f); return v == null ? null : v/100; };
     // A draft of the entry and its costs, exactly as prodEcon would see them after saving.
     const e = o.e;
+    const F = figOf(e, o.chan);
     const draft = Object.assign({}, e, {
-      aff:     pct('aff')  != null ? pct('aff')  : e.aff,
-      shopads: pct('sads') != null ? pct('sads') : e.shopads,
-      reg:     pct('reg')  != null ? pct('reg')  : e.reg,
-      fixedu:  val('fixed') != null ? val('fixed') : e.fixedu
+      aff:     pct('aff')  != null ? pct('aff')  : F.fig.aff,
+      shopads: pct('sads') != null ? pct('sads') : F.fig.sads,
+      reg:     pct('reg')  != null ? pct('reg')  : F.fig.reg,
+      fixedu:  val('fixed') != null ? val('fixed') : F.fig.fixed
     });
-    const base = costFor(e, o.chan);
+    const base = {buying: F.fig.buy, oper: F.fig.oper, shipping: F.fig.ship, referral: F.fig.ref};
     const costs = {
       buying:   val('buy')  != null ? val('buy')  : base.buying,
       oper:     val('oper') != null ? val('oper') : base.oper,
@@ -9091,7 +9141,7 @@ function renderProducts(){
     const typedPrice = val('price');
     const P = typedPrice != null && typedPrice > 0 ? typedPrice : priceOf(e);
     const typedShip = val('bship');
-    draft.bship = typedShip != null ? typedShip : e.bship;
+    draft.bship = typedShip != null ? typedShip : F.fig.bship;
     const bship = buyerShipOf(draft);
     const ec = prodEcon(draft, P == null ? null : P + bship, costs);
     {   // keep the total column in step while typing
@@ -9099,16 +9149,19 @@ function renderProducts(){
       if(td) td.innerHTML = P != null ? '<b>' + fmtGBP(P + bship) + '</b>' : '<span style="color:var(--muted)">–</span>';
     }
     const saved = {
-      price: manualPriceFor(e) != null ? manualPriceFor(e) : e.selling_price,
+      price: priceOf(e),
       buy: base.buying, oper: base.oper, ship: base.shipping,
-      ref: base.referral, aff: e.aff, sads: e.shopads, reg: e.reg, fixed: e.fixedu,
-      bship: (e.bship != null && e.bship !== '') ? +e.bship : (chOf(e.plat) === 'tiktok' ? TT_BUYER_SHIPPING : null)
+      ref: base.referral, aff: F.fig.aff, sads: F.fig.sads, reg: F.fig.reg, fixed: F.fig.fixed,
+      bship: chOf(e.plat) === 'tiktok' ? F.fig.bship : null
     };
-    const same = (a, b) => (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 0.0001);
+    // The boxes show 2 places, so compare at that precision - otherwise a cost of 3.456 shown
+    // as 3.46 reads as an unsaved change the moment any other box is touched.
+    const same = (a, b, tol) => (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < (tol || 0.005));
+    const P5 = 0.00005;
     const dirty = !same(typedPrice, saved.price) || !same(val('buy'), saved.buy)
       || !same(val('oper'), saved.oper) || !same(val('ship'), saved.ship)
-      || !same(pct('ref'), saved.ref) || !same(pct('aff'), saved.aff)
-      || !same(pct('sads'), saved.sads) || !same(pct('reg'), saved.reg) || !same(val('fixed'), saved.fixed)
+      || !same(pct('ref'), saved.ref, P5) || !same(pct('aff'), saved.aff, P5)
+      || !same(pct('sads'), saved.sads, P5) || !same(pct('reg'), saved.reg, P5) || !same(val('fixed'), saved.fixed)
       || !same(typedShip, saved.bship);
     const put = (which, html) => {
       const td = tb.querySelector('.prod-eco[data-eco-i="' + i + '"][data-eco="' + which + '"]');
@@ -9130,9 +9183,8 @@ function renderProducts(){
   });
   tb.querySelectorAll('input[data-f]').forEach(inp => inp.addEventListener('change', () => {
     const o = PROD_VIEW[parseInt(inp.dataset.i)];
-    const res = prodWriteField(o, inp.dataset.f, inp.value);
-    prodCommit('Saved - profit, ROI and margin recalculated.' + res.toBook
-      + (res.created ? ' This product had no master-sheet row, so one was created to hold it.' : ''));
+    if(!o) return;
+    prodCommit([prodWriteField(o, inp.dataset.f, inp.value)]);
   }));
   // The tick saves the whole row at once. Blur already saves a field, but a value still being
   // typed has not blurred yet - so without this, pressing the row's own save button was the one
@@ -9142,14 +9194,7 @@ function renderProducts(){
     const o = PROD_VIEW[parseInt(i)];
     if(!o) return;
     const inputs = [...tb.querySelectorAll('input[data-f][data-i="' + i + '"]')];
-    let toBook = '', created = false;
-    for(const inp of inputs){
-      const res = prodWriteField(o, inp.dataset.f, inp.value);
-      if(res.toBook) toBook = res.toBook;
-      created = created || res.created;
-    }
-    prodCommit('Saved ' + fmtNum(inputs.length) + ' field(s) for ' + (o.e.sku || o.e.asin || o.e.pid) + '.' + toBook
-      + (created ? ' This product had no master-sheet row, so one was created to hold it.' : ''));
+    prodCommit(inputs.map(inp => prodWriteField(o, inp.dataset.f, inp.value)), o.e.sku || o.e.asin || o.e.pid);
   }));
   tb.querySelectorAll('[data-pdel]').forEach(b => b.addEventListener('click', () => {
     const e = PROD_VIEW[parseInt(b.dataset.pdel)].e;
@@ -11029,6 +11074,7 @@ function switchAccount(id){
   loadStock();
   loadCmpNotes();
   loadPriceBook();
+  loadRoiBook();
   loadPnlHist();
   loadAcctSettings();
   loadCostBook();
@@ -11081,6 +11127,7 @@ function startApp(){
   loadStock();
   loadCmpNotes();
   loadPriceBook();
+  loadRoiBook();
   loadPnlHist();
   loadAcctSettings();
   loadCostBook();
