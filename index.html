@@ -782,7 +782,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
       <div class="sub-title">Try figures here to see what they do to Profit, ROI and Margin. <b>This page is for your own view: nothing typed here changes Cost Manager or the dashboard</b> &mdash; real costs are set in Cost Manager. Each box starts at the real figure; one you change is kept and shown highlighted, and clearing a highlighted box puts the real figure back. Selling £ comes from your sales files when loaded, or type your own.</div>
       <div id="costGaps"></div>
       <div class="table-wrap" style="max-height:620px"><table id="prodTable">
-        <thead><tr><th>Platform</th><th title="An Amazon ASIN is two offers - FBM and FBA - and they cost different amounts, so each has its own row">Fulfilment</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num" style="background:#eef6fd" title="TikTok: what the buyer pays for delivery. TikTok revenue is the SKU subtotal, which leaves this out, so it is added back before profit. Blank uses the £3.77 default.">Buyer shipping £</th><th class="num" style="background:#eef6fd" title="Selling £ plus Buyer shipping - what the buyer actually pays, and what profit is worked out on">Total selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="What the fee actually costs at the selling price, VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" title="TikTok: affiliate commission, % of selling price">Affiliate %</th><th class="num" title="TikTok: shop ads commission, % of selling price">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
+        <thead><tr><th>Platform</th><th title="An Amazon ASIN is two offers - FBM and FBA - and they cost different amounts, so each has its own row">Fulfilment</th><th>SKU</th><th>ASIN / Item ID</th><th>Product</th><th class="num" style="background:#eef6fd">Selling £</th><th class="num" style="background:#eef6fd" title="TikTok: what the buyer pays for delivery ('Shipping Fee After Discount' in the orders file). It is part of what the buyer pays, so profit counts it, but no fee is charged on it. Blank uses the £3.77 default.">Buyer shipping £</th><th class="num" style="background:#eef6fd" title="Selling £ plus Buyer shipping - what the buyer actually pays, and what profit is worked out on">Total selling £</th><th class="num">Buying £</th><th class="num">Operational £</th><th class="num">Shipping £</th><th class="num">Referral %</th><th class="num" style="background:#eef6fd" title="Referral fee on Selling £ - buyer shipping is not charged - VAT included. Amazon and eBay quote it net so it is grossed up; TikTok already quotes it inclusive.">Referral £</th><th class="num" style="background:#eef6fd" title="The other selling fees, on Selling £, VAT included. TikTok: affiliate + Shop Ads commission. eBay: regulatory fee + fixed fee. Point at a figure for the split.">Other fees £</th><th class="num" title="TikTok: affiliate commission, % of Selling £ (not buyer shipping)">Affiliate %</th><th class="num" title="TikTok: Shop Ads commission, % of Selling £ (not buyer shipping)">Shop Ads %</th><th class="num" title="eBay: regulatory operating fee, % of selling price">Reg %</th><th class="num" title="eBay: fixed fee per unit">Fixed £/unit</th><th class="num" style="background:#eefaf4">Profit £/unit</th><th class="num" style="background:#eefaf4">ROI %</th><th class="num" style="background:#eefaf4">Margin %</th><th></th></tr></thead>
         <tbody></tbody>
       </table></div>
     </div>
@@ -3146,14 +3146,23 @@ function computeTikTok(){
     const totalSub = orderTotalSub[oid] || sub;
     const share = totalSub > 0 ? sub/totalSub : 1;
     const date = parseDate(r['Created Time'] || r['Paid Time']);
-    if(!cancelled) fullNetRev += cleanMoney(r['Order Amount'])*share - cleanMoney(r['Order Refund Amount'])*share;
+    if(!cancelled) fullNetRev += cleanMoney(r['Order Amount'])*share - cleanMoney(r['Order Refund Amount']);
     if(date){ if(!fullMin || date < fullMin) fullMin = date; if(!fullMax || date > fullMax) fullMax = date; }
     if(!inRange(date)) continue;
+    // Two different shapes in one file, confirmed against the real exports: 'Order Amount' is the
+    // whole ORDER (repeated on each line - every line's subtotal plus the buyer's shipping), so a
+    // line takes its share of it; 'Order Refund Amount' belongs to the LINE and covers the item
+    // only (shipping is not refunded), so it is taken as it stands. Scaling it by the share too
+    // under-counted a refund on any order with more than one product in it.
+    const refundLine = cancelled ? 0 : cleanMoney(r['Order Refund Amount']);
     orders.push({oid, sku_id:String(r['SKU ID']||'').trim(), seller_sku:fixText(r['Seller SKU']), name:fixText(r['Product Name']),
       date, cancelled, status:fixText(r['Order Status']), sub,
       net_qty: cancelled ? 0 : Math.max(qty-ret,0),
       gross: cancelled ? 0 : cleanMoney(r['Order Amount'])*share,
-      refund: cancelled ? 0 : cleanMoney(r['Order Refund Amount'])*share});
+      refund: refundLine,
+      // TikTok charges its referral fee on the SKU subtotal after discount - the product, not the
+      // buyer's shipping - less whatever of it was refunded.
+      fee_base: cancelled ? 0 : Math.max(sub - refundLine, 0)});
   }
   const seenAff = new Set();
   const ttAff = R.tt_aff.filter(r => {
@@ -3216,6 +3225,7 @@ function computeTikTok(){
     s.units += o.net_qty;
     s.revenue_gross += o.gross;
     s.refunds += o.refund;
+    s._feeBase = (s._feeBase || 0) + o.fee_base;
     if(!o.cancelled) s._oids.add(o.oid);
     const e = M.tiktok.bySku[o.seller_sku];
     if(e && !o.cancelled){
@@ -3240,7 +3250,9 @@ function computeTikTok(){
     const e = s._e;
     s.buying = e ? s.units * e.buying : 0;
     const rate = (e && e.referral != null) ? e.referral : STATE.ttRate;
-    s.mkt_fee = (s.revenue_gross - s.refunds) * rate;
+    // on the product subtotal only: revenue_gross includes the buyer's shipping, the fee does not
+    s.mkt_fee = (s._feeBase || 0) * rate;
+    delete s._feeBase;
     if(mode === 'product'){
       const a = adsByPid[s._pid];
       const tu = pidUnits[s._pid]||0;
@@ -4214,7 +4226,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-21-a';
+const BUILD_ID = '2026-09-21-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -8863,7 +8875,7 @@ function renderProducts(){
   renderCostGaps();
   const tb = document.querySelector('#prodTable tbody');
   if(!STATE.raw.master.length){
-    tb.innerHTML = '<tr><td colspan="21" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="22" style="color:var(--muted)">No products yet - costs now live in <b>Cost Manager</b> (use its Import button), or add products one by one with the form below.</td></tr>';
     document.getElementById('prodCount').textContent = '';
     return;
   }
@@ -8947,36 +8959,57 @@ function renderProducts(){
   const shownReal = (f, v) => v == null || v === '' ? 'none set (the channel default applies)'
     : PCT_F.includes(f) ? (+v * 100).toFixed(2) + '%' : '\u00a3' + (+v).toFixed(2);
   // c = that offer's costs (its own Cost Book channel), so FBA and FBM price out separately.
-  // Buyer-paid delivery, TikTok only. Their revenue figure is the SKU subtotal, so this is
-  // genuinely on top rather than already counted; every other channel reports a price the
+  // Buyer-paid delivery, TikTok only. The orders file lists it apart from the product price
+  // ('Shipping Fee After Discount'), and the dashboard's revenue - 'Order Amount' - includes it,
+  // so it is added to the selling price here to match. Every other channel reports a price the
   // buyer's postage is already inside, and adding anything there would double-count it.
   const buyerShipOf = e => {
     if(chOf(e.plat) !== 'tiktok') return 0;
     return (e.bship != null && e.bship !== '') ? +e.bship : TT_BUYER_SHIPPING;
   };
-  const prodEcon = (e, P, c) => {
+  // P = the selling price, the figure every fee is charged on. `extra` = the buyer's shipping,
+  // which is revenue but carries no fee - TikTok charges on the SKU subtotal after discount.
+  const prodEcon = (e, P, c, extra) => {
     if(P == null || !(P > 0)) return null;
     c = c || e;
     const V = STATE.vat, vDiv = 1 + V.rate;
     const ck = chOf(e.plat);
-    const revEx = V.revIncVAT ? P/vDiv : P;
+    const paid = P + (extra || 0);
+    const revEx = V.revIncVAT ? paid/vDiv : paid;
     const FB = {tiktok:STATE.ttRate, amazon:STATE.amzRef, amazon2:STATE.amzRef, ebay:EBAY_FVF_PCT, shopify:STATE.shopFee};
     const rate = c.referral != null ? c.referral : FB[ck];
     // The rate is applied to the selling price the same way the engine does it, then the same
     // VAT route is followed: gross up where the fee is quoted net (Amazon, eBay), leave it
     // where it is already inclusive (TikTok), and reclaim the VAT portion either way. Both
     // routes land on the same ex-VAT cost, which is what profit is measured against.
-    let feeGross = P * rate;
-    if(ck === 'tiktok') feeGross += P * ((e.aff != null ? e.aff : 0.15) + (e.shopads != null ? e.shopads : 0.02));
-    if(ck === 'ebay')   feeGross += P * (e.reg != null ? e.reg : EBAY_REG_PCT) + (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER);
-    if(vatGrossUpFor(ck, 'mkt_fee')) feeGross *= vDiv;         // quoted net -> what is actually charged
+    // Referral is kept apart from the rest so each can be shown on its own: TikTok's affiliate and
+    // Shop Ads commissions, and eBay's regulatory and fixed fees, used to sit inside "Referral £".
+    const up = vatGrossUpFor(ck, 'mkt_fee') ? vDiv : 1;           // quoted net -> what is actually charged
+    const refGross = P * rate * up;
+    let otherGross = 0, otherNote = '';
+    if(ck === 'tiktok'){
+      const a = P * (e.aff != null ? e.aff : 0.15) * up, sa = P * (e.shopads != null ? e.shopads : 0.02) * up;
+      otherGross = a + sa; otherNote = 'Affiliate ' + fmtGBP(a) + ' + Shop Ads ' + fmtGBP(sa);
+    }
+    if(ck === 'ebay'){
+      const rg = P * (e.reg != null ? e.reg : EBAY_REG_PCT) * up, fx = (e.fixedu != null ? e.fixedu : EBAY_FIXED_PER_ORDER) * up;
+      otherGross = rg + fx; otherNote = 'Regulatory ' + fmtGBP(rg) + ' + fixed fee ' + fmtGBP(fx);
+    }
+    const feeGross = refGross + otherGross;
     const feeEx = vatIncFor(ck, 'mkt_fee') ? feeGross/vDiv : feeGross;
     const cEx = (v, k) => vatIncFor(ck, k) ? v/vDiv : v;
     const buyEx = cEx(c.buying, 'buying');
     const costs = buyEx + cEx(c.oper, 'oper') + cEx(c.shipping, 'shipping');
     const profit = revEx - feeEx - costs;
     return {profit, roi: buyEx > 0 ? profit/buyEx*100 : null, margin: revEx > 0 ? profit/revEx*100 : null,
-            feeGross, feeEx, feeVat: feeGross - feeEx};
+            feeGross, feeEx, feeVat: feeGross - feeEx, refGross, otherGross, otherNote};
+  };
+  // The two fee columns, shared by the row and the as-you-type preview.
+  const feeCell = (ec, which) => {
+    const dash = '<span style="color:var(--muted)">&mdash;</span>';
+    if(!ec) return dash;
+    if(which === 'ref') return fmtGBP(ec.refGross);
+    return ec.otherGross > 0.0001 ? `<span title="${esc(ec.otherNote)}">${fmtGBP(ec.otherGross)}</span>` : dash;
   };
   const pill = (v, fmt) => `<span class="pill ${v > 0.005 ? 'pos' : v < -0.005 ? 'neg' : 'zero'}">${fmt(v)}</span>`;
   // F given: a box that can hold a figure of your own. Highlighted when it does, and it says what
@@ -8997,7 +9030,7 @@ function renderProducts(){
     const ee = Object.assign({}, e, {aff: F.fig.aff, shopads: F.fig.sads, reg: F.fig.reg, fixedu: F.fig.fixed, bship: F.fig.bship});
     const bship = buyerShipOf(ee);
     // Profit, ROI and margin are worked out on what the buyer actually pays.
-    const ec = prodEcon(ee, P == null ? null : P + bship, c);
+    const ec = prodEcon(ee, P, c, bship);
     const fam = chOf(e.plat) === 'amazon2' ? 'amazon' : chOf(e.plat);
     const isFba = chan === 'fba';
     const tag = fam === 'amazon'
@@ -9044,7 +9077,8 @@ function renderProducts(){
     <td class="num">${numIn(i,'oper',c.oper,'0.01',F)}</td>
     <td class="num"${isFba?' title="FBA fulfilment fee"':''}>${numIn(i,'ship',c.shipping,'0.01',F)}</td>
     <td class="num">${numIn(i,'ref', c.referral != null ? c.referral*100 : '', '0.1', F)}</td>
-    <td class="num" style="background:#eef6fd">${ec ? fmtGBP(ec.feeGross) : '<span style="color:var(--muted)">&mdash;</span>'}</td>
+    <td class="num prod-eco" data-eco-i="${i}" data-eco="ref" style="background:#eef6fd">${feeCell(ec, 'ref')}</td>
+    <td class="num prod-eco" data-eco-i="${i}" data-eco="other" style="background:#eef6fd">${feeCell(ec, 'other')}</td>
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'aff', F.fig.aff*100, '0.1', F) : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${chOf(e.plat)==='tiktok' ? numIn(i,'sads', F.fig.sads*100, '0.1', F) : '<span style="color:var(--muted)">–</span>'}</td>
     <td class="num">${chOf(e.plat)==='ebay' ? numIn(i,'reg', F.fig.reg*100, '0.05', F) : '<span style="color:var(--muted)">–</span>'}</td>
@@ -9143,7 +9177,7 @@ function renderProducts(){
     const typedShip = val('bship');
     draft.bship = typedShip != null ? typedShip : F.fig.bship;
     const bship = buyerShipOf(draft);
-    const ec = prodEcon(draft, P == null ? null : P + bship, costs);
+    const ec = prodEcon(draft, P, costs, bship);
     {   // keep the total column in step while typing
       const td = tb.querySelector('.prod-eco[data-eco-i="' + i + '"][data-eco="total"]');
       if(td) td.innerHTML = P != null ? '<b>' + fmtGBP(P + bship) + '</b>' : '<span style="color:var(--muted)">–</span>';
@@ -9167,9 +9201,11 @@ function renderProducts(){
       const td = tb.querySelector('.prod-eco[data-eco-i="' + i + '"][data-eco="' + which + '"]');
       if(!td) return;
       td.innerHTML = html;
-      td.style.background = dirty ? '#fff8d6' : '#f4fbf7';
+      td.style.background = dirty ? '#fff8d6' : (which === 'ref' || which === 'other' ? '#eef6fd' : '#f4fbf7');
       td.title = dirty ? 'Unsaved - what this row would make at the figures currently typed in. Press Enter or the tick to save, Escape to undo.' : '';
     };
+    put('ref', feeCell(ec, 'ref'));
+    put('other', feeCell(ec, 'other'));
     put('profit', ec ? pill(ec.profit, fmtGBP) : '<span class="pill zero">no price</span>');
     put('roi',    ec && ec.roi    != null ? pill(ec.roi, fmtPct)    : '-');
     put('margin', ec && ec.margin != null ? pill(ec.margin, fmtPct) : '-');
