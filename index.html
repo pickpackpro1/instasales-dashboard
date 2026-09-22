@@ -1348,7 +1348,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
         <li><b>Everything runs locally in your browser</b> - no data is uploaded anywhere.</li>
         <li><b>Amazon:</b> the Business Report is aggregated per ASIN - no per-day data, no refunds, no FBA fee detail. Referral %% comes from the master sheet (fallback slider in Settings); use the Est. Refund slider to approximate returns. A Settlement/Date-Range report can make Amazon exact later.</li>
         <li><b>eBay:</b> "eBay Fees" = Total selling costs from the Listings Sales Report minus ad fees (so ads aren't double-counted). Refunds come from the Transaction report. Account-level fees (shop subscription) should be added on the OpEx page.</li>
-        <li><b>TikTok:</b> same verified engine as the TikTok-only dashboard - revenue = Order Amount − Refund prorated per SKU; per-SKU referral %% from the master sheet.</li>
+        <li><b>TikTok:</b> same verified engine as the TikTok-only dashboard - revenue = Order Amount (the line's share, buyer shipping included) − its refund; referral % (per SKU, from Cost Manager or the master sheet) on the SKU Subtotal After Discount only. Ad spend comes from each day's Ad Sheet, dated by its file name.</li>
         <li><b>Date filter</b> (Settings) applies to TikTok only - Amazon/eBay reports are pre-aggregated. Export all channels for the same month for clean comparisons.</li>
         <li><b>ACOS</b> = ad spend ÷ ad-attributed sales. <b>TACOS</b> = ad spend ÷ total revenue.</li>
         <li><b>VAT:</b> revenue is treated as VAT-inclusive (UK). Net profit is shown ex-VAT; tick which costs carry reclaimable input VAT in Settings.</li>
@@ -2289,7 +2289,7 @@ async function handleFiles(fileList, targetAcct){
         // exact, dated data instead of a period estimate. Applies to daily Amazon
         // Business Reports, daily eBay Listings Sales ("Sale sheet") and daily eBay
         // PPC reports.
-        if(f.type === 'amz_biz' || f.type === 'amz2_biz' || f.type === 'amz_ads' || f.type === 'amz2_ads' || f.type === 'ebay_list' || f.type === 'ebay_ppc' || f.type === 'ebay_pl'){
+        if(f.type === 'amz_biz' || f.type === 'amz2_biz' || f.type === 'amz_ads' || f.type === 'amz2_ads' || f.type === 'ebay_list' || f.type === 'ebay_ppc' || f.type === 'ebay_pl' || f.type === 'tt_ads'){
           const nameForDate = typeCounts[f.type] > 1 ? f.sheet : r.name;
           const day = parseDayName(nameForDate);
           const isRange = isRangeSheetName(nameForDate);
@@ -2394,7 +2394,7 @@ function fileMeta(type, rows){
       if(d){ if(!mn || d < mn) mn = d; if(!mx || d > mx) mx = d; }
     }
     if(mn) dates = mn === mx ? mn : mn + ' → ' + mx;
-  } else if((type === 'amz_biz' || type === 'amz2_biz' || type === 'ebay_list' || type === 'ebay_ppc') && rows.length && rows[0].__day){
+  } else if(rows.length && rows[0].__day){
     let mn = '', mx = '';
     for(const r of rows){ if(r.__day){ if(!mn || r.__day < mn) mn = r.__day; if(!mx || r.__day > mx) mx = r.__day; } }
     dates = mn === mx ? mn : mn + ' → ' + mx;
@@ -2590,7 +2590,25 @@ function removeFile(type, name){
   persistFileRows();
   showBanner(`Removed "${name}" - its data is out of every page.`, 'success');
 }
+// TikTok's ad export has no dates inside, but each sheet is one day and says which in its name
+// ("31 May Ad Sheet.xlsx"). Sheets loaded before the upload started reading that were never
+// stamped, so the day check showed them as undated and the P&L spread ALL of them across any
+// chosen period by revenue share. Stamped here once and saved, so the year worked out today is
+// the one kept - it is inferred from the current date, and would drift if re-worked each year.
+function stampAdSheetDays(){
+  let stamped = 0;
+  for(const [name, rows] of Object.entries((STATE.fileRows || {}).tt_ads || {})){
+    if(!rows || !rows.length || rows[0].__day) continue;
+    const day = parseDayName(name.split('/').pop().replace(/\s*\[[^\]]*\]\s*$/, '') ) || parseDayName(name);
+    if(!day) continue;
+    for(const r of rows) r.__day = day;
+    if(ACCESS_ROLE !== 'costs') markFileChanged('tt_ads', name, 'put');
+    stamped++;
+  }
+  return stamped;
+}
 function rebuildFromFileStore(){
+  if(stampAdSheetDays() && ACCESS_ROLE !== 'costs') setTimeout(() => persistFileRows(), 0);
   // A master pulled from the cloud lives ONLY in STATE.raw.master - it is not one of the
   // uploaded files - so carry it across this reset. Without this, the reset below wipes it
   // and restoreMaster() silently falls back to the stale localStorage/built-in sheet, so the
@@ -3197,15 +3215,23 @@ function computeTikTok(){
   const mode = productAdRows.length ? 'product' : (STATE.ttAdsMode || 'campaign');
   const useAdRows = productAdRows.length ? productAdRows : otherAdRows;
   const ignoredAdsRows = productAdRows.length ? otherAdRows.length : 0;
+  // A sheet stamped with its day (from its file name) counts for exactly that day: in range, all
+  // of it; out of range, none. The chosen period used to get every sheet's spend spread by its
+  // share of revenue, so a single day showed a slice of months of advertising rather than what
+  // was spent that day. Only rows with no day at all are still spread that way, further down.
   const adsByPid = {}; let adsTotal = 0, adRevTotal = 0;
+  const undated = {byPid:{}, cost:0, rev:0};
   for(const r of useAdRows){
+    if(r.__day && !inRange(r.__day)) continue;
     const cost = cleanMoney(r['Cost']);
     const gr = cleanMoney(r['Gross revenue'] != null ? r['Gross revenue'] : r['Gross revenue (Current shop)']);
-    adsTotal += cost; adRevTotal += gr;
+    const into = r.__day ? null : undated;
+    if(into){ into.cost += cost; into.rev += gr; } else { adsTotal += cost; adRevTotal += gr; }
     if(mode === 'product'){
       const pid = String(r['Product ID']||'').trim();
-      if(!adsByPid[pid]) adsByPid[pid] = {cost:0, rev:0, name: fixText(r['Product name'] || r['Product Name'])};
-      adsByPid[pid].cost += cost; adsByPid[pid].rev += gr;
+      const tbl = into ? into.byPid : adsByPid;
+      if(!tbl[pid]) tbl[pid] = {cost:0, rev:0, name: fixText(r['Product name'] || r['Product Name'])};
+      tbl[pid].cost += cost; tbl[pid].rev += gr;
     }
   }
   const map = {};
@@ -3246,6 +3272,15 @@ function computeTikTok(){
   const pidUnits = {};
   for(const s of Object.values(map)) if(s._pid) pidUnits[s._pid] = (pidUnits[s._pid]||0) + s.units;
   const totalRev = Object.values(map).reduce((a,s)=>a+(s.revenue_gross-s.refunds),0);
+  // Undated ad rows cover the whole file, so a chosen period takes its revenue share of them.
+  {
+    const scale = ((STATE.dateFrom || STATE.dateTo) && fullNetRev > 0) ? Math.min(totalRev / fullNetRev, 1) : 1;
+    adsTotal += undated.cost * scale; adRevTotal += undated.rev * scale;
+    for(const [pid, a] of Object.entries(undated.byPid)){
+      const t = adsByPid[pid] = adsByPid[pid] || {cost:0, rev:0, name:a.name};
+      t.cost += a.cost * scale; t.rev += a.rev * scale;
+    }
+  }
   for(const s of Object.values(map)){
     const e = s._e;
     s.buying = e ? s.units * e.buying : 0;
@@ -3277,12 +3312,6 @@ function computeTikTok(){
       row.no_cost = !M.tiktok.bySku[a.name];
       map['__ads__' + pid] = row;
     }
-  }
-  // the TikTok ads export has no dates - when a date filter is active,
-  // prorate ad spend by the range's share of total file revenue (labelled Est)
-  if((STATE.dateFrom || STATE.dateTo) && fullNetRev > 0){
-    const adScale = Math.min(totalRev / fullNetRev, 1);
-    for(const s of Object.values(map)){ s.ads *= adScale; s.ad_sales *= adScale; }
   }
   const daily = {};
   const ordersList = [];
@@ -4226,7 +4255,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-21-b';
+const BUILD_ID = '2026-09-22-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
