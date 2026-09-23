@@ -3235,7 +3235,12 @@ function computeTikTok(){
     }
   }
   const map = {};
-  const orderShip = {}, orderOper = {}, orderSub = {};
+  // Orders worth nothing - a product sent to a creator or affiliate. TikTok writes them with
+  // every money column at 0 and no payment method. They are real stock going out of the door, so
+  // their COGS, shipping and operational cost are charged exactly like a sale's; what they are
+  // not is revenue. Counted here as well so the cost can be shown for what it is.
+  const samples = {units:0, orders:new Set(), buying:0, shipping:0, oper:0};
+  const orderShip = {}, orderOper = {}, orderSub = {}, orderLines = {};
   for(const o of orders){
     if(!o.seller_sku) continue;
     if(!map[o.seller_sku]){
@@ -3258,13 +3263,27 @@ function computeTikTok(){
       if(!(o.oid in orderShip) || e.shipping > orderShip[o.oid]) orderShip[o.oid] = e.shipping;
       if(!(o.oid in orderOper) || e.oper > orderOper[o.oid]) orderOper[o.oid] = e.oper;
     }
-    if(!o.cancelled) orderSub[o.oid] = (orderSub[o.oid]||0) + o.sub;
+    if(!o.cancelled){
+      orderSub[o.oid] = (orderSub[o.oid]||0) + o.sub;
+      orderLines[o.oid] = (orderLines[o.oid] || 0) + 1;
+      if(o.sub === 0 && o.gross === 0){
+        samples.units += o.net_qty;
+        samples.orders.add(o.oid);
+        samples.buying += (e ? e.buying : 0) * o.net_qty;
+      }
+    }
   }
   for(const o of orders){
     if(!o.seller_sku || !map[o.seller_sku] || o.cancelled) continue;
-    const share = (orderSub[o.oid]||o.sub) > 0 ? o.sub/(orderSub[o.oid]||o.sub) : 1;
-    map[o.seller_sku].shipping += (orderShip[o.oid]||0)*share;
-    map[o.seller_sku].oper += (orderOper[o.oid]||0)*share;
+    const tot = orderSub[o.oid] || 0;
+    // One parcel per order, split between its lines by value. A free-sample order has no value to
+    // split by, so its lines share it equally - the fallback used to give EVERY line a full
+    // parcel, charging a two-item sample order twice over for one delivery.
+    const share = tot > 0 ? o.sub/tot : 1/(orderLines[o.oid] || 1);
+    const ship = (orderShip[o.oid]||0)*share, op = (orderOper[o.oid]||0)*share;
+    map[o.seller_sku].shipping += ship;
+    map[o.seller_sku].oper += op;
+    if(tot <= 0){ samples.shipping += ship; samples.oper += op; }
   }
   for(const a of aff){
     if(a.seller_sku && map[a.seller_sku]){ map[a.seller_sku].affiliate += a.com; map[a.seller_sku].shop_ads += a.shop; }
@@ -3327,7 +3346,9 @@ function computeTikTok(){
   }
   for(const d of Object.keys(daily)) daily[d].orders = daily[d].orders.size;
   const rows = finalizeRows(Object.values(map));
-  return {rows, extras:{daily, adsTotal, adRevTotal, adsMode:mode, ignoredAdsRows, ordersList, fullSpan:{min:fullMin, max:fullMax}}};
+  return {rows, extras:{daily, adsTotal, adRevTotal, adsMode:mode, ignoredAdsRows, ordersList, fullSpan:{min:fullMin, max:fullMax},
+    samples:{units:samples.units, orders:samples.orders.size, buying:samples.buying, shipping:samples.shipping, oper:samples.oper,
+             cost:samples.buying + samples.shipping + samples.oper}}};
 }
 
 // ================= Amazon (verified engine) =================
@@ -4255,7 +4276,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-22-a';
+const BUILD_ID = '2026-09-23-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5012,6 +5033,13 @@ function diagnostics(){
       L.push(`  ⚠ ${zero.length} selling SKU(s) in master but with a £0 cost column (check it isn't just blank): ${zero.slice(0,8).map(r=>r.key+' ['+tag(r)+']').join(', ')}${zero.length>8?'...':''}`);
     }
   }
+  {
+    const sm = (STATE.extras.tiktok || {}).samples;
+    if(sm && sm.units) L.push(`TikTok free samples (orders worth £0 - product sent to creators/affiliates): `
+      + `${fmtNum(sm.units)} unit(s) in ${fmtNum(sm.orders)} order(s) costing ${fmtGBP(sm.cost)} `
+      + `(COGS ${fmtGBP(sm.buying)} + shipping ${fmtGBP(sm.shipping)} + operational ${fmtGBP(sm.oper)}). `
+      + `Charged in full against profit; they bring no revenue, and their units ARE in the unit count.`);
+  }
   for(const ch of ['amazon','amazon2']){
     const ex = STATE.extras[ch];
     if(ex && ex.fromTxn) L.push(`⚠ ${CH_NAME[ch]}: revenue, units & profit are coming from the TRANSACTION report (no Business Report loaded). The date-range transaction format has no SKU/ASIN, so master COGS cannot be joined — profit is OVERSTATED (costs = £0). Load the Business Report (joins by ASIN) or use the detailed Payments→Transaction report (has seller SKU); the transaction report then supplies only the refund.`);
@@ -5320,14 +5348,17 @@ function dailyMerged(){
 function plForRange(from, to){
   const sf = STATE.dateFrom, st = STATE.dateTo;
   STATE.dateFrom = from; STATE.dateTo = to;
-  let t, extraRef = 0;
+  let t, extraRef = 0, samples = null;
   try{
     recompute();
     const chans = filteredChannels();
     t = totalsOf(filteredRows());
     extraRef = unattachedRefunds(chans);
+    // read before the finally below recomputes the old range back over it
+    if(chans.includes('tiktok')) samples = (STATE.extras.tiktok || {}).samples || null;
   } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
   t.refunds += extraRef;
+  t.samples = samples;
   return t;
 }
 function openPlDrawer(from, to, title){
@@ -5386,6 +5417,10 @@ function openPlDrawer(from, to, title){
     + sub('Buying Cost (COGS)', buying)
     + sub('Operational', oper)
     + sub('Shipping', shipping)
+    + ((t.samples && t.samples.units) ? `<div class="pls-row sub" style="color:var(--muted);font-size:11px"><span>`
+        + `of which free samples (TikTok orders worth £0): <b>${fmtGBP(t.samples.cost)}</b> &mdash; `
+        + `${fmtNum(t.samples.units)} unit(s) in ${fmtNum(t.samples.orders)} order(s), no revenue against them`
+        + `</span><span></span></div>` : '')
     + `<div class="pls-row total"><span>Total Revenue (Inc VAT)</span>${money(t.revenue_gross)}</div>`
     + `<div class="pls-row"><span>Total Charges &amp; Expenses</span>${money(-totalCharges,'neg')}</div>`
     + vatBlock
