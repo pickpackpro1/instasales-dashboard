@@ -4296,7 +4296,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-23-b';
+const BUILD_ID = '2026-09-23-c';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5526,11 +5526,34 @@ const KPI_DEFS = {
   margin:     {label:'Margin',               card:(t)=>({value:fmtPct(t.margin_ex), valueCls:t.margin_ex>=0?'pos':'neg'})},
   payouts:    {label:'Est. Payouts',         card:(t)=>({value:fmtGBP0(t.revenue_gross - t.mkt_fee - t.affiliate - t.shop_ads - t.ads - t.refunds)})},
   units:      {label:'Units',                card:(t)=>({value:fmtNum(t.units)})},
+  // Free samples are stock sent out for nothing - TikTok writes them as orders worth £0. Their
+  // cost sits inside COGS, Shipping and Operational like any other order, so these two tiles do
+  // not add anything to the P&L: they say how much of it bought no sales, and what the units
+  // figure looks like without them.
+  samples:    {label:'Free Samples',         card:(t,c)=>({value:fmtGBP0((c.samples||{}).cost||0), valueCls:'neg',
+                sub:`${fmtNum((c.samples||{}).units||0)} units · ${fmtNum((c.samples||{}).orders||0)} orders · no revenue`}),
+               needs:c=>!!(c.samples && c.samples.units)},
+  unitssold:  {label:'Units Sold (paid)',    card:(t,c)=>{
+                const f = (c.samples||{}).units||0;
+                return {value:fmtNum(Math.max(t.units - f, 0)),
+                        sub: f ? `${fmtNum(f)} free sample unit(s) left out` : 'no free samples in this period'};
+               }},
   orders:     {label:'Orders',               card:(t)=>({value:fmtNum(t.orders_count)})},
   opex:       {label:'Net after OpEx',       card:(t,c)=>({value:fmtGBP0(t.net_profit_ex-c.opex), sub:`OpEx ${fmtGBP0(c.opex)}/mo` + (c.opexExcluded ? ` · before ${fmtGBP0(c.opexExcluded)}/mo shared` : ''), valueCls:(t.net_profit_ex-c.opex)>=0?'pos':'neg'}), needs:c=>c.opex>0 || c.opexExcluded>0}
 };
-const KPI_ORDER = ['sales','refunds','cogs','referral','ebayreg','ebayfixed','shipping','operational','affiliate','shopads','ads','acos','tacos','vat','grossprofit','profit','margin','payouts','units','orders','opex'];
-const KPI_DEFAULT = ['sales','refunds','cogs','referral','ads','acos','tacos','vat','profit','margin'];
+const KPI_ORDER = ['sales','refunds','cogs','referral','ebayreg','ebayfixed','shipping','operational','affiliate','shopads','ads','acos','tacos','vat','grossprofit','profit','margin','payouts','units','unitssold','samples','orders','opex'];
+const KPI_DEFAULT = ['sales','refunds','cogs','referral','ads','acos','tacos','vat','profit','margin','samples'];
+// Added to a list that was customised before this tile existed - once, and only when there are
+// samples to show. Untick it in Customise and it stays ticked off.
+function addSamplesTileOnce(){
+  if(store.get('mcpd_kpi_samples_added')) return;
+  const sm = (STATE.extras.tiktok || {}).samples;
+  if(!sm || !sm.units) return;
+  store.set('mcpd_kpi_samples_added', '1');
+  const on = getEnabledKpis();
+  if(on.includes('samples')) return;
+  setEnabledKpis(KPI_ORDER.filter(k => on.includes(k) || k === 'samples'));
+}
 function getEnabledKpis(){ const s = loadLS('mcpd_dash_kpis'); return (Array.isArray(s) && s.length) ? s.filter(k=>KPI_DEFS[k]) : KPI_DEFAULT.slice(); }
 function setEnabledKpis(arr){ try{ store.set('mcpd_dash_kpis', JSON.stringify(arr)); }catch(e){} cloudSaveGlobalSettings(); }
 function renderDashboard(){
@@ -5563,7 +5586,9 @@ function renderDashboard(){
   const extraRefunds = useHist ? 0 : unattachedRefunds(chans);
   const opex = opexFor(useHist ? histCh : chans);
   const opexExcluded = opexExcludedFor(useHist ? histCh : chans);
-  const kctx = {xref: extraRefunds, opex, opexExcluded};
+  const samples = (!useHist && chans.includes('tiktok') && STATE.extras.tiktok) ? STATE.extras.tiktok.samples : null;
+  addSamplesTileOnce();
+  const kctx = {xref: extraRefunds, opex, opexExcluded, samples};
   const cards = getEnabledKpis()
     .filter(k => KPI_DEFS[k] && (!KPI_DEFS[k].needs || KPI_DEFS[k].needs(kctx)))
     .map(k => ({label: KPI_DEFS[k].label, ...KPI_DEFS[k].card(t, kctx)}));
@@ -8840,12 +8865,20 @@ function renderPLS(){
   // per CHANNEL: every channel reclaims, but they arrive differently - a figure already gross
   // (TikTok) is divided straight down, one quoted net was grossed up first
   const exFor = (t,c,k) => vatIncFor(c,k) ? t[k]/vDiv : t[k];
+  // Free samples (TikTok orders worth £0): their cost is already inside Buying, Shipping and
+  // Operational above, so this line is a memo - it is not deducted again.
+  const smp = (STATE.extras.tiktok || {}).samples;
+  const smpEx = smp ? (['buying','shipping','oper'].reduce((a, k) =>
+    a + (vatIncFor('tiktok', k) ? (k === 'buying' ? smp.buying : k === 'shipping' ? smp.shipping : smp.oper)/vDiv
+                                : (k === 'buying' ? smp.buying : k === 'shipping' ? smp.shipping : smp.oper)), 0)) : 0;
   const head = `<tr><th>Line</th>${chans.map(c=>`<th class="num">${CH_NAME[c]}</th>`).join('')}<th class="num">Total</th></tr>`;
   const row = (label, fn, opts={}) => {
     const vals = chans.map(c => fn(T[c], c));
     const total = vals.reduce((a,b)=>a+b,0);
     const fmt = opts.pct ? fmtPct : fmtGBP;
-    const style = opts.bold ? 'font-weight:800;background:#f5f8fc' : opts.indent ? 'padding-left:26px;color:#44546b' : '';
+    const style = opts.bold ? 'font-weight:800;background:#f5f8fc'
+      : opts.memo ? 'padding-left:34px;color:#8695ab;font-style:italic'
+      : opts.indent ? 'padding-left:26px;color:#44546b' : '';
     const color = v => opts.signed ? `color:${v>=0?'var(--green)':'var(--red)'}` : '';
     return `<tr><td style="${style}">${label}</td>${vals.map(v=>`<td class="num" style="${style};${color(v)}">${fmt(v)}</td>`).join('')}<td class="num" style="${style};${color(total)};font-weight:800">${opts.pct?'':''}${fmt(opts.pct ? (label.includes('Margin') ? (tot('net_profit_ex')-opexAll-chans.reduce((a,c)=>a+opexCh(c),0))/Math.max(tot('revenue_ex'),1e-9)*100 : total/chans.length) : total)}</td></tr>`;
   };
@@ -8860,6 +8893,8 @@ function renderPLS(){
     row('− Buying (COGS)', (t,c)=>-exFor(t,c,'buying'), {indent:true}),
     row('− Shipping', (t,c)=>-exFor(t,c,'shipping'), {indent:true}),
     row('− Operational', (t,c)=>-exFor(t,c,'oper'), {indent:true}),
+    ...(smp && smp.units ? [row(`↳ of which free samples (${fmtNum(smp.units)} units, ${fmtNum(smp.orders)} orders - no sale)`,
+        (t,c)=> c === 'tiktok' ? -smpEx : 0, {indent:true, memo:true})] : []),
     row('= Gross Profit before ads', (t,c)=>t.revenue_ex - COST_KEYS.filter(k=>k!=='ads').reduce((a,k)=>a+exFor(t,c,k),0), {bold:true, signed:true}),
     row('− Ad spend', (t,c)=>-exFor(t,c,'ads'), {indent:true}),
     row('= Net Profit (Ex VAT)', t=>t.net_profit_ex, {bold:true, signed:true}),
