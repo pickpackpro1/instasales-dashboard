@@ -3342,7 +3342,27 @@ function computeTikTok(){
       daily[o.date].units += o.net_qty;
       daily[o.date].orders.add(o.oid);
     }
-    ordersList.push({channel:'tiktok', date:o.date, order:o.oid, sku:o.seller_sku, name:o.name, qty:o.net_qty||o.sub&&0||0, qtyRaw:o.net_qty, rev:o.gross-o.refund, refund:o.refund, status:o.status});
+    // A free sample has no revenue, and the per-order view works every line's costs out from its
+    // share of the SKU's revenue - so a sample showed as costing nothing, with a "no cost data"
+    // warning on top. The stock and the parcel are real money, so the line carries its own
+    // economics instead of being prorated: the units' buying cost, and its share of the one
+    // parcel the order went out in.
+    const isSample = !o.cancelled && o.sub === 0 && o.gross === 0;
+    let oecon = null;
+    if(isSample){
+      const es = M.tiktok.bySku[o.seller_sku];
+      const vDiv = 1 + STATE.vat.rate;
+      const exOf = (v, k) => vatIncFor('tiktok', k) ? v/vDiv : v;
+      const lines = orderLines[o.oid] || 1;
+      const buy = (es ? es.buying : 0) * o.net_qty;
+      const ship = (orderShip[o.oid] || 0) / lines;
+      const op = (orderOper[o.oid] || 0) / lines;
+      const costEx = exOf(buy, 'buying') + exOf(ship, 'shipping') + exOf(op, 'oper');
+      const vatBack = (buy - exOf(buy, 'buying')) + (ship - exOf(ship, 'shipping')) + (op - exOf(op, 'oper'));
+      oecon = {orderTotal:0, revEx:0, platform:0, shipping:ship, cost:buy, oper:op, ads:0,
+               tax:-vatBack, charges:costEx - vatBack, profit:-costEx, net:null, gross:null, noCost:!es};
+    }
+    ordersList.push({channel:'tiktok', date:o.date, order:o.oid, sku:o.seller_sku, name:o.name, qty:o.net_qty||o.sub&&0||0, qtyRaw:o.net_qty, rev:o.gross-o.refund, refund:o.refund, status:o.status, sample:isSample, oecon});
   }
   for(const d of Object.keys(daily)) daily[d].orders = daily[d].orders.size;
   const rows = finalizeRows(Object.values(map));
@@ -4276,7 +4296,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-23-a';
+const BUILD_ID = '2026-09-23-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5829,7 +5849,8 @@ function renderOrders(){
   const drow = (lbl, txt, color) => `<div style="display:flex;justify-content:space-between;gap:14px"><span style="color:var(--muted)">${lbl}</span><span style="${color?'color:'+color:''}">${txt}</span></div>`;
   document.querySelector('#ordTable tbody').innerHTML = flist.slice(0,CAPR).map(o => {
     const e = econ(o), st = o.status||'';
-    const stBadge = /cancel/i.test(st) ? '<span class="badge red">Cancelled</span>' : (st ? `<span class="badge grey">${esc(st)}</span>` : '');
+    const stBadge = (/cancel/i.test(st) ? '<span class="badge red">Cancelled</span>' : (st ? `<span class="badge grey">${esc(st)}</span>` : ''))
+      + (o.sample ? ' <span class="badge purple" title="Sent free - no payment. The stock, the parcel and the prep are still charged.">Free sample</span>' : '');
     const details = drow('Order Total', fmtGBP(e.orderTotal))
       + drow('Platform Charges', '-'+fmtGBP(e.platform+e.ads), clr(-1))
       + (e.shipping>0.005 ? drow('Shipping', '-'+fmtGBP(e.shipping), clr(-1)) : '')
