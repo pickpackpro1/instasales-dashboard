@@ -4296,7 +4296,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-23-c';
+const BUILD_ID = '2026-09-23-d';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5491,6 +5491,14 @@ function fullDailyByCh(){
   return out;
 }
 // ---- Dashboard KPI registry (user-customisable via the "⚙ Customize metrics" button) ----
+// What the free samples cost, ex VAT - the figure that came off Net Profit, so it can be shown
+// on its own or added back. Their cash cost is held VAT-inclusive, like every other cost.
+function sampleCostEx(sm){
+  if(!sm) return 0;
+  const vDiv = 1 + STATE.vat.rate;
+  const ex = (v, k) => vatIncFor('tiktok', k) ? v/vDiv : v;
+  return ex(sm.buying||0, 'buying') + ex(sm.shipping||0, 'shipping') + ex(sm.oper||0, 'oper');
+}
 const KPI_DEFS = {
   sales:      {label:'Sales (Inc VAT)',      card:(t)=>({value:fmtGBP0(t.revenue_gross), sub:`${fmtNum(t.units)} units / ${fmtNum(t.orders_count)} orders`})},
   refunds:    {label:'Refunds',              card:(t,c)=>({value:fmtGBP0(t.refunds+c.xref), valueCls:(t.refunds+c.xref)>0?'neg':''})},
@@ -5533,6 +5541,14 @@ const KPI_DEFS = {
   samples:    {label:'Free Samples',         card:(t,c)=>({value:fmtGBP0((c.samples||{}).cost||0), valueCls:'neg',
                 sub:`${fmtNum((c.samples||{}).units||0)} units · ${fmtNum((c.samples||{}).orders||0)} orders · no revenue`}),
                needs:c=>!!(c.samples && c.samples.units)},
+  // Trading profit: the same Net Profit with the giveaways taken out of it. Not a second profit
+  // figure to bank - the samples are a real cost - but it separates what selling earned from
+  // what seeding cost.
+  profitnosamp:{label:'Profit excl. Samples', card:(t,c)=>{
+                const ex = sampleCostEx(c.samples), v = t.net_profit_ex + ex;
+                return {value:fmtGBP0(v), valueCls:v>=0?'pos':'neg',
+                        sub: ex > 0.004 ? `${fmtGBP0(ex)} of samples added back` : 'no samples in this period'};
+               }, needs:c=>!!(c.samples && c.samples.units)},
   unitssold:  {label:'Units Sold (paid)',    card:(t,c)=>{
                 const f = (c.samples||{}).units||0;
                 return {value:fmtNum(Math.max(t.units - f, 0)),
@@ -5541,18 +5557,19 @@ const KPI_DEFS = {
   orders:     {label:'Orders',               card:(t)=>({value:fmtNum(t.orders_count)})},
   opex:       {label:'Net after OpEx',       card:(t,c)=>({value:fmtGBP0(t.net_profit_ex-c.opex), sub:`OpEx ${fmtGBP0(c.opex)}/mo` + (c.opexExcluded ? ` · before ${fmtGBP0(c.opexExcluded)}/mo shared` : ''), valueCls:(t.net_profit_ex-c.opex)>=0?'pos':'neg'}), needs:c=>c.opex>0 || c.opexExcluded>0}
 };
-const KPI_ORDER = ['sales','refunds','cogs','referral','ebayreg','ebayfixed','shipping','operational','affiliate','shopads','ads','acos','tacos','vat','grossprofit','profit','margin','payouts','units','unitssold','samples','orders','opex'];
+const KPI_ORDER = ['sales','refunds','cogs','referral','ebayreg','ebayfixed','shipping','operational','affiliate','shopads','ads','acos','tacos','vat','grossprofit','profit','margin','payouts','units','unitssold','samples','profitnosamp','orders','opex'];
 const KPI_DEFAULT = ['sales','refunds','cogs','referral','ads','acos','tacos','vat','profit','margin','samples'];
-// Added to a list that was customised before this tile existed - once, and only when there are
-// samples to show. Untick it in Customise and it stays ticked off.
+// Added to a list that was customised before these tiles existed - once, and only when there are
+// samples to show. Untick them in Customise and they stay ticked off.
+const SAMPLE_TILES = ['samples', 'profitnosamp'];
 function addSamplesTileOnce(){
-  if(store.get('mcpd_kpi_samples_added')) return;
+  if(store.get('mcpd_kpi_sample_tiles')) return;
   const sm = (STATE.extras.tiktok || {}).samples;
   if(!sm || !sm.units) return;
-  store.set('mcpd_kpi_samples_added', '1');
+  store.set('mcpd_kpi_sample_tiles', '1');
   const on = getEnabledKpis();
-  if(on.includes('samples')) return;
-  setEnabledKpis(KPI_ORDER.filter(k => on.includes(k) || k === 'samples'));
+  const add = SAMPLE_TILES.filter(k => !on.includes(k));
+  if(add.length) setEnabledKpis(KPI_ORDER.filter(k => on.includes(k) || add.includes(k)));
 }
 function getEnabledKpis(){ const s = loadLS('mcpd_dash_kpis'); return (Array.isArray(s) && s.length) ? s.filter(k=>KPI_DEFS[k]) : KPI_DEFAULT.slice(); }
 function setEnabledKpis(arr){ try{ store.set('mcpd_dash_kpis', JSON.stringify(arr)); }catch(e){} cloudSaveGlobalSettings(); }
@@ -8868,9 +8885,7 @@ function renderPLS(){
   // Free samples (TikTok orders worth £0): their cost is already inside Buying, Shipping and
   // Operational above, so this line is a memo - it is not deducted again.
   const smp = (STATE.extras.tiktok || {}).samples;
-  const smpEx = smp ? (['buying','shipping','oper'].reduce((a, k) =>
-    a + (vatIncFor('tiktok', k) ? (k === 'buying' ? smp.buying : k === 'shipping' ? smp.shipping : smp.oper)/vDiv
-                                : (k === 'buying' ? smp.buying : k === 'shipping' ? smp.shipping : smp.oper)), 0)) : 0;
+  const smpEx = sampleCostEx(smp);
   const head = `<tr><th>Line</th>${chans.map(c=>`<th class="num">${CH_NAME[c]}</th>`).join('')}<th class="num">Total</th></tr>`;
   const row = (label, fn, opts={}) => {
     const vals = chans.map(c => fn(T[c], c));
