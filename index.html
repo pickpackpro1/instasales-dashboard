@@ -1467,12 +1467,64 @@ const IDB = (() => {
     const st = d.transaction('kv', mode).objectStore('kv'); const rq = fn(st);
     rq.onsuccess = () => res(rq.result === undefined ? true : rq.result); rq.onerror = () => res(null);
   }); }catch(e){ return null; } };
+  // Several records in ONE transaction. The uploaded files used to live in a single record
+  // holding every row of every file - over 100MB for this account - rewritten in full whenever
+  // one file was added. One failed write, or one eviction by the browser, took the lot. They are
+  // stored one record per file now, so a save touches only what changed.
+  const multi = (mode, fn) => db().then(d => new Promise((res, rej) => {
+    const t = d.transaction('kv', mode);
+    fn(t.objectStore('kv'));
+    t.oncomplete = () => res(true);
+    t.onerror = () => rej(t.error || new Error('IndexedDB write failed'));
+    t.onabort = () => rej(t.error || new Error('IndexedDB write aborted (storage full?)'));
+  }));
   return {
-    get:   (k) => tx('readonly',  st => st.get(k)),
+    // tx() reports "no error" as true, which for a read means "no such record" - say null instead
+    get:   (k) => tx('readonly',  st => st.get(k)).then(v => v === true ? null : v),
     set:   (k,v) => tx('readwrite', st => st.put(v, k)).then(r => r !== null),
-    remove:(k) => tx('readwrite', st => st.delete(k))
+    remove:(k) => tx('readwrite', st => st.delete(k)),
+    keys:  () => tx('readonly', st => st.getAllKeys()),
+    setMany:    (pairs) => multi('readwrite', st => { for(const [k, v] of pairs) st.put(v, k); }),
+    removeMany: (ks)    => multi('readwrite', st => { for(const k of ks) st.delete(k); }),
+    // every record whose key starts with `prefix`, read in a single pass
+    entriesWithPrefix: async (prefix) => {
+      const out = {};
+      const d = await db();
+      await new Promise((res, rej) => {
+        const t = d.transaction('kv', 'readonly');
+        const cur = t.objectStore('kv').openCursor();
+        cur.onsuccess = e => { const c = e.target.result; if(!c) return;
+          if(typeof c.key === 'string' && c.key.indexOf(prefix) === 0) out[c.key] = c.value;
+          c.continue(); };
+        t.oncomplete = () => res(); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+      });
+      return out;
+    }
   };
 })();
+// How much room this browser is giving the app, and whether it may be thrown away. A browser
+// clearing its "best effort" storage is what makes a day's uploads vanish overnight, so it is
+// asked to keep this site's data, and the answer is reported in diagnostics.
+var STORAGE_INFO = '';
+async function askPersistentStorage(){
+  try{
+    if(navigator.storage && navigator.storage.persist && navigator.storage.persisted){
+      if(!(await navigator.storage.persisted())) await navigator.storage.persist();
+    }
+  }catch(e){}
+  await refreshStorageInfo();
+}
+async function refreshStorageInfo(){
+  try{
+    const est = (navigator.storage && navigator.storage.estimate) ? await navigator.storage.estimate() : null;
+    const kept = (navigator.storage && navigator.storage.persisted) ? await navigator.storage.persisted() : null;
+    const mb = v => v == null ? '?' : (v / 1048576).toFixed(0) + ' MB';
+    STORAGE_INFO = est ? `Browser storage: ${mb(est.usage)} used of ${mb(est.quota)} available`
+      + (kept === true ? ' - kept (the browser will not clear it)'
+       : kept === false ? ' - BEST EFFORT: the browser may clear it when the disk gets low, which is what makes uploads disappear overnight. Everything is in the cloud too and is fetched back on the next load.'
+       : '') : '';
+  }catch(e){ STORAGE_INFO = ''; }
+}
 // Surface any runtime error visibly instead of failing silently
 window.onerror = function(msg, src, line){
   try{
@@ -2749,7 +2801,7 @@ async function cloudSaveFileRowsNow(){
   }catch(e){ syncFailed('uploaded files', cloudSaveFileRowsNow, e); }
 }
 const cloudSaveFileRows = debounce(cloudSaveFileRowsNow, 1200);
-async function cloudSyncFileRows(){
+async function cloudSyncFileRows(attempt){
   if(!window.sb) return;
   const acct = CUR_ACCT;
   try{
@@ -2778,14 +2830,23 @@ async function cloudSyncFileRows(){
       if(st.init && has(t, n) && st.files[k] === Date.parse(c.uploaded_at)) continue;   // already have this version
       need.push(c);
     }
+    // Restoring a whole account is a big download, and it used to be all-or-nothing: one failed
+    // request threw the lot away and left the app looking empty. Each batch that arrives is kept,
+    // and whatever failed is asked for again a few seconds later.
     const got = [];
+    let failed = 0;
+    const big = need.length > 40;
     for(let i = 0; i < need.length; i += 20){                      // a few files per request
+      if(big && i % 200 === 0) showBanner(`Fetching your uploaded files from the cloud… ${fmtNum(i)} of ${fmtNum(need.length)}`);
       const { data, error: getErr } = await sb.from('uploaded_files')
         .select('id, file_type, file_name, rows, uploaded_at').in('id', need.slice(i, i + 20).map(c => c.id));
-      if(getErr) throw getErr;
+      if(getErr){ failed++; console.warn('cloud file batch failed:', getErr); continue; }
       if(acct !== CUR_ACCT) return;
       got.push(...(data || []));
     }
+    if(big || (attempt || 0) > 0) showBanner(failed
+      ? `Fetched ${fmtNum(got.length)} of ${fmtNum(need.length)} files from the cloud - the rest are being retried.`
+      : `Restored ${fmtNum(got.length)} file(s) from the cloud.`, failed ? 'error' : 'success');
     const fr = {};
     for(const [t, fs] of Object.entries(local)) fr[t] = Object.assign({}, fs);
     let changed = false;
@@ -2836,38 +2897,84 @@ async function cloudSyncFileRows(){
     saveFileSyncState();
     if(changed){
       STATE.fileRows = fr;
-      await IDB.set(lsKey(LS_FILEROWS), fr);
+      await persistFileRows();      // one record per file: only what just arrived is written
       rebuildFromFileStore();
       STATE.dataSource = 'live';
       renderPage();
     }
     if(Object.keys(st.pending).length) cloudSaveFileRows();
-  }catch(e){ console.warn('cloud sync (uploaded files) pull failed:', e); }
+    // come back for anything that did not arrive, keeping what did
+    if(failed && (attempt || 0) < 6) setTimeout(() => cloudSyncFileRows((attempt || 0) + 1), 5000 * ((attempt || 0) + 1));
+  }catch(e){
+    console.warn('cloud sync (uploaded files) pull failed:', e);
+    if((attempt || 0) < 6) setTimeout(() => cloudSyncFileRows((attempt || 0) + 1), 5000 * ((attempt || 0) + 1));
+  }
 }
 // ---- persist the raw uploaded files so they survive a browser close/reopen (per account) ----
 // Stored in IndexedDB (large capacity), NOT localStorage (~5MB cap that big uploads blew past).
+// key -> the rows array last written there, so an unchanged file is not written again
+var IDB_WRITTEN = new Map();
+const fileIdbKey = (base, type, name) => base + '::' + type + '|' + name;
 async function persistFileRows(){
-  const key = lsKey(LS_FILEROWS);
+  const base = lsKey(LS_FILEROWS);
+  store.remove(base);   // clear any legacy localStorage copy
+  const fr = STATE.fileRows || {};
+  const want = new Map();
+  for(const [t, files] of Object.entries(fr)) for(const [n, rows] of Object.entries(files)) want.set(fileIdbKey(base, t, n), rows);
   try{
-    const fr = STATE.fileRows || {};
-    store.remove(key);   // clear any legacy localStorage copy
-    if(!Object.keys(fr).length){ await IDB.remove(key); cloudSaveFileRows(); return true; }
-    const ok = await IDB.set(key, fr);
-    if(!ok){ showBanner('⚠ Could not save uploaded files for next session (browser storage blocked). They still work now - re-drop them next time.', 'error'); return false; }
+    const changed = [...want].filter(([k, rows]) => IDB_WRITTEN.get(k) !== rows);
+    for(let i = 0; i < changed.length; i += 40){          // small transactions: one failure loses little
+      const part = changed.slice(i, i + 40);
+      await IDB.setMany(part);
+      for(const [k, rows] of part) IDB_WRITTEN.set(k, rows);
+    }
+    const all = (await IDB.keys()) || [];
+    const stale = all.filter(k => typeof k === 'string' && k.indexOf(base + '::') === 0 && !want.has(k));
+    if(stale.length){ await IDB.removeMany(stale); for(const k of stale) IDB_WRITTEN.delete(k); }
+    await IDB.remove(base);                               // the old single-record copy, once split up
+    refreshStorageInfo();
     cloudSaveFileRows();
     return true;
-  }catch(e){ showBanner('⚠ Could not save uploaded files for next session. They still work now - re-drop them next time.', 'error'); return false; }
+  }catch(e){
+    console.warn('local file store write failed:', e);
+    refreshStorageInfo();
+    showBanner('⚠ This browser could not keep the uploaded files for next time - its storage is full or blocked. '
+      + 'They are still loaded now and still go to the cloud, and will be fetched back on the next load.', 'error');
+    cloudSaveFileRows();
+    return false;
+  }
 }
 async function restoreFileRows(){
-  const key = lsKey(LS_FILEROWS);
+  const base = lsKey(LS_FILEROWS);
   try{
-    const fr = await IDB.get(key);
-    if(fr && typeof fr === 'object' && !Array.isArray(fr)){ STATE.fileRows = fr; return; }
-    // migrate a legacy localStorage copy (from before the IndexedDB switch)
-    const v = store.get(key);
-    if(v){ const p = JSON.parse(v); STATE.fileRows = (p && typeof p === 'object') ? p : {}; store.remove(key); persistFileRows(); return; }
+    const recs = await IDB.entriesWithPrefix(base + '::');
+    const keys = Object.keys(recs);
+    if(keys.length){
+      const fr = {};
+      for(const k of keys){
+        const rows = recs[k];
+        if(!Array.isArray(rows)) continue;
+        const rest = k.slice(base.length + 2), cut = rest.indexOf('|');
+        if(cut < 0) continue;
+        const t = rest.slice(0, cut), n = rest.slice(cut + 1);
+        (fr[t] = fr[t] || {})[n] = rows;
+        IDB_WRITTEN.set(k, rows);
+      }
+      STATE.fileRows = fr;
+      return;
+    }
+    // one record holding every file: how this used to be stored. Split it up, then carry on.
+    const blob = await IDB.get(base);
+    if(blob && typeof blob === 'object' && !Array.isArray(blob)){
+      STATE.fileRows = blob;
+      await persistFileRows();
+      return;
+    }
+    // a localStorage copy from before the IndexedDB switch
+    const v = store.get(base);
+    if(v){ const p = JSON.parse(v); STATE.fileRows = (p && typeof p === 'object') ? p : {}; store.remove(base); await persistFileRows(); return; }
     STATE.fileRows = {};
-  }catch(e){ STATE.fileRows = {}; }
+  }catch(e){ console.warn('restoring the local file store failed:', e); STATE.fileRows = {}; }
 }
 
 // ================= master (verified) =================
@@ -4296,7 +4403,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-23-d';
+const BUILD_ID = '2026-09-24-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5052,6 +5159,13 @@ function diagnostics(){
       const tag = r => [((r.buying||0)===0?'buying':''),((r.shipping||0)===0?'shipping':''),((r.oper||0)===0?'oper':'')].filter(Boolean).join('+');
       L.push(`  ⚠ ${zero.length} selling SKU(s) in master but with a £0 cost column (check it isn't just blank): ${zero.slice(0,8).map(r=>r.key+' ['+tag(r)+']').join(', ')}${zero.length>8?'...':''}`);
     }
+  }
+  if(STORAGE_INFO) L.push(STORAGE_INFO);
+  {
+    const fr = STATE.fileRows || {};
+    const nf = Object.values(fr).reduce((a, f) => a + Object.keys(f).length, 0);
+    const nr = Object.values(fr).reduce((a, f) => a + Object.values(f).reduce((b, r) => b + (r ? r.length : 0), 0), 0);
+    if(nf) L.push(`Uploaded files held locally: ${fmtNum(nf)} file(s), ${fmtNum(nr)} row(s)`);
   }
   {
     const sm = (STATE.extras.tiktok || {}).samples;
@@ -11292,6 +11406,7 @@ document.getElementById('acctSelect').addEventListener('change', e => {
 // init - restore the saved master sheet + previously-uploaded files, open dashboard if data exists.
 // Gated behind the access-gate below: this only runs once the password check has passed.
 function startApp(){
+  askPersistentStorage();     // stop the browser clearing the uploaded files when disk runs low
   renderAcctSelect();
   restoreMaster();
   restoreSkuMap();
