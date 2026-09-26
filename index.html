@@ -1410,6 +1410,13 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
     <span style="font-size:10.5px;color:var(--muted)">The Amazon Business Report has no dates inside, so day views can only be estimated (period total × days share) or hidden.</span>
   </div>
   <div class="set-group">
+    <div class="gl">Where your data is kept</div>
+    <label><input type="checkbox" id="cloudOnlyChk"> Database only &mdash; keep nothing in this browser</label>
+    <span id="cloudOnlyNote" style="font-size:10.5px;color:var(--muted)"></span>
+    <span style="font-size:10.5px;color:var(--muted)">Everyone then reads the same data from the database and no uploaded file sits in anybody&rsquo;s browser. Each load fetches it again (about 7MB, up to a minute on a big account), and the app needs a connection to show anything. This setting applies to every browser on the account. Only the account you picked, this switch and your sign-in stay local.</span>
+    <button class="btn secondary" id="wipeLocalBtn" style="margin-top:6px">Clear what this browser has stored</button>
+  </div>
+  <div class="set-group">
     <div class="gl">Date range (global - also in the top bar)</div>
     <div class="preset-row">
       <button class="preset" data-p="7">Last 7 days</button>
@@ -1428,10 +1435,22 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
 'use strict';
 // Fail-safe storage: if the browser blocks localStorage (privacy mode, file:// policies),
 // the app keeps working - persistence is just disabled instead of crashing the whole script.
+// ---- Where the account's data is kept ----
+// Database only: this browser keeps NOTHING about the account - no uploaded files, no costs, no
+// settings. Everything is read from the database when the app opens and written straight back, so
+// several people on several browsers always see the same thing and a browser clearing its storage
+// loses nothing. The cost is a fresh read on every load (about 7MB compressed).
+// What stays in the browser either way: which account is selected, this switch, and the sign-in.
+var LS_CLOUDONLY = 'mcpd_cloud_only';
+var CLOUD_ONLY = false;
+try{ CLOUD_ONLY = localStorage.getItem(LS_CLOUDONLY) === '1'; }catch(e){}
+var LOCAL_ALWAYS = ['mcpd_cur_acct', 'mcpd_cloud_only', 'mcpd_kpi_sample_tiles'];
+const localAllowed = k => !CLOUD_ONLY || LOCAL_ALWAYS.indexOf(String(k).replace(/__.*$/, '')) >= 0;
 const store = {
-  get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
+  get(k){ try{ return localAllowed(k) ? localStorage.getItem(k) : null; }catch(e){ return null; } },
   // A full store used to fail silently here, and no caller checks the result.
-  set(k,v){ try{ localStorage.setItem(k,v); return true; }catch(e){ storeFailed(k, e); return false; } },
+  set(k,v){ if(!localAllowed(k)) return true;      // database only: nothing about the data is kept here
+    try{ localStorage.setItem(k,v); return true; }catch(e){ storeFailed(k, e); return false; } },
   remove(k){ try{ localStorage.removeItem(k); }catch(e){} }
 };
 // Reported once per kind of data per session, rather than on every attempt.
@@ -1502,6 +1521,40 @@ const IDB = (() => {
     }
   };
 })();
+// Everything this app has put in this browser, gone - the uploaded files in IndexedDB and the
+// per-account keys in localStorage. What is in the database is untouched.
+async function wipeLocalData(){
+  try{
+    const keys = (await IDB.keys()) || [];
+    const mine = keys.filter(k => typeof k === 'string' && k.indexOf('mcpd_') === 0);
+    if(mine.length) await IDB.removeMany(mine);
+  }catch(e){ console.warn('clearing the local file store failed:', e); }
+  try{ IDB_WRITTEN.clear(); }catch(e){}
+  try{
+    for(const k of Object.keys(localStorage)){
+      if(k.indexOf('mcpd_') !== 0) continue;
+      if(LOCAL_ALWAYS.indexOf(k.replace(/__.*$/, '')) >= 0) continue;
+      localStorage.removeItem(k);
+    }
+  }catch(e){}
+  refreshStorageInfo();
+}
+async function setCloudOnly(on, fromCloud){
+  const was = CLOUD_ONLY;
+  CLOUD_ONLY = !!on;
+  try{ localStorage.setItem(LS_CLOUDONLY, CLOUD_ONLY ? '1' : '0'); }catch(e){}
+  if(CLOUD_ONLY) await wipeLocalData();
+  if(!fromCloud) cloudSaveGlobalSettings();     // the whole team follows this setting
+  paintCloudOnly();
+  return was !== CLOUD_ONLY;
+}
+function paintCloudOnly(){
+  const el = document.getElementById('cloudOnlyChk'); if(el) el.checked = CLOUD_ONLY;
+  const note = document.getElementById('cloudOnlyNote');
+  if(note) note.textContent = CLOUD_ONLY
+    ? 'On - nothing about this account is kept in this browser; every load reads the database.'
+    : 'Off - a copy is kept in this browser, so reloads are instant and work offline.';
+}
 // How much room this browser is giving the app, and whether it may be thrown away. A browser
 // clearing its "best effort" storage is what makes a day's uploads vanish overnight, so it is
 // asked to keep this site's data, and the answer is reported in diagnostics.
@@ -2834,15 +2887,22 @@ async function cloudSyncFileRows(attempt){
     // request threw the lot away and left the app looking empty. Each batch that arrives is kept,
     // and whatever failed is asked for again a few seconds later.
     const got = [];
-    let failed = 0;
+    let failed = 0, done = 0;
     const big = need.length > 40;
-    for(let i = 0; i < need.length; i += 20){                      // a few files per request
-      if(big && i % 200 === 0) showBanner(`Fetching your uploaded files from the cloud… ${fmtNum(i)} of ${fmtNum(need.length)}`);
-      const { data, error: getErr } = await sb.from('uploaded_files')
-        .select('id, file_type, file_name, rows, uploaded_at').in('id', need.slice(i, i + 20).map(c => c.id));
-      if(getErr){ failed++; console.warn('cloud file batch failed:', getErr); continue; }
+    const batches = [];
+    for(let i = 0; i < need.length; i += 40) batches.push(need.slice(i, i + 40));
+    for(let i = 0; i < batches.length; i += 3){                     // three requests in flight at once
+      const group = batches.slice(i, i + 3);
+      const res = await Promise.all(group.map(part => sb.from('uploaded_files')
+        .select('id, file_type, file_name, rows, uploaded_at').in('id', part.map(c => c.id))
+        .then(r => r, e => ({error: e}))));
       if(acct !== CUR_ACCT) return;
-      got.push(...(data || []));
+      for(const r of res){
+        if(r.error){ failed++; console.warn('cloud file batch failed:', r.error); continue; }
+        got.push(...(r.data || []));
+      }
+      done += group.reduce((a, g) => a + g.length, 0);
+      if(big) showBanner(`Fetching your uploaded files from the database… ${fmtNum(Math.min(done, need.length))} of ${fmtNum(need.length)}`);
     }
     if(big || (attempt || 0) > 0) showBanner(failed
       ? `Fetched ${fmtNum(got.length)} of ${fmtNum(need.length)} files from the cloud - the rest are being retried.`
@@ -2917,6 +2977,7 @@ var IDB_WRITTEN = new Map();
 const fileIdbKey = (base, type, name) => base + '::' + type + '|' + name;
 async function persistFileRows(){
   const base = lsKey(LS_FILEROWS);
+  if(CLOUD_ONLY){ cloudSaveFileRows(); return true; }      // the database is the only copy
   store.remove(base);   // clear any legacy localStorage copy
   const fr = STATE.fileRows || {};
   const want = new Map();
@@ -2946,6 +3007,7 @@ async function persistFileRows(){
 }
 async function restoreFileRows(){
   const base = lsKey(LS_FILEROWS);
+  if(CLOUD_ONLY){ STATE.fileRows = {}; return; }           // it all comes from the database below
   try{
     const recs = await IDB.entriesWithPrefix(base + '::');
     const keys = Object.keys(recs);
@@ -4403,7 +4465,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-24-a';
+const BUILD_ID = '2026-09-26-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -4547,12 +4609,15 @@ async function cloudSyncAccounts(){
 // instasales.settings is keyed by account_id, so global prefs live under a reserved
 // account row rather than needing a schema change.
 const GLOBAL_SETTINGS_ID = '__global';
+let GLOBAL_REMOTE = {};      // the shared settings row as last read, so a save keeps keys it does not know
 async function cloudSaveGlobalSettingsNow(){
   if(!window.sb) return;
   setSyncBadge('saving');
   try{
     await sb.from('accounts').upsert({ id: GLOBAL_SETTINGS_ID, name: 'Global settings' });
-    const data = { dash_kpis: getEnabledKpis() };
+    const data = Object.assign({}, GLOBAL_REMOTE, { dash_kpis: getEnabledKpis() });
+    // only a browser that has actually been told holds an opinion on this one
+    try{ if(localStorage.getItem(LS_CLOUDONLY) != null) data.cloudOnly = CLOUD_ONLY; }catch(e){}
     const { error } = await sb.from('settings').upsert({ account_id: GLOBAL_SETTINGS_ID, data, updated_at: new Date().toISOString() });
     if(error) throw error;
     syncOk('dashboard settings');
@@ -4576,6 +4641,11 @@ async function cloudSyncGlobalSettings(){
     const { data, error } = await sb.from('settings').select('data').eq('account_id', GLOBAL_SETTINGS_ID).maybeSingle();
     if(error) throw error;
     const d = data && data.data;
+    GLOBAL_REMOTE = (d && typeof d === 'object') ? d : {};
+    if(d && typeof d.cloudOnly === 'boolean' && d.cloudOnly !== CLOUD_ONLY){
+      const changed = await setCloudOnly(d.cloudOnly, true);
+      if(changed && d.cloudOnly) showBanner('This account is set to keep nothing in browsers - this browser\u2019s copy has been cleared and the data is read from the database.', 'success');
+    }
     if(d && Array.isArray(d.dash_kpis) && d.dash_kpis.length){
       store.set('mcpd_dash_kpis', JSON.stringify(d.dash_kpis));
       if(STATE.page === 'dashboard') renderPage();
@@ -5160,7 +5230,10 @@ function diagnostics(){
       L.push(`  ⚠ ${zero.length} selling SKU(s) in master but with a £0 cost column (check it isn't just blank): ${zero.slice(0,8).map(r=>r.key+' ['+tag(r)+']').join(', ')}${zero.length>8?'...':''}`);
     }
   }
-  if(STORAGE_INFO) L.push(STORAGE_INFO);
+  L.push('Data storage: ' + (CLOUD_ONLY
+    ? 'DATABASE ONLY - nothing about this account is kept in this browser'
+    : 'database + a copy in this browser (faster reloads)'));
+  if(!CLOUD_ONLY && STORAGE_INFO) L.push(STORAGE_INFO);
   {
     const fr = STATE.fileRows || {};
     const nf = Object.values(fr).reduce((a, f) => a + Object.keys(f).length, 0);
@@ -10580,6 +10653,22 @@ document.getElementById('ttRateSlider').addEventListener('input', e => { STATE.t
 document.getElementById('amzRefSlider').addEventListener('input', e => { STATE.amzRef = parseFloat(e.target.value)/100; document.getElementById('amzRefLabel').textContent = (STATE.amzRef*100).toFixed(1)+'%'; refresh(); });
 document.getElementById('amzRefundSlider').addEventListener('input', e => { STATE.amzRefund = parseFloat(e.target.value)/100; document.getElementById('amzRefundLabel').textContent = (STATE.amzRefund*100).toFixed(1)+'%'; refresh(); });
 document.getElementById('shopFeeSlider').addEventListener('input', e => { STATE.shopFee = parseFloat(e.target.value)/100; document.getElementById('shopFeeLabel').textContent = (STATE.shopFee*100).toFixed(1)+'%'; refresh(); });
+{
+  const chk = document.getElementById('cloudOnlyChk');
+  if(chk) chk.addEventListener('change', async e => {
+    const on = e.target.checked;
+    if(on && !confirm('Keep nothing in this browser?\n\nEverything about this account is read from the database from now on, in every browser. What this browser has stored is cleared now, and each load fetches the data again.')) { e.target.checked = false; return; }
+    await setCloudOnly(on);
+    showBanner(on ? 'Database only. This browser\u2019s copy has been cleared - reload to read everything fresh from the database.'
+                  : 'A copy will be kept in this browser again for faster reloads.', 'success');
+  });
+  const wipe = document.getElementById('wipeLocalBtn');
+  if(wipe) wipe.addEventListener('click', async () => {
+    if(!confirm('Clear everything this app has stored in this browser?\n\nThe database is untouched - the data is read back from it on the next load.')) return;
+    await wipeLocalData();
+    showBanner('This browser\u2019s copy has been cleared. Reload to read everything from the database.', 'success');
+  });
+}
 document.getElementById('amzDateMode').addEventListener('change', e => {
   STATE.amzDateMode = e.target.value;
   if(STATE.dateFrom || STATE.dateTo) setGlobalDates(STATE.dateFrom, STATE.dateTo);
@@ -11369,6 +11458,14 @@ function switchAccount(id){
   const acct = ACCOUNTS.find(a => a.id === id);
   (async () => {
     await restoreFileRows();
+    if(CLOUD_ONLY){
+      showPage('workspace');
+      showBanner(`Loading ${acct.name} from the database\u2026`);
+      await cloudSyncAll();
+      if(Object.keys(STATE.fileRows || {}).length){ STATE.dataSource = 'live'; showPage('dashboard'); }
+      else if(histHasData()){ STATE.dataSource = 'history'; showPage('dashboard'); }
+      return;
+    }
     if(Object.keys(STATE.fileRows || {}).length){
       rebuildFromFileStore();   // restore this account's previously-uploaded files
       STATE.dataSource = 'live';
@@ -11406,7 +11503,8 @@ document.getElementById('acctSelect').addEventListener('change', e => {
 // init - restore the saved master sheet + previously-uploaded files, open dashboard if data exists.
 // Gated behind the access-gate below: this only runs once the password check has passed.
 function startApp(){
-  askPersistentStorage();     // stop the browser clearing the uploaded files when disk runs low
+  paintCloudOnly();
+  if(!CLOUD_ONLY) askPersistentStorage();   // stop the browser clearing the uploaded files when disk runs low
   renderAcctSelect();
   restoreMaster();
   restoreSkuMap();
@@ -11421,6 +11519,14 @@ function startApp(){
   cloudSyncAccounts();   // account list is global - only pulled here, not on every switch
   (async () => {
     await restoreFileRows();
+    if(CLOUD_ONLY){
+      showPage('workspace');
+      showBanner('Loading this account from the database\u2026 nothing is kept in this browser.');
+      await cloudSyncAll();
+      if(Object.keys(STATE.fileRows || {}).length){ STATE.dataSource = 'live'; showPage('dashboard'); }
+      else if(histHasData()){ STATE.dataSource = 'history'; showPage('dashboard'); }
+      return;
+    }
     if(Object.keys(STATE.fileRows || {}).length){
       // rebuild the live P&L from the files remembered from the last session
       rebuildFromFileStore();
