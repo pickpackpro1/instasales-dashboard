@@ -3363,10 +3363,30 @@ function computeTikTok(){
       date, cancelled, status:fixText(r['Order Status']), sub,
       net_qty: cancelled ? 0 : Math.max(qty-ret,0),
       gross: cancelled ? 0 : cleanMoney(r['Order Amount'])*share,
+      shipFee: cleanMoney(r['Shipping Fee After Discount']),
       refund: refundLine,
       // TikTok charges its referral fee on the SKU subtotal after discount - the product, not the
       // buyer's shipping - less whatever of it was refunded.
       fee_base: cancelled ? 0 : Math.max(sub - refundLine, 0)});
+  }
+  // When a whole order goes back, TikTok refunds the delivery as well - its returns page shows
+  // "Paid GBP 15.26, Refund GBP 15.26" where the orders file's refund column says 11.49, the item
+  // alone. Revenue here is Order Amount, which INCLUDES that delivery, so leaving it out left a
+  // fully refunded order still booking its delivery as income. Added back in proportion, and only
+  // where every item on the order was refunded - a part refund keeps its delivery, as TikTok does.
+  {
+    const oSub = {}, oRef = {}, oShip = {};
+    for(const o of orders){
+      if(o.cancelled) continue;
+      oSub[o.oid] = (oSub[o.oid] || 0) + o.sub;
+      oRef[o.oid] = (oRef[o.oid] || 0) + o.refund;
+      oShip[o.oid] = o.shipFee || 0;
+    }
+    for(const o of orders){
+      if(o.cancelled) continue;
+      const sub = oSub[o.oid] || 0, ref = oRef[o.oid] || 0, ship = oShip[o.oid] || 0;
+      if(ship > 0.004 && sub > 0.004 && Math.abs(ref - sub) < 0.005) o.refund += ship * (o.sub / sub);
+    }
   }
   // Same again for the affiliate export: an estimated commission is replaced by the actual one
   // once it settles, so the copy carrying a real payment wins over the copy that only estimates.
@@ -4486,7 +4506,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-28-b';
+const BUILD_ID = '2026-09-28-c';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
