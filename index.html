@@ -3305,15 +3305,32 @@ function computeTikTok(){
     if(STATE.dateTo && d > STATE.dateTo) return false;
     return true;
   };
-  // de-duplicate order lines across overlapping exports (e.g. daily files + a monthly file)
-  const seenLines = new Set();
-  const ttOrders = [];
+  // De-duplicate order lines across overlapping exports (daily files plus a month-end file).
+  //
+  // A line CHANGES after the day it was placed: a return, a refund or a cancellation lands days
+  // later, so the month export holds a newer version of the same line than the daily file does.
+  // Keeping whichever copy happened to load first meant those later refunds never counted -
+  // August read £142.87 from the daily files where the month export says £298.81.
+  //
+  // The most settled copy wins instead: the largest refund, then the most returned units, then
+  // the furthest-along status. Each of those only ever moves forwards.
+  const ST_RANK = {'to ship':1, 'awaiting shipment':1, 'awaiting collection':1, 'shipped':2,
+                   'in transit':3, 'delivered':4, 'completed':5, 'cancelled':6};
+  const lineRank = r => [cleanMoney(r['Order Refund Amount']), cleanInt(r['Sku Quantity of return']),
+                         ST_RANK[fixText(r['Order Status']).toLowerCase()] || 0];
+  const laterOf = (a, b) => {          // b is the copy already kept
+    const ra = lineRank(a), rb = lineRank(b);
+    for(let i = 0; i < ra.length; i++) if(ra[i] !== rb[i]) return ra[i] > rb[i] ? a : b;
+    return b;
+  };
+  const bestLine = new Map();
   for(const r of R.tt_orders){
     const k = String(r['Order ID']||'').trim() + '|' + String(r['SKU ID']||'').trim();
-    if(k === '|' || seenLines.has(k)) continue;
-    seenLines.add(k);
-    ttOrders.push(r);
+    if(k === '|') continue;
+    const kept = bestLine.get(k);
+    bestLine.set(k, kept ? laterOf(r, kept) : r);
   }
+  const ttOrders = [...bestLine.values()];
   const orderTotalSub = {};
   for(const r of ttOrders){
     const oid = String(r['Order ID']||'').trim();
@@ -3351,13 +3368,17 @@ function computeTikTok(){
       // buyer's shipping - less whatever of it was refunded.
       fee_base: cancelled ? 0 : Math.max(sub - refundLine, 0)});
   }
-  const seenAff = new Set();
-  const ttAff = R.tt_aff.filter(r => {
+  // Same again for the affiliate export: an estimated commission is replaced by the actual one
+  // once it settles, so the copy carrying a real payment wins over the copy that only estimates.
+  const affBest = new Map();
+  for(const r of R.tt_aff){
     const k = String(r['Order ID']||'').trim() + '|' + String(r['SKU ID']||'').trim();
-    if(k === '|' || seenAff.has(k)) return false;
-    seenAff.add(k);
-    return true;
-  });
+    if(k === '|') continue;
+    const settled = cleanMoney(r['Actual Commission Payment']) + cleanMoney(r['Actual Shop Ads commission payment']);
+    const kept = affBest.get(k);
+    if(!kept || settled > kept.settled) affBest.set(k, {r, settled});
+  }
+  const ttAff = [...affBest.values()].map(x => x.r);
   const aff = ttAff.map(r => ({
     oid: String(r['Order ID']||'').trim(), sku_id: String(r['SKU ID']||'').trim(), pid: String(r['Product ID']||'').trim(),
     date: parseDate(r['Time Created'] || r['Payment time']),
@@ -4465,7 +4486,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-26-a';
+const BUILD_ID = '2026-09-28-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
