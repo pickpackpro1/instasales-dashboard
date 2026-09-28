@@ -4486,7 +4486,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-28-a';
+const BUILD_ID = '2026-09-28-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -4525,13 +4525,43 @@ const numOrNull = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
 // Each save sends the whole current state, so running one again is always safe.
 // `var`: setSyncBadge is a hoisted declaration and can run before these lines do.
 var SYNC_RETRY = {};                 // label -> {tries, timer, fn, gaveUp}
+var LAST_SYNC_ERROR = '';            // what went wrong last, for diagnostics
 var SYNC_MAX_TRIES = 10;
 var SYNC_WHAT = {'cost book': 'Costs, set selling prices, VAT settings and Comparison PNL notes',
   'master sheet': 'The master sheet', 'SKU map': 'The SKU map', 'uploaded files': 'Uploaded files',
   'stock': 'Stock tracking', 'history': 'Saved history', 'OpEx': 'OpEx', 'tasks': 'Tasks',
   'account list': 'The account list', 'dashboard settings': 'Dashboard settings'};
+// A sign-in that has run out looks like any other failure, and retrying it forever says "not
+// saved" without ever saying why. Recognised here, so the session can be renewed - or the
+// password asked for once - instead of the work quietly piling up unsent.
+const isAuthError = e => {
+  const m = String((e && (e.message || e.error_description)) || '').toLowerCase();
+  const code = String((e && (e.code || e.status)) || '');
+  return code === '401' || code === 'PGRST301' || m.indexOf('jwt') >= 0 || m.indexOf('refresh token') >= 0
+      || m.indexOf('not authenticated') >= 0 || m.indexOf('invalid claim') >= 0 || m.indexOf('unauthorized') >= 0;
+};
+var AUTH_RECOVERING = false, GATE_REAUTH = false;
+async function handleAuthLoss(){
+  if(AUTH_RECOVERING || !window.sb) return;
+  AUTH_RECOVERING = true;
+  try{
+    let ok = false;
+    try{ const r = await sb.auth.refreshSession(); ok = !!(r && r.data && r.data.session); }catch(e){}
+    if(!ok){ try{ const r = await sb.auth.getSession(); ok = !!(r && r.data && r.data.session); }catch(e){} }
+    if(ok){ try{ const v = await sb.rpc('am_i_verified'); ok = (v && v.data) === true; }catch(e){} }
+    if(ok){ showBanner('Signed back in - sending what was waiting.', 'success'); retryAllPendingSyncs(); }
+    else {
+      GATE_REAUTH = true;
+      showBanner('\u26a0 Your sign-in has run out, so nothing is reaching the database. Nothing you have done is lost - enter the password to send it.', 'error');
+      showGate('password', 'Your session expired - enter the password to carry on. Nothing you have done is lost.');
+    }
+  } finally { AUTH_RECOVERING = false; }
+}
 function syncFailed(label, fn, err){
   console.warn('cloud sync (' + label + ') failed:', err);
+  LAST_SYNC_ERROR = new Date().toTimeString().slice(0, 8) + ' \u00b7 ' + label + ': '
+    + String((err && (err.message || err.error_description || err.details || err.code)) || err || 'unknown');
+  if(isAuthError(err)) handleAuthLoss();
   const r = SYNC_RETRY[label] = SYNC_RETRY[label] || {tries:0, timer:null, fn, gaveUp:false};
   r.fn = fn;
   r.tries++;
@@ -5251,6 +5281,7 @@ function diagnostics(){
       L.push(`  ⚠ ${zero.length} selling SKU(s) in master but with a £0 cost column (check it isn't just blank): ${zero.slice(0,8).map(r=>r.key+' ['+tag(r)+']').join(', ')}${zero.length>8?'...':''}`);
     }
   }
+  if(LAST_SYNC_ERROR) L.push('Last sync problem: ' + LAST_SYNC_ERROR);
   L.push('Data storage: ' + (CLOUD_ONLY
     ? 'DATABASE ONLY - nothing about this account is kept in this browser'
     : 'database + a copy in this browser (faster reloads)'));
@@ -6459,14 +6490,31 @@ function onVatSettingEdited(){
   ACCT_DIRTY.vat = ++ACCT_EDIT_SEQ;     // at once, so a pull arriving meanwhile cannot undo it
   saveAcctSettingsSoon();
 }
-// What this browser sends. Before the row has been read, the cloud's copy of each section goes
-// back as it was, plus only what was changed here - never an empty "not loaded yet" in its place.
+// The three books as they last agreed with the database. What differs from this is what THIS
+// browser changed, and that is all a save is allowed to write.
+var ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}};
+function snapshotBooks(){
+  try{
+    ACCT_BOOK_SNAPSHOT = JSON.parse(JSON.stringify({costBook: COSTBOOK || {}, priceBook: PRICEBOOK || {}, roiBook: ROIBOOK || {}}));
+  }catch(e){ ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}}; }
+}
+// Start from what is in the database right now, put back every entry this browser changed since
+// it last agreed with it, and drop the ones it deleted. Entries someone else added or changed in
+// the meantime are left alone. Writing this browser's whole copy over the top is what made two
+// people's cost and ROI edits undo each other - saved, then gone a while later.
+function mergeBook(remoteBook, localBook, snap){
+  const out = Object.assign({}, remoteBook || {});
+  const local = localBook || {}, base = snap || {};
+  for(const k of Object.keys(local)) if(JSON.stringify(local[k]) !== JSON.stringify(base[k])) out[k] = local[k];
+  for(const k of Object.keys(base)) if(!(k in local)) delete out[k];
+  return out;
+}
 function acctSettingsPayload(){
   const remote = ACCT_SETTINGS_REMOTE || {};
   const out = Object.assign({}, remote);
-  out.costBook  = (COSTS_PULLED || !isEmptyObj(COSTBOOK))  ? COSTBOOK  : remote.costBook;
-  out.priceBook = (COSTS_PULLED || !isEmptyObj(PRICEBOOK)) ? PRICEBOOK : remote.priceBook;
-  out.roiBook   = (COSTS_PULLED || !isEmptyObj(ROIBOOK))   ? ROIBOOK   : remote.roiBook;
+  out.costBook  = mergeBook(remote.costBook,  COSTBOOK,  ACCT_BOOK_SNAPSHOT.costBook);
+  out.priceBook = mergeBook(remote.priceBook, PRICEBOOK, ACCT_BOOK_SNAPSHOT.priceBook);
+  out.roiBook   = mergeBook(remote.roiBook,   ROIBOOK,   ACCT_BOOK_SNAPSHOT.roiBook);
   if(SETTINGS_PULLED){
     out.cmpNotes = CMP_NOTES;
     out.pnlHist = PNL_HIST;
@@ -6542,9 +6590,9 @@ async function cloudSaveCostBookNow(){
   const acct = CUR_ACCT;
   try{
     await cloudEnsureAccount();
-    if(ACCT_SETTINGS_REMOTE == null){
-      // Not read yet. The save replaces the whole row, so writing blind would drop whatever
-      // this browser has not loaded - read it first.
+    // Read the row as it stands NOW and merge into it. Anything saved by someone else since this
+    // browser last looked is kept, rather than being written over by this browser's older copy.
+    {
       const { data, error: readErr } = await sb.from('settings').select('data').eq('account_id', acct).maybeSingle();
       if(readErr) throw readErr;
       if(acct === CUR_ACCT) ACCT_SETTINGS_REMOTE = settingsRowData(data);
@@ -6559,6 +6607,19 @@ async function cloudSaveCostBookNow(){
       ACCT_SETTINGS_REMOTE = payload;
       ACCT_SAVE_GEN++;
       COST_SAVED_SEQ = Math.max(COST_SAVED_SEQ, costSeqAtSend);
+      // take on what the merge brought back from other browsers, so this one is now in step
+      const before = JSON.stringify([COSTBOOK, PRICEBOOK, ROIBOOK]);
+      COSTBOOK = payload.costBook || {}; PRICEBOOK = payload.priceBook || {}; ROIBOOK = payload.roiBook || {};
+      snapshotBooks();
+      if(JSON.stringify([COSTBOOK, PRICEBOOK, ROIBOOK]) !== before){
+        store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK));
+        store.set(lsKey(LS_PRICEBOOK), JSON.stringify(PRICEBOOK));
+        store.set(lsKey(LS_ROIBOOK), JSON.stringify(ROIBOOK));
+        if(haveCosts()) STATE.master = buildMaster();
+        if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
+        if(STATE.page === 'products') keepFocus('#prodTable', renderProducts);
+        else if(STATE.page === 'costbook') renderCostBook();
+      }
       let cleared = false;
       for(const k of Object.keys(ACCT_DIRTY))
         if(ACCT_DIRTY[k] && ACCT_DIRTY[k] === dirtyAtSend[k]){ ACCT_DIRTY[k] = 0; cleared = true; }
@@ -6609,6 +6670,7 @@ async function cloudSyncCostBook(attempt){
     } else if(Object.keys(COSTBOOK).length){
       cloudSaveCostBook();          // cloud empty, push what we have
     }
+    snapshotBooks();                // this browser and the database now agree
   }catch(e){ console.warn('cloud sync (cost book) pull failed:', e); }
 }
 // The date a cost lookup is answered "as of": the end of the active filter, else the newest
@@ -11690,7 +11752,13 @@ document.getElementById('gateForm').addEventListener('submit', async (e) => {
                                 {data:null, error:{message:'timeout'}});
     const ok = r && r.data, error = r && r.error;
     if(error) throw error;
-    if(ok){ await loadAccessRole(); hideGate(); startApp(); applyAccessRole(); }
+    if(ok && GATE_REAUTH){
+      // signed back in mid-session: pick up where it left off, nothing to reload
+      GATE_REAUTH = false; hideGate();
+      showBanner('Signed back in - sending what was waiting.', 'success');
+      retryAllPendingSyncs();
+    }
+    else if(ok){ await loadAccessRole(); hideGate(); startApp(); applyAccessRole(); }
     else { showGate('password', 'Incorrect password - try again.'); pwEl.value = ''; }
   }catch(e){
     showGate('password', (e && e.message === 'timeout')
