@@ -1310,16 +1310,16 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
     </div>
     <div class="card" style="margin-top:14px">
       <div class="toolbar">
-        <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span>\u{1F4BE} Backup</h3>
-        <button class="btn" id="bkDownload">\u2B07 Download a backup</button>
-        <button class="btn secondary" id="bkRestoreBtn">\u2B06 Restore from a backup</button>
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span>💾 Backup</h3>
+        <button class="btn" id="bkDownload">⬇ Download a backup</button>
+        <button class="btn secondary" id="bkRestoreBtn">⬆ Restore from a backup</button>
         <input type="file" id="bkRestoreFile" accept=".json" style="display:none">
       </div>
-      <div class="sub-title">One file holding everything the database stores for this account: your costs, set
-        prices, ROI figures, the master sheet, SKU map, stock history, OpEx, tasks and saved history. Keep it
-        somewhere of your own. <label style="margin-left:6px"><input type="checkbox" id="bkWithFiles"> include the
-        uploaded reports too</label> &mdash; those are the marketplace exports you can download again, and they make
-        the file very large (100MB+). Restoring puts everything back without deleting anything that is newer.</div>
+      <div class="sub-title">Saves <b>two files</b>: your data (costs, set prices, ROI figures, master sheet, SKU map,
+        stock history, OpEx, tasks, saved history) and <b>a copy of the app itself</b>, which opens and runs on its own.
+        Between them you hold the whole thing. <label style="margin-left:6px"><input type="checkbox" id="bkWithFiles">
+        include the uploaded reports too</label> &mdash; those are marketplace exports you can download again, and they
+        make the data file very large (100MB+). Restoring puts everything back without deleting anything newer.</div>
       <div id="bkNote" class="sub-title"></div>
     </div>
     <div class="card" style="margin-top:14px">
@@ -4622,7 +4622,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-01-g';
+const BUILD_ID = '2026-10-01-h';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -10771,14 +10771,21 @@ document.getElementById('srcHist').addEventListener('click', () => {
 // ---- Backup to a file of your own ----
 // Read straight from the database rather than from what this browser happens to be holding, so the
 // file is a copy of the real thing - the point being a backup nobody here can overwrite.
+var bkStep = null;        // called with each table name so the button can say where it is
 async function readAllForBackup(withFiles){
   const out = {format: 'instasales-backup', version: 1, account: CUR_ACCT, taken_at: new Date().toISOString(), tables: {}};
+  // Paging needs a stable sort, and not every table has an id: settings is keyed by account and
+  // the stock archive by account+product+day. Sorting them all by 'id' made the very first read
+  // fail, which killed the whole backup before a single byte was written.
+  const ORDER = {settings: ['account_id'], stock_archive: ['account_id', 'product_name', 'day_key']};
   const grab = async (table, filter) => {
+    if(bkStep) bkStep(table);
     const { data, error } = await pagedSelect(() => {
       let q = sb.from(table).select('*');
       if(filter === 'acct') q = q.eq('account_id', CUR_ACCT);
       else if(filter === 'null') q = q.is('account_id', null);
-      return q.order('id', {ascending: true});
+      for(const col of (ORDER[table] || ['id'])) q = q.order(col, {ascending: true});
+      return q;
     });
     if(error) throw new Error(table + ': ' + (error.message || error));
     return data || [];
@@ -10812,19 +10819,43 @@ function downloadBlob(name, text){
 document.getElementById('bkDownload').addEventListener('click', async () => {
   const btn = document.getElementById('bkDownload'), note = document.getElementById('bkNote');
   const withFiles = document.getElementById('bkWithFiles').checked;
-  btn.disabled = true; btn.textContent = 'Reading the database\u2026';
+  const spin = ['\u25D0','\u25D3','\u25D1','\u25D2'];
+  let tick = 0, at = 'starting';
+  const timer = setInterval(() => { btn.textContent = spin[tick++ % 4] + ' reading ' + at + '\u2026'; }, 180);
+  bkStep = t => { at = t.replace(/_/g, ' '); };
+  btn.disabled = true;
+  note.textContent = 'Reading the database\u2026 this can take a minute with the reports included.';
   try{
     const data = await readAllForBackup(withFiles);
     const text = JSON.stringify(data);
     const counts = Object.entries(data.tables).map(([t, r]) => t.replace(/_/g, ' ') + ' ' + fmtNum(r.length)).join(' \u00b7 ');
-    downloadBlob('instasales-backup-' + CUR_ACCT + '-' + todayISO() + '.json', text);
-    note.innerHTML = `Saved <b>${(text.length / 1048576).toFixed(1)} MB</b> \u2014 ${esc(counts)}`
-      + (withFiles ? '' : ` \u00b7 ${fmtNum((data.files_not_included || []).length)} uploaded report(s) listed but not included`);
-    showBanner('Backup downloaded. Keep it somewhere of your own.', 'success');
+    downloadBlob('instasales-data-' + CUR_ACCT + '-' + todayISO() + '.json', text);
+    // and the app itself, so the backup is the whole thing and not only what it holds
+    let appNote = '';
+    try{
+      at = 'the app itself';
+      const res = await fetch(location.href.split('?')[0].split('#')[0], {cache: 'reload'});
+      const html = await res.text();
+      if(html && html.length > 10000){
+        const url = URL.createObjectURL(new Blob([html], {type: 'text/html'}));
+        const a = document.createElement('a');
+        a.href = url; a.download = 'instasales-app-' + BUILD_ID + '.html';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        appNote = ` \u00b7 app saved as instasales-app-${BUILD_ID}.html (${(html.length / 1048576).toFixed(1)} MB)`;
+      }
+    }catch(err){ appNote = ' \u00b7 the app file could not be saved (' + (err.message || err) + ')'; }
+    note.innerHTML = `Saved <b>${(text.length / 1048576).toFixed(1)} MB</b> of data \u2014 ${esc(counts)}`
+      + (withFiles ? '' : ` \u00b7 ${fmtNum((data.files_not_included || []).length)} uploaded report(s) listed but not included`)
+      + esc(appNote);
+    showBanner('Backup saved: your data and a copy of the app. Keep both somewhere of your own.', 'success');
   }catch(e){
-    note.textContent = '';
+    note.innerHTML = '<span style="color:var(--red)">Backup failed: ' + esc(String(e.message || e)) + '</span>';
     showBanner('Could not read everything for the backup: ' + (e.message || e), 'error');
-  } finally { btn.disabled = false; btn.textContent = '\u2B07 Download a backup'; }
+  } finally {
+    clearInterval(timer); bkStep = null;
+    btn.disabled = false; btn.textContent = '\u2B07 Download a backup';
+  }
 });
 // ---- putting one back ----
 // Nothing is deleted. Rows that exist are left as they are unless the backup holds more: stock days
