@@ -10821,7 +10821,9 @@ document.getElementById('bkDownload').addEventListener('click', async () => {
   const withFiles = document.getElementById('bkWithFiles').checked;
   const spin = ['\u25D0','\u25D3','\u25D1','\u25D2'];
   let tick = 0, at = 'starting';
-  const timer = setInterval(() => { btn.textContent = spin[tick++ % 4] + ' reading ' + at + '\u2026'; }, 180);
+  const paint = () => { btn.textContent = spin[tick++ % 4] + ' reading ' + at + '\u2026'; };
+  paint();                                   // say so at once, not only after the first tick
+  const timer = setInterval(paint, 180);
   bkStep = t => { at = t.replace(/_/g, ' '); };
   btn.disabled = true;
   note.textContent = 'Reading the database\u2026 this can take a minute with the reports included.';
