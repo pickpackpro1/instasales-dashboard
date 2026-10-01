@@ -4593,7 +4593,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-01-d';
+const BUILD_ID = '2026-10-01-e';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -7490,25 +7490,67 @@ let STOCK_SORT = {key:'week', dir:'desc'};
 function loadStock(){ try{ STOCK = JSON.parse(store.get(lsKey(LS_STOCK))) || {}; }catch(e){ STOCK = {}; } }
 function saveStock(){ try{ store.set(lsKey(LS_STOCK), JSON.stringify(STOCK)); }catch(e){} cloudSaveStock(); }
 
+// Days and products deleted here on purpose, which a merge must not put back.
+var STOCK_DEL_DAYS = [], STOCK_CLEARED = false;
 async function cloudSaveStockNow(){
   if(!window.sb) return;
   setSyncBadge('saving');
+  const acct = CUR_ACCT;
   try{
     await cloudEnsureAccount();
-    // delete-then-reinsert (not upsert) so a product REMOVED locally also disappears from
-    // the cloud - upsert alone would leave deleted entries orphaned there forever.
-    const { error: delErr } = await sb.from('stock').delete().eq('account_id', CUR_ACCT);
+    // Read what is stored right now and merge this browser's days into it.
+    //
+    // This used to delete every row for the account and write whatever was in memory. A browser
+    // that imported a day's sheet before its copy had arrived - which, with nothing kept in the
+    // browser, is any browser on any morning - therefore replaced months of daily stock with the
+    // one day it happened to be holding. That is exactly what happened: 188 products left with a
+    // single date on them.
+    const { data: cloudRows, error: readErr } = await pagedSelect(() =>
+      sb.from('stock').select('*').eq('account_id', acct).order('id', {ascending: true}));
+    if(readErr) throw readErr;
+    if(acct !== CUR_ACCT){ setSyncBadge('idle'); return; }
+    const clearedAtSend = STOCK_CLEARED, deletedAtSend = STOCK_DEL_DAYS.slice();
+    const merged = {};
+    if(!clearedAtSend){
+      for(const r of (cloudRows || []))
+        merged[r.product_name] = {daily: Object.assign({}, r.daily || {}), inventory: r.inventory,
+                                  actions: r.actions || '', alarm: r.alarm || ''};
+    }
+    for(const [name, p] of Object.entries(STOCK)){
+      const tgt = merged[name] || (merged[name] = {daily:{}, inventory:null, actions:'', alarm:''});
+      Object.assign(tgt.daily, p.daily || {});         // a day held here wins for that day
+      if(p.inventory != null) tgt.inventory = p.inventory;
+      if(p.actions) tgt.actions = p.actions;
+      if(p.alarm) tgt.alarm = p.alarm;
+    }
+    for(const d of deletedAtSend) for(const t of Object.values(merged)) delete t.daily[d];
+    for(const [name, t] of Object.entries(merged))
+      if(!Object.keys(t.daily).length && t.inventory == null && !t.actions && !t.alarm) delete merged[name];
+
+    const { error: delErr } = await sb.from('stock').delete().eq('account_id', acct);
     if(delErr) throw delErr;
-    const names = Object.keys(STOCK);
+    const names = Object.keys(merged);
     if(names.length){
       const rows = names.map(n => ({
-        account_id: CUR_ACCT, product_name: n,
-        daily: STOCK[n].daily || {}, inventory: numOrNull(STOCK[n].inventory),
-        actions: STOCK[n].actions || '', alarm: STOCK[n].alarm || ''
+        account_id: acct, product_name: n,
+        daily: merged[n].daily || {}, inventory: numOrNull(merged[n].inventory),
+        actions: merged[n].actions || '', alarm: merged[n].alarm || ''
       }));
       for(let i=0;i<rows.length;i+=500){
         const { error } = await sb.from('stock').insert(rows.slice(i,i+500));
         if(error) throw error;
+      }
+    }
+    if(acct === CUR_ACCT){
+      if(clearedAtSend) STOCK_CLEARED = false;
+      STOCK_DEL_DAYS = STOCK_DEL_DAYS.filter(d => deletedAtSend.indexOf(d) < 0);
+      // take on the days other browsers added, so this one is now showing everything
+      const before = JSON.stringify(STOCK);
+      STOCK = merged;
+      if(JSON.stringify(STOCK) !== before){
+        store.set(lsKey(LS_STOCK), JSON.stringify(STOCK));
+        if(STATE.page === 'inventory') renderStock();
+        else if(STATE.page === 'skumgt') renderSkuMgt();
       }
     }
     syncOk('stock');
@@ -7665,6 +7707,7 @@ ${fmtNum(prods)} product(s), ${fmtNum(units)} unit(s).
     + `Inventory, actions and China alarm are kept - only this day's figures go. `
     + `Re-import the correct file for that date to put it back.`)) return;
   for(const p of Object.values(STOCK)) if(p.daily) delete p.daily[day];
+  if(STOCK_DEL_DAYS.indexOf(day) < 0) STOCK_DEL_DAYS.push(day);   // so the save does not merge it back
   // a product left with no sales AND nothing else recorded is not tracked at all any more
   for(const [n, p] of Object.entries(STOCK)){
     const hasDaily = p.daily && Object.keys(p.daily).length;
@@ -11580,7 +11623,7 @@ document.getElementById('stockDelGo').addEventListener('click', () => {
 });
 document.getElementById('stockClear').addEventListener('click', () => {
   if(!confirm('Clear all weekly stock tracking data for this account?')) return;
-  STOCK = {}; saveStock(); renderStock(); showBanner('Stock tracking cleared for this account.');
+  STOCK = {}; STOCK_CLEARED = true; saveStock(); renderStock(); showBanner('Stock tracking cleared for this account.');
 });
 document.getElementById('stockExport').addEventListener('click', () => {
   const allDates = stockAllDatesSorted().slice().reverse();
