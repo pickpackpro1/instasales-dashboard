@@ -4492,7 +4492,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-09-28-d';
+const BUILD_ID = '2026-10-01-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -9249,6 +9249,11 @@ function syncMasterStore(){
   markFileChanged('master', name, 'put');
   STATE.files.master = [name];
   persistMaster(true);
+  // The master is ALSO one of the stored files, and that file copy is what a load reads - the
+  // product table is only a mirror of it. Marking the file changed without ever saving it meant
+  // a product added here reached the table and nothing else, so the next load read the older file
+  // copy and the product was gone again, asking to be added for the third or fourth time.
+  persistFileRows();
   STATE.master = buildMaster();
   if(STATE.raw.tt_orders.length || STATE.raw.amz_biz.length || STATE.raw.ebay_list.length || STATE.raw.shop_orders.length){
     recompute();
