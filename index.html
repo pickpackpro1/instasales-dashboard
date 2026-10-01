@@ -2889,10 +2889,12 @@ async function cloudSyncFileRows(attempt){
     const got = [];
     let failed = 0, done = 0;
     const big = need.length > 40;
+    // Bigger batches, more of them at once: a whole account used to take 37 rounds of waiting,
+    // which is most of the delay on a database-only load.
     const batches = [];
-    for(let i = 0; i < need.length; i += 40) batches.push(need.slice(i, i + 40));
-    for(let i = 0; i < batches.length; i += 3){                     // three requests in flight at once
-      const group = batches.slice(i, i + 3);
+    for(let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
+    for(let i = 0; i < batches.length; i += 6){                     // six requests in flight at once
+      const group = batches.slice(i, i + 6);
       const res = await Promise.all(group.map(part => sb.from('uploaded_files')
         .select('id, file_type, file_name, rows, uploaded_at').in('id', part.map(c => c.id))
         .then(r => r, e => ({error: e}))));
@@ -4492,7 +4494,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-01-a';
+const BUILD_ID = '2026-10-01-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -4518,6 +4520,8 @@ async function pagedSelect(makeQuery, pageSize){
   }
   return { data: out, error: null };
 }
+// True while an account is being read from the database: the heavy rebuild waits for the end.
+var LOADING_ACCOUNT = false;
 function debounce(fn, ms){ let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const numOrNull = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
 // ---- Failed cloud saves ----
@@ -4686,9 +4690,16 @@ const cloudSaveGlobalSettings = debounce(cloudSaveGlobalSettingsNow, 600);
 // otherwise the P&L is computed against whichever master happened to arrive first, and two
 // browsers with identical filters disagree on Referral/Shipping/Profit.
 async function cloudSyncAll(){
+  // While the account is being read, every pull that landed rebuilt the master and recomputed the
+  // whole P&L - three or four times over, each time on data that was still arriving. Held off
+  // until the files are in, then done once.
+  LOADING_ACCOUNT = true;
   cloudSyncAcctSettings();   // small, and wanted before anyone types a note or ticks a VAT box
   try{ await Promise.all([cloudSyncMaster(), cloudSyncSkuMap()]); }catch(e){ console.warn('cloud sync (cost data) failed:', e); }
   try{ await cloudSyncFileRows(); }catch(e){ console.warn('cloud sync (files) failed:', e); }
+  LOADING_ACCOUNT = false;
+  if(haveCosts()) STATE.master = buildMaster();
+  if(STATE.master && loadedChannels().length){ recompute(); renderPage(); }
   cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncGlobalSettings(); cloudSyncCostBook();
 }
 
@@ -4832,7 +4843,7 @@ async function cloudSyncMaster(){
       const el = document.querySelector('.fs-item[data-t="master"]');
       if(el){ el.classList.add('ok'); el.querySelector('.check').textContent = '✓'; el.querySelector('.cnt').textContent = `${data.length} rows (cloud)`; }
       if(STATE.page === 'products') renderProducts();
-      if(STATE.raw.tt_orders.length || STATE.raw.amz_biz.length || STATE.raw.ebay_list.length || STATE.raw.shop_orders.length){ recompute(); renderPage(); }
+      if(!LOADING_ACCOUNT && (STATE.raw.tt_orders.length || STATE.raw.amz_biz.length || STATE.raw.ebay_list.length || STATE.raw.shop_orders.length)){ recompute(); renderPage(); }
     } else if(STATE.raw.master.length){
       cloudSaveMaster();
     }
@@ -5236,7 +5247,29 @@ function selfTest(){
   }
   return fails;
 }
+// The diagnostics pass walks every master row, every channel row and every loaded file looking
+// for cost clashes and gaps. It costs more than the P&L it describes - half a second on this
+// account - and it ran after EVERY recompute: every date change, every channel click, every
+// background sync. Nothing reads it until the Reports page or Copy diagnostics asks, so it is
+// marked stale here and built then.
+var DIAG_STALE = true;
 function diagnostics(){
+  DIAG_STALE = true;
+  const p = document.getElementById('diagPanel');
+  if(p && p.offsetParent !== null) buildDiagnostics();      // the panel is on screen - keep it live
+}
+function ensureDiagnostics(){
+  if(DIAG_STALE) buildDiagnostics();
+  return STATE.diagText;
+}
+function buildDiagnostics(){
+  DIAG_STALE = false;
+  if(!STATE.master){                       // nothing computed yet - there is nothing to report on
+    STATE.diagText = 'Load files to see diagnostics.';
+    const el = document.getElementById('diagPanel');
+    if(el) el.textContent = STATE.diagText;
+    return;
+  }
   const L = ['PARSE & JOIN DIAGNOSTIC'];
   const stFails = selfTest();
   if(stFails.length) L.push(`⚠ SELF-TEST FAILED (${stFails.length}) - uploads may be misread, tell Claude:\n   ` + stFails.join('\n   ') + '\n');
@@ -6671,7 +6704,8 @@ async function cloudSyncCostBook(attempt){
       migrateCostBook();
       store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK));
       if(haveCosts()) STATE.master = buildMaster();
-      if(STATE.master && loadedChannels().length){ recompute(); renderPage(); }
+      if(LOADING_ACCOUNT){ /* the one rebuild at the end of the load covers this */ }
+      else if(STATE.master && loadedChannels().length){ recompute(); renderPage(); }
       else if(STATE.page === 'costbook') renderCostBook();
     } else if(Object.keys(COSTBOOK).length){
       cloudSaveCostBook();          // cloud empty, push what we have
@@ -10281,7 +10315,7 @@ function renderFees(){
 
 // ---- Reports ----
 function renderReports(){
-  document.getElementById('diagPanel').textContent = STATE.diagText;
+  document.getElementById('diagPanel').textContent = ensureDiagnostics();
   renderLoadedReports();
   const days = Object.keys(HIST.daily).length;
   let masterInfo = 'No master products saved yet.';
