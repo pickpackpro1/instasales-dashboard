@@ -424,6 +424,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
 
   <!-- ============ DASHBOARD ============ -->
   <div class="page" id="page-dashboard">
+    <div id="heldFilesNote" class="notice" style="display:none;background:#fff8e6;border-color:#f0d9a0;margin-bottom:12px"></div>
     <div class="card" style="margin-bottom:14px;padding:10px 16px">
       <div class="fbar">
         <span class="flabel">Data source:</span>
@@ -1408,6 +1409,19 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
       </select>
     </label>
     <span style="font-size:10.5px;color:var(--muted)">The Amazon Business Report has no dates inside, so day views can only be estimated (period total × days share) or hidden.</span>
+  </div>
+  <div class="set-group">
+    <div class="gl">How much is loaded</div>
+    <label>Reports loaded on opening
+      <select id="monthsLoadSel" class="fsel">
+        <option value="1">This month and last</option>
+        <option value="3" selected>Last 3 months</option>
+        <option value="6">Last 6 months</option>
+        <option value="12">Last 12 months</option>
+        <option value="0">Everything</option>
+      </select>
+    </label>
+    <span style="font-size:10.5px;color:var(--muted)">Daily exports older than this are left in the database until a date range asks for them. Fewer reports means a much faster open - a full account is 1,500+ files. The master sheet, SKU map and anything without a date in its name are always loaded.</span>
   </div>
   <div class="set-group">
     <div class="gl">Where your data is kept</div>
@@ -2780,6 +2794,67 @@ function rebuildFromFileStore(){
 //   pending - changes made here that have not reached the cloud yet (kept across reloads)
 // A save sends only the pending changes. A load lists the cloud's files (names and times, no
 // data) and downloads only those that are new or were changed by another browser.
+// ---- Loading only what is being looked at ----
+// A full account is 1,500+ daily reports. Reading every one of them before the dashboard can
+// show anything is the single slowest thing the app does, and with nothing kept in the browser
+// it happens on every load. Daily exports carry their date in the file name, so only the recent
+// months are fetched up front; the rest are listed, not downloaded, and come when a date range
+// asks for them. Reports with no date in the name (the master sheet, the SKU map, month exports)
+// are always fetched.
+var FILES_HELD = [];          // {id, file_type, file_name, uploaded_at, day} not fetched yet
+var MONTHS_LOADED = 3;        // 0 = everything
+const monthsCutoff = () => {
+  if(!(MONTHS_LOADED > 0)) return '';
+  const d = new Date();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() - (MONTHS_LOADED - 1));
+  return d.toISOString().slice(0, 10);
+};
+function heldNote(){
+  const el = document.getElementById('heldFilesNote');
+  if(!el) return;
+  if(!FILES_HELD.length){ el.style.display = 'none'; return; }
+  const from = FILES_HELD.map(f => f.day).sort()[0];
+  el.style.display = 'block';
+  el.innerHTML = `<b>${fmtNum(FILES_HELD.length)} older report(s)</b> are in the database but not loaded `
+    + `(before ${monthsCutoff()}, back to ${from}). Pick an older date range and they load by themselves, `
+    + `or <button class="act-link" id="loadHeldBtn">load them all now</button>. Change the window in \u2699 Settings.`;
+  const b = document.getElementById('loadHeldBtn');
+  if(b) b.addEventListener('click', () => ensureFilesFor('', ''));
+}
+// Fetch the held-back reports covering a range ('' and '' = all of them).
+async function ensureFilesFor(from, to){
+  if(!FILES_HELD.length || !window.sb) return false;
+  const want = FILES_HELD.filter(f => (!from || f.day >= from) && (!to || f.day <= to));
+  if(!want.length) return false;
+  const acct = CUR_ACCT;
+  showBanner(`Fetching ${fmtNum(want.length)} older report(s) from the database\u2026`);
+  const got = [];
+  for(let i = 0; i < want.length; i += 100){
+    const part = want.slice(i, i + 100);
+    const { data, error } = await sb.from('uploaded_files')
+      .select('id, file_type, file_name, rows, uploaded_at').in('id', part.map(f => f.id));
+    if(error){ console.warn('older files failed:', error); break; }
+    if(acct !== CUR_ACCT) return false;
+    got.push(...(data || []));
+    showBanner(`Fetching older reports\u2026 ${fmtNum(Math.min(i + 100, want.length))} of ${fmtNum(want.length)}`);
+  }
+  if(!got.length){ showBanner('Could not fetch the older reports - check the connection and try again.', 'error'); return false; }
+  const st = fileSyncState();
+  const fr = STATE.fileRows || (STATE.fileRows = {});
+  for(const r of got){
+    (fr[r.file_type] = fr[r.file_type] || {})[r.file_name] = r.rows;
+    st.files[fileKey(r.file_type, r.file_name)] = Date.parse(r.uploaded_at);
+  }
+  const fetched = new Set(got.map(r => r.id));
+  FILES_HELD = FILES_HELD.filter(f => !fetched.has(f.id));
+  saveFileSyncState();
+  if(!CLOUD_ONLY) await persistFileRows();
+  rebuildFromFileStore();
+  heldNote();
+  showBanner(`Loaded ${fmtNum(got.length)} older report(s).`, 'success');
+  return true;
+}
 const LS_FILESYNC = 'mcpd_file_sync';
 var FILE_SYNC = null, FILE_SYNC_ACCT = null, FILE_SEQ = 0;
 const fileKey = (type, name) => type + '|' + name;
@@ -2876,11 +2951,16 @@ async function cloudSyncFileRows(attempt){
       return;
     }
     const cloud = new Map(listing.map(c => [fileKey(c.file_type, c.file_name), c]));
+    const cutoff = monthsCutoff();
     const need = [];
+    FILES_HELD = [];
     for(const [k, c] of cloud){
       if(st.pending[k]) continue;                                   // changed here - ours goes up instead
       const [t, n] = splitFileKey(k);
       if(st.init && has(t, n) && st.files[k] === Date.parse(c.uploaded_at)) continue;   // already have this version
+      // a daily export older than the window: listed, not fetched, until something asks for it
+      const day = cutoff ? parseDayName(n.split('/').pop()) : '';
+      if(day && day < cutoff && !has(t, n)){ FILES_HELD.push(Object.assign({day}, c)); continue; }
       need.push(c);
     }
     // Restoring a whole account is a big download, and it used to be all-or-nothing: one failed
@@ -2964,6 +3044,14 @@ async function cloudSyncFileRows(attempt){
       STATE.dataSource = 'live';
       renderPage();
     }
+    // What is on screen must match what was actually loaded: with older reports held back, the
+    // date filter is set to the loaded window, so totals are never quietly short of a few months.
+    if(FILES_HELD.length && !STATE.dateFrom && !STATE.dateTo){
+      STATE.dateFrom = monthsCutoff();
+      setActivePreset('');
+      syncDateInputs();
+    }
+    heldNote();
     if(Object.keys(st.pending).length) cloudSaveFileRows();
     // come back for anything that did not arrive, keeping what did
     if(failed && (attempt || 0) < 6) setTimeout(() => cloudSyncFileRows((attempt || 0) + 1), 5000 * ((attempt || 0) + 1));
@@ -4494,7 +4582,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-01-b';
+const BUILD_ID = '2026-10-01-c';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -4679,6 +4767,7 @@ async function cloudSaveGlobalSettingsNow(){
     const data = Object.assign({}, GLOBAL_REMOTE, { dash_kpis: getEnabledKpis() });
     // only a browser that has actually been told holds an opinion on this one
     try{ if(localStorage.getItem(LS_CLOUDONLY) != null) data.cloudOnly = CLOUD_ONLY; }catch(e){}
+    data.monthsLoaded = MONTHS_LOADED;
     const { error } = await sb.from('settings').upsert({ account_id: GLOBAL_SETTINGS_ID, data, updated_at: new Date().toISOString() });
     if(error) throw error;
     syncOk('dashboard settings');
@@ -4696,11 +4785,13 @@ async function cloudSyncAll(){
   LOADING_ACCOUNT = true;
   cloudSyncAcctSettings();   // small, and wanted before anyone types a note or ticks a VAT box
   try{ await Promise.all([cloudSyncMaster(), cloudSyncSkuMap()]); }catch(e){ console.warn('cloud sync (cost data) failed:', e); }
+  // the shared settings say how many months to load, so they must arrive BEFORE the files do
+  try{ await cloudSyncGlobalSettings(); }catch(e){ console.warn('cloud sync (settings) failed:', e); }
   try{ await cloudSyncFileRows(); }catch(e){ console.warn('cloud sync (files) failed:', e); }
   LOADING_ACCOUNT = false;
   if(haveCosts()) STATE.master = buildMaster();
   if(STATE.master && loadedChannels().length){ recompute(); renderPage(); }
-  cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncGlobalSettings(); cloudSyncCostBook();
+  cloudSyncStock(); cloudSyncOpex(); cloudSyncTasks(); cloudSyncHistory(); cloudSyncCostBook();
 }
 
 async function cloudSyncGlobalSettings(){
@@ -4713,6 +4804,11 @@ async function cloudSyncGlobalSettings(){
     if(d && typeof d.cloudOnly === 'boolean' && d.cloudOnly !== CLOUD_ONLY){
       const changed = await setCloudOnly(d.cloudOnly, true);
       if(changed && d.cloudOnly) showBanner('This account is set to keep nothing in browsers - this browser\u2019s copy has been cleared and the data is read from the database.', 'success');
+    }
+    if(d && typeof d.monthsLoaded === 'number'){
+      MONTHS_LOADED = d.monthsLoaded;
+      const sel = document.getElementById('monthsLoadSel');
+      if(sel) sel.value = String(MONTHS_LOADED);
     }
     if(d && Array.isArray(d.dash_kpis) && d.dash_kpis.length){
       store.set('mcpd_dash_kpis', JSON.stringify(d.dash_kpis));
@@ -10782,6 +10878,17 @@ document.getElementById('amzRefSlider').addEventListener('input', e => { STATE.a
 document.getElementById('amzRefundSlider').addEventListener('input', e => { STATE.amzRefund = parseFloat(e.target.value)/100; document.getElementById('amzRefundLabel').textContent = (STATE.amzRefund*100).toFixed(1)+'%'; refresh(); });
 document.getElementById('shopFeeSlider').addEventListener('input', e => { STATE.shopFee = parseFloat(e.target.value)/100; document.getElementById('shopFeeLabel').textContent = (STATE.shopFee*100).toFixed(1)+'%'; refresh(); });
 {
+  const sel = document.getElementById('monthsLoadSel');
+  if(sel) sel.addEventListener('change', async e => {
+    MONTHS_LOADED = parseInt(e.target.value, 10) || 0;
+    GLOBAL_REMOTE = Object.assign({}, GLOBAL_REMOTE, {monthsLoaded: MONTHS_LOADED});
+    cloudSaveGlobalSettings();
+    if(!MONTHS_LOADED) await ensureFilesFor('', '');
+    showBanner(MONTHS_LOADED ? `Opening will load the last ${MONTHS_LOADED} month(s) of reports. Older ones come when you ask for them.`
+                             : 'Every report will be loaded on opening.', 'success');
+  });
+}
+{
   const chk = document.getElementById('cloudOnlyChk');
   if(chk) chk.addEventListener('change', async e => {
     const on = e.target.checked;
@@ -10803,7 +10910,7 @@ document.getElementById('amzDateMode').addEventListener('change', e => {
   else refresh();
 });
 function setActivePreset(p){ document.querySelectorAll('.preset').forEach(b => b.classList.toggle('active', b.dataset.p===p)); }
-function applyPreset(p){
+async function applyPreset(p){
   setActivePreset(p);
   if(p==='all'){ STATE.dateFrom=''; STATE.dateTo=''; }
   else if(p==='7'){ STATE.dateFrom=daysAgo(7); STATE.dateTo=todayISO(); }
@@ -10811,6 +10918,8 @@ function applyPreset(p){
   else if(p==='month'){ STATE.dateFrom=monthStart(0); STATE.dateTo=todayISO(); }
   else if(p==='lastmonth'){ STATE.dateFrom=monthStart(-1); STATE.dateTo=monthEnd(-1); }
   syncDateInputs();
+  // asking for a period older than what was loaded fetches those reports first
+  await ensureFilesFor(STATE.dateFrom, STATE.dateTo);
   refresh();
 }
 document.querySelectorAll('.preset').forEach(b => b.addEventListener('click', () => applyPreset(b.dataset.p)));
@@ -10818,12 +10927,13 @@ function syncDateInputs(){
   for(const id of ['dateFrom','gDateFrom']){ const el = document.getElementById(id); if(el) el.value = STATE.dateFrom; }
   for(const id of ['dateTo','gDateTo']){ const el = document.getElementById(id); if(el) el.value = STATE.dateTo; }
 }
-function setGlobalDates(from, to){
+async function setGlobalDates(from, to){
   // guard a reversed range (from after to) - it would match no dates and show £0 everywhere
   if(from && to && from > to){ const t = from; from = to; to = t; }
   STATE.dateFrom = from; STATE.dateTo = to;
   setActivePreset('');
   syncDateInputs();
+  await ensureFilesFor(from, to);     // reaching back past the loaded window fetches the rest
   if(from || to){
     // does the filter even touch the loaded data's date span?
     refresh();
