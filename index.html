@@ -1310,6 +1310,20 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
     </div>
     <div class="card" style="margin-top:14px">
       <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon2)"></span>\u{1F4BE} Backup</h3>
+        <button class="btn" id="bkDownload">\u2B07 Download a backup</button>
+        <button class="btn secondary" id="bkRestoreBtn">\u2B06 Restore from a backup</button>
+        <input type="file" id="bkRestoreFile" accept=".json" style="display:none">
+      </div>
+      <div class="sub-title">One file holding everything the database stores for this account: your costs, set
+        prices, ROI figures, the master sheet, SKU map, stock history, OpEx, tasks and saved history. Keep it
+        somewhere of your own. <label style="margin-left:6px"><input type="checkbox" id="bkWithFiles"> include the
+        uploaded reports too</label> &mdash; those are the marketplace exports you can download again, and they make
+        the file very large (100MB+). Restoring puts everything back without deleting anything that is newer.</div>
+      <div id="bkNote" class="sub-title"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="toolbar">
         <h3 style="margin:0"><span class="dot" style="background:var(--green)"></span>Loaded Reports</h3>
         <button class="btn danger" id="filesClear">Remove all files</button>
       </div>
@@ -4608,7 +4622,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-01-f';
+const BUILD_ID = '2026-10-01-g';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -10753,6 +10767,133 @@ document.getElementById('srcHist').addEventListener('click', () => {
     showBanner('Saved history shows whole-period snapshots. Date filter cleared - switch to Live files and press Apply for exact per-day figures.');
   }
   renderDashboard();
+});
+// ---- Backup to a file of your own ----
+// Read straight from the database rather than from what this browser happens to be holding, so the
+// file is a copy of the real thing - the point being a backup nobody here can overwrite.
+async function readAllForBackup(withFiles){
+  const out = {format: 'instasales-backup', version: 1, account: CUR_ACCT, taken_at: new Date().toISOString(), tables: {}};
+  const grab = async (table, filter) => {
+    const { data, error } = await pagedSelect(() => {
+      let q = sb.from(table).select('*');
+      if(filter === 'acct') q = q.eq('account_id', CUR_ACCT);
+      else if(filter === 'null') q = q.is('account_id', null);
+      return q.order('id', {ascending: true});
+    });
+    if(error) throw new Error(table + ': ' + (error.message || error));
+    return data || [];
+  };
+  out.tables.settings = (await grab('settings')).filter(r => r.account_id === CUR_ACCT || r.account_id === GLOBAL_SETTINGS_ID);
+  out.tables.master_products   = await grab('master_products', 'acct');
+  out.tables.sku_map           = await grab('sku_map', 'acct');
+  out.tables.stock             = await grab('stock', 'acct');
+  out.tables.opex              = await grab('opex', 'acct');
+  out.tables.tasks             = await grab('tasks', 'null');
+  out.tables.history_daily     = await grab('history_daily', 'acct');
+  out.tables.history_snapshots = await grab('history_snapshots', 'acct');
+  try{ out.tables.stock_archive = await grab('stock_archive', 'acct'); }catch(e){ out.tables.stock_archive = []; }
+  if(withFiles){
+    const list = await grab('uploaded_files', 'acct');          // ids only at this point? no - full rows
+    out.tables.uploaded_files = list;
+  } else {
+    const { data } = await pagedSelect(() => sb.from('uploaded_files')
+      .select('id, file_type, file_name, row_count, uploaded_at').eq('account_id', CUR_ACCT).order('id', {ascending: true}));
+    out.files_not_included = (data || []).map(f => ({file_type:f.file_type, file_name:f.file_name, row_count:f.row_count}));
+  }
+  return out;
+}
+function downloadBlob(name, text){
+  const url = URL.createObjectURL(new Blob([text], {type: 'application/json'}));
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+document.getElementById('bkDownload').addEventListener('click', async () => {
+  const btn = document.getElementById('bkDownload'), note = document.getElementById('bkNote');
+  const withFiles = document.getElementById('bkWithFiles').checked;
+  btn.disabled = true; btn.textContent = 'Reading the database\u2026';
+  try{
+    const data = await readAllForBackup(withFiles);
+    const text = JSON.stringify(data);
+    const counts = Object.entries(data.tables).map(([t, r]) => t.replace(/_/g, ' ') + ' ' + fmtNum(r.length)).join(' \u00b7 ');
+    downloadBlob('instasales-backup-' + CUR_ACCT + '-' + todayISO() + '.json', text);
+    note.innerHTML = `Saved <b>${(text.length / 1048576).toFixed(1)} MB</b> \u2014 ${esc(counts)}`
+      + (withFiles ? '' : ` \u00b7 ${fmtNum((data.files_not_included || []).length)} uploaded report(s) listed but not included`);
+    showBanner('Backup downloaded. Keep it somewhere of your own.', 'success');
+  }catch(e){
+    note.textContent = '';
+    showBanner('Could not read everything for the backup: ' + (e.message || e), 'error');
+  } finally { btn.disabled = false; btn.textContent = '\u2B07 Download a backup'; }
+});
+// ---- putting one back ----
+// Nothing is deleted. Rows that exist are left as they are unless the backup holds more: stock days
+// are merged, and the books merge the same way two browsers do.
+document.getElementById('bkRestoreBtn').addEventListener('click', () => document.getElementById('bkRestoreFile').click());
+document.getElementById('bkRestoreFile').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if(!file) return;
+  const note = document.getElementById('bkNote');
+  let data;
+  try{ data = JSON.parse(await file.text()); }catch(err){ showBanner('That file could not be read as a backup.', 'error'); return; }
+  if(!data || data.format !== 'instasales-backup'){ showBanner('That is not an InstaSales backup file.', 'error'); return; }
+  const t = data.tables || {};
+  const summary = Object.entries(t).map(([k, r]) => k.replace(/_/g, ' ') + ' ' + fmtNum((r || []).length)).join('\n');
+  if(!confirm('Restore this backup into ' + CUR_ACCT + '?\n\nTaken ' + String(data.taken_at).slice(0, 16).replace('T', ' ')
+    + ' from account ' + data.account + '\n\n' + summary
+    + '\n\nNothing is deleted. Stock days and costs are merged with what is there now.')) return;
+  note.textContent = 'Restoring\u2026';
+  try{
+    // stock: merge day by day through the normal save, so newer figures survive
+    if((t.stock || []).length){
+      const incoming = {};
+      for(const r of t.stock) incoming[r.product_name] = {daily: r.daily || {}, inventory: r.inventory,
+                                                          actions: r.actions || '', alarm: r.alarm || ''};
+      STOCK = incoming;
+      await cloudSaveStockNow();
+    }
+    // costs, set prices, ROI figures, notes: merged into the settings row
+    const acctRow = (t.settings || []).find(r => r.account_id === data.account) || null;
+    if(acctRow && acctRow.data){
+      const d = acctRow.data;
+      if(d.costBook)  COSTBOOK  = Object.assign({}, d.costBook,  COSTBOOK);
+      if(d.priceBook) PRICEBOOK = Object.assign({}, d.priceBook, PRICEBOOK);
+      if(d.roiBook)   ROIBOOK   = Object.assign({}, d.roiBook,   ROIBOOK);
+      if(d.cmpNotes)  CMP_NOTES = Object.assign({}, d.cmpNotes,  CMP_NOTES);
+      if(d.pnlHist)   PNL_HIST  = mergeHist(d.pnlHist, PNL_HIST);
+      await cloudSaveCostBookNow();
+    }
+    // the master sheet, when this account has none or fewer rows than the backup
+    if((t.master_products || []).length > (STATE.raw.master || []).length){
+      STATE.raw.master = t.master_products.map(r => ({
+        Name: r.name, platform: r.platform, sku: r.sku, asin: r.asin, productid: r.product_id,
+        country: r.country, currency: r.currency,
+        buying_cost_per_unit: r.buying_cost_per_unit, operational_cost_per_unit: r.operational_cost_per_unit,
+        shipping_cost_per_unit: r.shipping_cost_per_unit, 'Refferal fee %': r.referral_pct,
+        affiliate_pct: r.affiliate_pct, shopads_pct: r.shopads_pct, regulatory_pct: r.regulatory_pct,
+        fixed_fee_per_unit: r.fixed_fee_per_unit, selling_price: r.selling_price,
+        'SKU CHANNEL': r.sku_channel || '', 'FBA Fees': r.fba_fees, buyer_shipping_per_unit: r.buyer_shipping_per_unit}));
+      syncMasterStore();
+    }
+    // the uploaded reports, if the backup carries them
+    const files = (t.uploaded_files || []).filter(f => f.rows);
+    if(files.length){
+      if(!STATE.fileRows) STATE.fileRows = {};
+      for(const f of files){
+        if((STATE.fileRows[f.file_type] || {})[f.file_name]) continue;     // keep what is already here
+        (STATE.fileRows[f.file_type] = STATE.fileRows[f.file_type] || {})[f.file_name] = f.rows;
+        markFileChanged(f.file_type, f.file_name, 'put');
+      }
+      await persistFileRows();
+      rebuildFromFileStore();
+    }
+    note.textContent = '';
+    showBanner('Backup restored. Nothing that was already here has been removed.', 'success');
+  }catch(err){
+    note.textContent = '';
+    showBanner('Restore stopped: ' + (err.message || err), 'error');
+  }
 });
 document.getElementById('filesClear').addEventListener('click', () => {
   if(!confirm('Remove ALL loaded files from this session? (Saved history and the master products are kept.)')) return;
