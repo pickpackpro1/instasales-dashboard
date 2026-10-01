@@ -1553,11 +1553,26 @@ async function wipeLocalData(){
   }catch(e){}
   refreshStorageInfo();
 }
+// Anything this browser holds that the database has not got goes up BEFORE its copy is cleared.
+// Switching to database-only wiped the browser first and asked questions later, which is how a
+// browser holding the only surviving stock history could lose it.
+async function rescueLocalBeforeWipe(){
+  try{
+    let local = null;
+    try{ local = JSON.parse(localStorage.getItem(lsKey(LS_STOCK))); }catch(e){}
+    if(!local || !Object.keys(local).length) return;
+    const days = Object.values(local).reduce((a, p) => a + Object.keys((p && p.daily) || {}).length, 0);
+    if(!days) return;
+    STOCK = local;
+    await cloudSaveStockNow();        // merges with what is stored, so nothing is overwritten
+    showBanner(`Sent ${fmtNum(days)} stock figure(s) from this browser to the database before clearing it.`, 'success');
+  }catch(e){ console.warn('rescuing local stock failed:', e); }
+}
 async function setCloudOnly(on, fromCloud){
   const was = CLOUD_ONLY;
   CLOUD_ONLY = !!on;
   try{ localStorage.setItem(LS_CLOUDONLY, CLOUD_ONLY ? '1' : '0'); }catch(e){}
-  if(CLOUD_ONLY) await wipeLocalData();
+  if(CLOUD_ONLY){ await rescueLocalBeforeWipe(); await wipeLocalData(); }
   if(!fromCloud) cloudSaveGlobalSettings();     // the whole team follows this setting
   paintCloudOnly();
   return was !== CLOUD_ONLY;
@@ -4593,7 +4608,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-01-e';
+const BUILD_ID = '2026-10-01-f';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -7563,9 +7578,26 @@ async function cloudSyncStock(){
     const { data, error } = await pagedSelect(() => sb.from('stock').select('*').eq('account_id', CUR_ACCT).order('id', {ascending: true}));
     if(error) throw error;
     if(data && data.length){
-      const obj = {};
-      for(const r of data) obj[r.product_name] = { daily: r.daily || {}, inventory: r.inventory, actions: r.actions || '', alarm: r.alarm || '' };
-      STOCK = obj;
+      // Merge, never replace. A browser can be holding days the shared copy has lost - that is
+      // exactly what happened on 1 Oct - and replacing its copy with the database's would throw
+      // the last surviving record away. Days only this browser has go back up instead.
+      const merged = {};
+      for(const r of data) merged[r.product_name] = { daily: Object.assign({}, r.daily || {}), inventory: r.inventory,
+                                                      actions: r.actions || '', alarm: r.alarm || '' };
+      let extra = 0;
+      for(const [n, l] of Object.entries(STOCK || {})){
+        const t = merged[n] || (merged[n] = {daily:{}, inventory:null, actions:'', alarm:''});
+        for(const [d, v] of Object.entries(l.daily || {})) if(t.daily[d] == null && STOCK_DEL_DAYS.indexOf(d) < 0){ t.daily[d] = v; extra++; }
+        if(t.inventory == null && l.inventory != null){ t.inventory = l.inventory; extra++; }
+        if(!t.actions && l.actions){ t.actions = l.actions; extra++; }
+        if(!t.alarm && l.alarm){ t.alarm = l.alarm; extra++; }
+      }
+      STOCK = merged;
+      store.set(lsKey(LS_STOCK), JSON.stringify(STOCK));
+      if(extra){
+        showBanner(`Found ${fmtNum(extra)} stock figure(s) in this browser that the database did not have - sending them up.`, 'success');
+        cloudSaveStock();
+      }
       if(STATE.page === 'inventory') renderStock();
       else if(STATE.page === 'skumgt') renderSkuMgt();
     } else if(Object.keys(STOCK).length){
