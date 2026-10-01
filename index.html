@@ -1490,6 +1490,7 @@ function storeFailed(k, e){
   const NAMES = {mcpd_master:'the master sheet', mcpd_costbook:'the Cost Book', mcpd_pricebook:'set selling prices',
     mcpd_history:'saved history', mcpd_stock:'stock tracking', mcpd_opex:'OpEx', mcpd_tasks:'tasks',
     mcpd_skumap:'the SKU map', mcpd_cmp_notes:'Comparison PNL notes', mcpd_pnl_hist:'imported P&L history',
+    mcpd_asin_items:'the Vemart/Vefive item list',
     mcpd_acct_settings:'VAT and fee settings'};
   const what = NAMES[base] || base;
   const full = e && (e.name === 'QuotaExceededError' || e.code === 22 || /quota/i.test(e.message || ''));
@@ -2209,6 +2210,12 @@ function detectSheet(sheet){
     if(/^item\s*$/i.test(String(cells[0]||'').trim())
        && cells.some(c => /^(vefive|vemart)\s*$/i.test(String(c).trim()))
        && cells.some(c => /^total\s*$/i.test(String(c).trim()))) return {type:'pnl_hist', headerRow:i};
+    // The per-account SKU-wise tabs beside it: ASIN, ITEM, units, profit. Not figures we use -
+    // the engines work those out - but the ITEM column is the only record of which Vemart ASIN
+    // and which Vefive ASIN are the same product, which is what Comparison PNL needs to put one
+    // product on one line.
+    if(/^asin\s*$/i.test(String(cells[0]||'').trim()) && /^item\b/i.test(String(cells[1]||'').trim()))
+      return {type:'asin_items', headerRow:i};
     if(cells.some(c => /^platform$/i.test(c)) && cells.some(c => /^sku\s*$/i.test(c))
        && cells.some(c => /^asin\s*\/\s*id$/i.test(c))) return {type:'zero_vat', headerRow:i};
     // DC (fulfilment) stock exports -> feed the Weekly Stock Tracking, not the P&L engine
@@ -2216,7 +2223,9 @@ function detectSheet(sheet){
     if(s.has('Action Quantity') && s.has('Log Created Date') && s.has('Action')) return {type:'dc_stock_txn', headerRow:i};
     if(s.has('SKU Subtotal After Discount') && s.has('Seller SKU') && s.has('Order ID')) return {type:'tt_orders', headerRow:i};
     if(s.has('Est. standard commission payment') || s.has('Est. Shop Ads commission payment')) return {type:'tt_aff', headerRow:i};
-    if(s.has('(Child) ASIN') && s.has('Ordered Product Sales')) return {type:'amz_biz', headerRow:i};
+    if(s.has('(Child) ASIN') && s.has('Ordered Product Sales')
+       && !cells.some(c => /^(product cost|total product cost|refrral %|referral %)$/i.test(c)))
+      return {type:'amz_biz', headerRow:i};
     // Amazon Payments/Transaction report (per-order Orders + Refunds with real fees)
     // All Orders Report - the only Amazon export that carries SKU *and* fulfilment channel
     // per order line, which is what lets FBA and FBM offers on one ASIN be told apart.
@@ -2356,7 +2365,7 @@ function readFile(file){
           // its own entry so duplicated day-sheets stay visible and removable.
           // The P&L history sheet stacks THREE header rows - month, metric, account - which
           // sheet_to_json collapses into one. Carry the raw grid so its own parser sees all three.
-          const aoa = det.type === 'pnl_hist'
+          const aoa = (det.type === 'pnl_hist' || det.type === 'asin_items')
             ? XLSX.utils.sheet_to_json(sh, {header:1, defval:'', raw:false}) : null;
           found.push({type:det.type, rows, adsMode:det.adsMode||null, sheet:sn, aoa});
         }
@@ -2406,6 +2415,20 @@ async function handleFiles(fileList, targetAcct){
           logLines.push(`[PNL] ${r.name} -> P&L history: ${fmtNum(res.items)} product(s) over `
             + `${parsed.months.map(m => m.label + ' (' + m.key + ')').join(', ')}`
             + `${res.noted ? ' · ' + fmtNum(res.noted) + ' reasoning note(s)' : ''}`);
+        }
+        continue;
+      }
+      if(f.type === 'asin_items'){
+        // A product list, not a report. Only the ASIN -> ITEM pairing is kept; the units and
+        // profit beside them are left alone, because the engines compute those from the real
+        // files and two sets of the same figure would only ever disagree.
+        const parsed = f.aoa ? parseAsinItems(f.aoa) : {ok:false, why:'sheet could not be read as a grid'};
+        if(!parsed.ok) logLines.push(`[!] ${r.name} [${f.sheet}] -> item list: ${parsed.why}`);
+        else {
+          const res = applyAsinItems(parsed);
+          logLines.push(`\u{1F517} ${r.name} [${f.sheet}] -> item list: ${fmtNum(parsed.count)} ASIN(s) over `
+            + `${fmtNum(parsed.items)} item(s)${res.added ? ' \u00b7 ' + fmtNum(res.added) + ' new' : ''}`
+            + `${res.changed ? ' \u00b7 ' + fmtNum(res.changed) + ' re-grouped' : ''}`);
         }
         continue;
       }
@@ -2528,6 +2551,7 @@ const TYPE_LABEL = {master:'Master cost sheet', tt_orders:'TikTok orders', tt_af
   amz2_biz:'Amazon 2 (Vefive) Business Report', amz2_ads:'Amazon 2 (Vefive) Sponsored Products', amz2_txn:'Amazon 2 (Vefive) transaction report', amz2_txn2:'Amazon 2 (Vefive) transaction report (date-range)',
   amz_orders:'Amazon 1 (Vemart) All Orders Report', amz2_orders:'Amazon 2 (Vefive) All Orders Report',
   zero_vat:'Zero-rated (non-VAT) products', pnl_hist:'P&L history (month by month)',
+  asin_items:'Vemart/Vefive item list (ASIN to product)',
   ebay_list:'eBay Listings Sales', ebay_txn:'eBay transactions', ebay_pl:'eBay General Campaigns Report', ebay_ppc:'eBay Priority Campaigns Report', shop_orders:'Shopify orders', sku_map:'SKU Management map'};
 const TYPE_CH = {tt_orders:'tiktok', tt_aff:'tiktok', tt_ads:'tiktok', amz_biz:'amazon', amz_ads:'amazon', amz_txn:'amazon', amz_txn2:'amazon', amz_orders:'amazon', amz2_biz:'amazon2', amz2_ads:'amazon2', amz2_txn:'amazon2', amz2_txn2:'amazon2', amz2_orders:'amazon2', ebay_list:'ebay', ebay_txn:'ebay', ebay_pl:'ebay', ebay_ppc:'ebay', shop_orders:'shopify'};
 const FILE_DATE_COLS = {tt_orders:['Created Time','Paid Time'], tt_aff:['Time Created','Payment time'], amz_txn:['date/time'], amz_txn2:['Date'], amz_orders:['purchase-date'], amz2_orders:['purchase-date'], amz2_txn:['date/time'], amz2_txn2:['Date'], ebay_txn:['Transaction creation date'], shop_orders:['Created at','Paid at']};
@@ -4622,7 +4646,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-01-i';
+const BUILD_ID = '2026-10-02-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -6647,16 +6671,17 @@ function loadAcctSettings(){
   let saved = null;
   try{ saved = JSON.parse(store.get(lsKey(LS_ACCTSETTINGS))); }catch(e){ saved = null; }
   const d = (saved && saved.dirty && typeof saved.dirty === 'object') ? saved.dirty : {};
-  ACCT_DIRTY = {vat: +d.vat || 0, notes: +d.notes || 0, hist: +d.hist || 0};
-  ACCT_EDIT_SEQ = Math.max(ACCT_DIRTY.vat, ACCT_DIRTY.notes, ACCT_DIRTY.hist);
+  ACCT_DIRTY = {vat: +d.vat || 0, notes: +d.notes || 0, hist: +d.hist || 0, items: +d.items || 0};
+  ACCT_EDIT_SEQ = Math.max(ACCT_DIRTY.vat, ACCT_DIRTY.notes, ACCT_DIRTY.hist, ACCT_DIRTY.items);
   VAT_SETTINGS_LOCAL = !!(saved && saved.vat);
   applyVatSettings(saved && saved.vat ? saved.vat : null);
   // Notes and history from before they were ever sent anywhere: the cloud has never had them,
   // so they are unsaved changes and go up on the first sync.
   if(!saved){
-    if(!isEmptyObj(CMP_NOTES)) ACCT_DIRTY.notes = ++ACCT_EDIT_SEQ;
-    if(!isEmptyObj(PNL_HIST))  ACCT_DIRTY.hist  = ++ACCT_EDIT_SEQ;
-    if(ACCT_DIRTY.notes || ACCT_DIRTY.hist) writeLocalAcctSettings();
+    if(!isEmptyObj(CMP_NOTES))  ACCT_DIRTY.notes = ++ACCT_EDIT_SEQ;
+    if(!isEmptyObj(PNL_HIST))   ACCT_DIRTY.hist  = ++ACCT_EDIT_SEQ;
+    if(!isEmptyObj(ASIN_ITEMS)) ACCT_DIRTY.items = ++ACCT_EDIT_SEQ;
+    if(ACCT_DIRTY.notes || ACCT_DIRTY.hist || ACCT_DIRTY.items) writeLocalAcctSettings();
   }
 }
 const saveAcctSettingsSoon = debounce(() => { writeLocalAcctSettings(); cloudSaveCostBook(); }, 500);
@@ -6693,9 +6718,11 @@ function acctSettingsPayload(){
   if(SETTINGS_PULLED){
     out.cmpNotes = CMP_NOTES;
     out.pnlHist = PNL_HIST;
+    out.asinItems = ASIN_ITEMS;
     if(VAT_SETTINGS_LOCAL) out.vatSettings = currentVatSettings();
   } else {
-    out.cmpNotes = ACCT_DIRTY.notes ? Object.assign({}, remote.cmpNotes || {}, CMP_NOTES) : (remote.cmpNotes || CMP_NOTES);
+    out.cmpNotes  = ACCT_DIRTY.notes ? Object.assign({}, remote.cmpNotes || {}, CMP_NOTES)   : (remote.cmpNotes || CMP_NOTES);
+    out.asinItems = ACCT_DIRTY.items ? Object.assign({}, remote.asinItems || {}, ASIN_ITEMS) : (remote.asinItems || ASIN_ITEMS);
     out.pnlHist  = ACCT_DIRTY.hist  ? mergeHist(remote.pnlHist, PNL_HIST)                 : (remote.pnlHist  || PNL_HIST);
     if(ACCT_DIRTY.vat || (!remote.vatSettings && VAT_SETTINGS_LOCAL)) out.vatSettings = currentVatSettings();
   }
@@ -6717,6 +6744,11 @@ function applyRemoteAcctSettings(d){
   else if(cloudNotes) CMP_NOTES = Object.assign({}, cloudNotes);
   else if(!isEmptyObj(CMP_NOTES)) pushBack = true;
 
+  const cloudItems = (d.asinItems && typeof d.asinItems === 'object') ? d.asinItems : null;
+  if(ACCT_DIRTY.items){ ASIN_ITEMS = Object.assign({}, cloudItems || {}, ASIN_ITEMS); pushBack = true; }
+  else if(cloudItems) ASIN_ITEMS = Object.assign({}, cloudItems);
+  else if(!isEmptyObj(ASIN_ITEMS)) pushBack = true;
+
   const cloudHist = (d.pnlHist && typeof d.pnlHist === 'object') ? d.pnlHist : null;
   if(ACCT_DIRTY.hist){ PNL_HIST = mergeHist(cloudHist, PNL_HIST); pushBack = true; }
   else if(cloudHist) PNL_HIST = mergeHist(cloudHist, null);
@@ -6725,8 +6757,9 @@ function applyRemoteAcctSettings(d){
   SETTINGS_PULLED = true;
   store.set(lsKey(LS_CMPNOTES), JSON.stringify(CMP_NOTES));
   store.set(lsKey(LS_PNLHIST), JSON.stringify(PNL_HIST));
+  store.set(lsKey(LS_ASINITEMS), JSON.stringify(ASIN_ITEMS));
   writeLocalAcctSettings();
-  _cmpCache = null; _histFamMap = null;
+  _cmpCache = null; _histFamMap = null; _famNorm = null;
   if(pushBack) cloudSaveCostBook();
   if(JSON.stringify(currentVatSettings()) !== vatBefore) refresh();
   else if(STATE.page === 'cmppnl' && STATE.master) renderComparePL();
@@ -8078,6 +8111,56 @@ function applyPnlHistory(parsed){
   return {items, cells, noted};
 }
 
+// ---- The Vemart / Vefive item list ----
+// One product is listed separately on each Amazon account, under its own ASIN and its own long
+// title, and nothing in the raw reports says the two are the same thing. The SKU map says so for
+// the SKUs it covers; for everything else the only record is the hand-kept "SKU Wise" tab for
+// each account, where every ASIN is written against a short item name. That pairing is kept here
+// and Comparison PNL groups by it, so Vemart and Vefive land on one line per product.
+const LS_ASINITEMS = 'mcpd_asin_items';
+let ASIN_ITEMS = {};         // ASIN (upper case) -> item name
+function loadAsinItems(){ try{ ASIN_ITEMS = JSON.parse(store.get(lsKey(LS_ASINITEMS))) || {}; }catch(e){ ASIN_ITEMS = {}; } }
+function saveAsinItems(){
+  try{ store.set(lsKey(LS_ASINITEMS), JSON.stringify(ASIN_ITEMS)); }catch(e){}
+  markAcctDirty('items'); cloudSaveCostBook();
+}
+// An ASIN is ten characters of letters and digits. Checked, because these sheets carry blank
+// spacer rows and a second "ACCUMULATIVE" block further along that has no ASIN against it.
+const isAsin = v => /^[A-Z0-9]{10}$/i.test(String(v || '').trim());
+function parseAsinItems(aoa){
+  const txt = v => String(v == null ? '' : v).trim();
+  const blocks = [];
+  for(let i = 0; i < Math.min(aoa.length, 12); i++){
+    const row = aoa[i] || [];
+    for(let c = 0; c + 1 < row.length; c++)
+      if(/^asin$/i.test(txt(row[c])) && /^item\b/i.test(txt(row[c + 1]))) blocks.push({h:i, a:c, it:c + 1});
+  }
+  if(!blocks.length) return {ok:false, why:'no "ASIN / ITEM" header found'};
+  const map = {};
+  for(const b of blocks){
+    for(let i = b.h + 1; i < aoa.length; i++){
+      const row = aoa[i] || [];
+      const a = txt(row[b.a]).toUpperCase(), it = txt(row[b.it]);
+      if(!isAsin(a) || !it) continue;
+      map[a] = it;
+    }
+  }
+  const count = Object.keys(map).length;
+  if(!count) return {ok:false, why:'no ASIN rows under that header'};
+  return {ok:true, map, count, blocks:blocks.length, items:new Set(Object.values(map)).size};
+}
+function applyAsinItems(parsed){
+  let added = 0, changed = 0;
+  for(const [a, it] of Object.entries(parsed.map)){
+    if(!(a in ASIN_ITEMS)) added++;
+    else if(ASIN_ITEMS[a] !== it) changed++;
+    ASIN_ITEMS[a] = it;
+  }
+  saveAsinItems();
+  _cmpCache = null; _histFamMap = null; _famNorm = null;
+  return {added, changed};
+}
+
 // ================= Comparison PNL =================
 // Month-over-month P&L per PRODUCT rather than per listing. A product sells under many ids -
 // an FBA and an FBM SKU on one ASIN, the same item again on eBay and TikTok, and several ASINs
@@ -8127,6 +8210,11 @@ function cmpFamilyOf(channel, key, name){
     const hit = idx.bySku[String(sk).trim().toUpperCase()];
     if(hit) return {fam: hit, mapped: true};
   }
+  // Then your own item list. Asked last so it never overrides SKU Management, and the item name
+  // is matched back to a SKU Management identifier where one reads the same - otherwise a
+  // product would get a second line under its short name beside its TikTok and eBay sales.
+  const item = K ? ASIN_ITEMS[K] : '';
+  if(item) return {fam: famByNorm()[cmpNorm(item)] || item, mapped: true, viaItems: true};
   return {fam: (name || key || '(unnamed)').trim(), mapped: false};
 }
 // Months the loaded data actually covers, oldest first.
@@ -8147,13 +8235,22 @@ function cmpMonths(){
 // guessed at beyond that: an unmatched name keeps its own line rather than being forced onto
 // the nearest-looking product.
 const cmpNorm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+let _famNorm = null, _famNormFor = null;
+function famByNorm(){
+  const idx = skuFamilyIndex();
+  if(_famNorm && _famNormFor === idx) return _famNorm;
+  _famNormFor = idx;
+  const m = {};
+  for(const f of idx.families) m[cmpNorm(f)] = f;
+  _famNorm = m;
+  return m;
+}
 let _histFamMap = null, _histFamFor = null;
 function histFamilyMap(){
   const idx = skuFamilyIndex();
   if(_histFamMap && _histFamFor === idx) return _histFamMap;
   _histFamFor = idx;
-  const byNorm = {};
-  for(const f of idx.families) byNorm[cmpNorm(f)] = f;
+  const byNorm = famByNorm();
   const out = {};
   for(const name of Object.keys(PNL_HIST || {})) out[name] = byNorm[cmpNorm(name)] || name;
   _histFamMap = out;
@@ -8182,6 +8279,7 @@ function cmpSeries(months){
           const f = cmpFamilyOf(ch, r.key, r.name);
           const e = byFam[f.fam] = byFam[f.fam] || {fam:f.fam, mapped:f.mapped, ids:new Set(), m:{}};
           e.mapped = e.mapped || f.mapped;
+          e.viaItems = e.viaItems || !!f.viaItems;
           e.ids.add(ch + '|' + r.key);
           const cell = e.m[m] = e.m[m] || {units:0, profit:0, rev:0, byCh:{}};
           const u = r.units || 0, p = r.net_profit_ex || 0, rv = r.revenue_gross || 0;
@@ -8257,10 +8355,15 @@ function renderComparePL(){
   // what was worked out by hand at the time.
   const impMonths = new Set();
   for(const r of rows) for(const [m, c] of Object.entries(r.m)) if(c.imported) impMonths.add(m);
+  const viaItems = rows.filter(r => r.viaItems).length;
+  const itemsNote = Object.keys(ASIN_ITEMS).length
+    ? ' <b>' + fmtNum(Object.keys(ASIN_ITEMS).length) + '</b> ASIN(s) are also grouped by your <b>Vemart / Vefive item list</b>'
+      + (viaItems ? ', which is what puts <b>' + fmtNum(viaItems) + '</b> of these lines together across the two accounts' : '') + '.'
+    : ' Drop the <b>Vemart SKU Wise</b> and <b>Vefive SKU Wise</b> tabs in WorkSpace to have the two accounts&rsquo; listings of one product counted on one line.';
   notice.innerHTML = idx.families.size
     ? (unmapped
-        ? '<div class="notice" style="background:#fdf6e7;border-color:#f0d9a8">Grouped by the <b>' + fmtNum(idx.families.size) + '</b> product identifiers in <b>SKU Management</b>. <b>' + fmtNum(unmapped) + '</b> product(s) are not in that mapping yet, so each is listed under its own name and will not merge with its siblings until it is added.</div>'
-        : '<div class="notice" style="background:#eefaf4;border-color:#bfe6d4">Grouped by the <b>' + fmtNum(idx.families.size) + '</b> product identifiers in <b>SKU Management</b>, so every ASIN, item ID and SKU for one product sits on a single line.</div>')
+        ? '<div class="notice" style="background:#fdf6e7;border-color:#f0d9a8">Grouped by the <b>' + fmtNum(idx.families.size) + '</b> product identifiers in <b>SKU Management</b>.' + itemsNote + ' <b>' + fmtNum(unmapped) + '</b> product(s) are in neither, so each is listed under its own name and will not merge with its siblings until it is added.</div>'
+        : '<div class="notice" style="background:#eefaf4;border-color:#bfe6d4">Grouped by the <b>' + fmtNum(idx.families.size) + '</b> product identifiers in <b>SKU Management</b>, so every ASIN, item ID and SKU for one product sits on a single line.' + itemsNote + '</div>')
     : '<div class="notice" style="background:#fdecec;border-color:#e8b4b4;color:#a12a1e"><b>No SKU mapping loaded.</b> Every listing is on its own line here. Load your SKU dashboard in <b>SKU Management</b> to group an item&rsquo;s ASINs, item IDs and SKUs onto one row.</div>';
 
   const val = (r, m) => r.m[m] || {units:0, profit:0, rev:0, byCh:{}};
@@ -10884,6 +10987,7 @@ document.getElementById('bkRestoreFile').addEventListener('change', async (e) =>
       if(d.priceBook) PRICEBOOK = Object.assign({}, d.priceBook, PRICEBOOK);
       if(d.roiBook)   ROIBOOK   = Object.assign({}, d.roiBook,   ROIBOOK);
       if(d.cmpNotes)  CMP_NOTES = Object.assign({}, d.cmpNotes,  CMP_NOTES);
+      if(d.asinItems) ASIN_ITEMS = Object.assign({}, d.asinItems, ASIN_ITEMS);
       if(d.pnlHist)   PNL_HIST  = mergeHist(d.pnlHist, PNL_HIST);
       await cloudSaveCostBookNow();
     }
@@ -11935,6 +12039,7 @@ function switchAccount(id){
   restoreSkuMap();
   loadStock();
   loadCmpNotes();
+  loadAsinItems();
   loadPriceBook();
   loadRoiBook();
   loadPnlHist();
@@ -11998,6 +12103,7 @@ function startApp(){
   restoreSkuMap();
   loadStock();
   loadCmpNotes();
+  loadAsinItems();
   loadPriceBook();
   loadRoiBook();
   loadPnlHist();
