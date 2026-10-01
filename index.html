@@ -2969,26 +2969,37 @@ async function cloudSyncFileRows(attempt){
     const got = [];
     let failed = 0, done = 0;
     const big = need.length > 40;
-    // Bigger batches, more of them at once: a whole account used to take 37 rounds of waiting,
-    // which is most of the delay on a database-only load.
-    const batches = [];
-    for(let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
-    for(let i = 0; i < batches.length; i += 6){                     // six requests in flight at once
-      const group = batches.slice(i, i + 6);
+    // Several requests at once, but a batch big enough to fail is worse than no batching at all -
+    // asking for 100 files in one go returned nothing but errors. A batch that fails is halved and
+    // tried again, down to a single file, so a load gets through whatever the size of the rows.
+    let lastErr = '';
+    const queue = [];
+    for(let i = 0; i < need.length; i += 25) queue.push(need.slice(i, i + 25));
+    while(queue.length){
+      const group = queue.splice(0, 4);                             // four requests in flight at once
       const res = await Promise.all(group.map(part => sb.from('uploaded_files')
         .select('id, file_type, file_name, rows, uploaded_at').in('id', part.map(c => c.id))
         .then(r => r, e => ({error: e}))));
       if(acct !== CUR_ACCT) return;
-      for(const r of res){
-        if(r.error){ failed++; console.warn('cloud file batch failed:', r.error); continue; }
+      res.forEach((r, gi) => {
+        const part = group[gi];
+        if(r.error){
+          lastErr = String((r.error && (r.error.message || r.error.code)) || r.error);
+          console.warn('cloud file batch failed (' + part.length + ' files):', r.error);
+          if(part.length > 1){                                      // too big, or one bad file in it
+            const half = Math.ceil(part.length / 2);
+            queue.unshift(part.slice(0, half), part.slice(half));
+          } else failed++;
+          return;
+        }
         got.push(...(r.data || []));
-      }
-      done += group.reduce((a, g) => a + g.length, 0);
+        done += part.length;
+      });
       if(big) showBanner(`Fetching your uploaded files from the database… ${fmtNum(Math.min(done, need.length))} of ${fmtNum(need.length)}`);
     }
     if(big || (attempt || 0) > 0) showBanner(failed
-      ? `Fetched ${fmtNum(got.length)} of ${fmtNum(need.length)} files from the cloud - the rest are being retried.`
-      : `Restored ${fmtNum(got.length)} file(s) from the cloud.`, failed ? 'error' : 'success');
+      ? `Fetched ${fmtNum(got.length)} of ${fmtNum(need.length)} reports - ${fmtNum(failed)} would not come` + (lastErr ? ` (${lastErr})` : '') + '. Retrying those.'
+      : `Loaded ${fmtNum(got.length)} report(s) from the database.`, failed ? 'error' : 'success');
     const fr = {};
     for(const [t, fs] of Object.entries(local)) fr[t] = Object.assign({}, fs);
     let changed = false;
@@ -4582,7 +4593,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-01-c';
+const BUILD_ID = '2026-10-01-d';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
