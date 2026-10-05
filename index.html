@@ -2310,8 +2310,13 @@ function readFile(file){
       try{
         const buf = new Uint8Array(e.target.result);
         let csvSheet = null;
+        // Trust the bytes, not the name. eBay (and Excel, when a file is re-saved) will hand you
+        // a real .xlsx workbook called ".csv"; decoding that as text gives binary rubbish, and
+        // the file came back as "type not recognised" with nothing to say why. A zip header (PK)
+        // is an xlsx, D0 CF is an old .xls - either way, let the spreadsheet reader have it.
+        const looksBinary = (buf[0] === 0x50 && buf[1] === 0x4B) || (buf[0] === 0xD0 && buf[1] === 0xCF);
         // DC stock CSVs get the tolerant parser (they have malformed embedded quotes)
-        if(/\.csv$/i.test(file.name)){
+        if(/\.csv$/i.test(file.name) && !looksBinary){
           const text = new TextDecoder('utf-8').decode(buf);
           const head = text.slice(0, 500);
           const delim = sniffDelim(text);
@@ -4670,7 +4675,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-05-b';
+const BUILD_ID = '2026-10-05-c';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
