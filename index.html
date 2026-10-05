@@ -4221,6 +4221,17 @@ function computeEbay(){
       intl: find(/^international fee/i)
     };
   })();
+  // Orders that have at least one line carrying an Item ID. A multi-line eBay order is written
+  // as a header row holding the whole order's value with NO Item ID, followed by one row per
+  // listing that carries the Item ID and the subtotal but leaves the gross blank. Taking the
+  // gross alone therefore credited the header - which belongs to no listing and so was dropped
+  // from the per-listing totals - and booked every real line at zero: the Dashboard tiles lost
+  // the whole order while the day-by-day series still counted it. 17 orders, GBP417 of eBay
+  // sales, in September 2026 alone.
+  const txnLineOrders = new Set();
+  for(const r of R.ebay_txn)
+    if(fixText(r['Type']) === 'Order' && fixText(r['Item ID']).replace(/^--$/,''))
+      txnLineOrders.add(fixText(r['Order number']));
   const txnSeen = new Set();
   let fullMin = '', fullMax = '';   // unfiltered date span (basis for Amazon day-proration)
   for(const r of R.ebay_txn){
@@ -4254,8 +4265,15 @@ function computeEbay(){
       }
     } else if(type === 'Order'){
       const qty = cleanInt(String(r['Quantity']||'').replace(/^--$/,'0'));
-      const gross = cleanMoney(r['Gross transaction amount']);
       const item = fixText(r['Item ID']).replace(/^--$/,'');
+      const grossRaw = cleanMoney(r['Gross transaction amount']);
+      const sub = cleanMoney(r['Item subtotal']) + cleanMoney(r['Postage and packaging']);
+      // The order header of a multi-line order: its value is restated line by line underneath,
+      // so counting it as well would book the order twice. Skipped only when those lines are
+      // actually here - a lone row with no Item ID is money we would otherwise lose.
+      if(!item && !sub && grossRaw && txnLineOrders.has(fixText(r['Order number']))) continue;
+      // A line of such an order has the subtotal but no gross; every other row has both.
+      const gross = grossRaw || sub;
       // eBay gives EVERY variation of a listing the same Item ID, but each variation has its
       // own cost in the master (keyed by its SKU). Keying cost on the Item ID alone therefore
       // picks one variation's cost at random - e.g. a 10/20/30/50-pack listing has four costs.
@@ -4652,7 +4670,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-05-a';
+const BUILD_ID = '2026-10-05-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
