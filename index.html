@@ -614,6 +614,12 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
           <input type="number" id="stockThreshold" value="7" min="0" step="1" style="width:64px;padding:6px 8px">
           <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer"><input type="checkbox" id="stockShowOlder"> Show older days</label>
           <input type="search" id="stockSearch" placeholder="Search product..." style="min-width:180px">
+          <select class="fsel" id="stockView" title="Narrow the table to one of the Action Items on the Dashboard">
+            <option value="all">All products</option>
+            <option value="out">📦 Out of stock now</option>
+            <option value="declining">📉 Declining vs previous 7 days</option>
+            <option value="nonmoving">🐌 Non-moving (in stock, never sold)</option>
+          </select>
           <span class="flabel" style="margin-left:10px">Delete a day</span>
           <select class="fsel" id="stockDelDay" style="min-width:150px"></select>
           <button class="btn secondary" id="stockDelGo" title="Remove every product's figures for the selected date">✕ Delete</button>
@@ -4646,7 +4652,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-02-a';
+const BUILD_ID = '2026-10-05-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -4875,7 +4881,8 @@ async function cloudSyncGlobalSettings(){
       if(sel) sel.value = String(MONTHS_LOADED);
     }
     if(d && Array.isArray(d.dash_kpis) && d.dash_kpis.length){
-      store.set('mcpd_dash_kpis', JSON.stringify(d.dash_kpis));
+      DASH_KPIS = cleanKpis(d.dash_kpis);
+      try{ store.set('mcpd_dash_kpis', JSON.stringify(d.dash_kpis)); }catch(e){}
       if(STATE.page === 'dashboard') renderPage();
     } else {
       cloudSaveGlobalSettings();   // nothing in the cloud yet -> bootstrap from local
@@ -6000,8 +6007,12 @@ const KPI_DEFAULT = ['sales','refunds','cogs','referral','ads','acos','tacos','v
 // Added to a list that was customised before these tiles existed - once, and only when there are
 // samples to show. Untick them in Customise and they stay ticked off.
 const SAMPLE_TILES = ['samples', 'profitnosamp'];
+// Its marker also went through the store, which database-only drops - so this ran again on
+// every load and re-ticked the two tiles after they had been turned off.
+var SAMPLE_TILES_DONE = false;
 function addSamplesTileOnce(){
-  if(store.get('mcpd_kpi_sample_tiles')) return;
+  if(SAMPLE_TILES_DONE || store.get('mcpd_kpi_sample_tiles')) return;
+  SAMPLE_TILES_DONE = true;
   const sm = (STATE.extras.tiktok || {}).samples;
   if(!sm || !sm.units) return;
   store.set('mcpd_kpi_sample_tiles', '1');
@@ -6009,8 +6020,25 @@ function addSamplesTileOnce(){
   const add = SAMPLE_TILES.filter(k => !on.includes(k));
   if(add.length) setEnabledKpis(KPI_ORDER.filter(k => on.includes(k) || add.includes(k)));
 }
-function getEnabledKpis(){ const s = loadLS('mcpd_dash_kpis'); return (Array.isArray(s) && s.length) ? s.filter(k=>KPI_DEFS[k]) : KPI_DEFAULT.slice(); }
-function setEnabledKpis(arr){ try{ store.set('mcpd_dash_kpis', JSON.stringify(arr)); }catch(e){} cloudSaveGlobalSettings(); }
+// Customize metrics did nothing once the account was set to keep nothing in browsers. The
+// chosen tiles were written to localStorage and read back from it; with database-only on,
+// store.set is a no-op and store.get returns null, so every read fell back to the defaults -
+// the panel ticked, the row never changed, and the save then wrote the DEFAULTS to the cloud
+// over the real choice. The choice is held here now; the browser copy is only a cache.
+var DASH_KPIS = null;        // the chosen tiles; null until one is loaded or picked
+const cleanKpis = a => (Array.isArray(a) ? a.filter(k => KPI_DEFS[k]) : []);
+function getEnabledKpis(){
+  if(!DASH_KPIS){
+    const c = cleanKpis(loadLS('mcpd_dash_kpis'));
+    if(c.length) DASH_KPIS = c;
+  }
+  return DASH_KPIS ? DASH_KPIS.slice() : KPI_DEFAULT.slice();
+}
+function setEnabledKpis(arr){
+  DASH_KPIS = cleanKpis(arr);
+  try{ store.set('mcpd_dash_kpis', JSON.stringify(DASH_KPIS)); }catch(e){}
+  cloudSaveGlobalSettings();
+}
 function renderDashboard(){
   const useHist = STATE.dataSource === 'history';
   const chans = filteredChannels();
@@ -6192,6 +6220,37 @@ function parseHour(v){
   if(m){ const h = parseInt(m[1],10); return (h>=0 && h<=23) ? h : null; }
   return null;
 }
+// What the Action Items tiles count, and what the Inventory filter shows - one definition, so
+// a tile saying 41 and the list it opens can never differ.
+var STOCK_FILTER = 'all';     // all | out | declining | nonmoving
+function stockSignals(name){
+  const p = STOCK[name];
+  if(!p) return {out:false, declining:false, nonmoving:false};
+  const all = stockAllDatesSorted();
+  const num = v => v == null ? null : (isNaN(+v) ? null : +v);
+  const sum = days => days.reduce((a, d) => a + (num((p.daily || {})[d]) || 0), 0);
+  const inv = num(p.inventory);
+  const wk = sum(all.slice(0, 7)), pv = sum(all.slice(7, 14));
+  const everSold = Object.values(p.daily || {}).reduce((a, v) => a + (num(v) || 0), 0);
+  return {out: inv != null && inv <= 0,
+          declining: pv > 0 && wk < pv,
+          nonmoving: inv != null && inv > 0 && everSold === 0};
+}
+// The three stock tiles used to open SKU Management, which holds no stock at all - so clicking
+// one looked like it did nothing. They open Inventory with the table narrowed to exactly the
+// products counted, and the ad-spend one scrolls to the waste table.
+function openStockView(v){
+  STOCK_FILTER = v;
+  const sel = document.getElementById('stockView');
+  if(sel) sel.value = v;
+  showPage('inventory');
+}
+function openAdWaste(){
+  showPage('advertising');
+  const t = document.getElementById('advWasteSub');
+  if(t) setTimeout(() => t.closest('.card').scrollIntoView({behavior:'smooth', block:'start'}), 60);
+}
+
 // "Action Items: Potential Opportunity & Loss" - four data-driven tiles.
 function renderActionItems(){
   const el = document.getElementById('actionItems'); if(!el) return;
@@ -6200,27 +6259,22 @@ function renderActionItems(){
   let wasteSpend = 0, wasteN = 0;
   for(const ch of chans){ const ex = STATE.extras[ch]; if(ex){ wasteSpend += ex.wasteSpend || 0; wasteN += (ex.waste ? ex.waste.length : 0); } }
   // stock-based signals for the current account
-  const week = stockAllDatesSorted().slice(0, 7);
-  const prev = stockAllDatesSorted().slice(7, 14);
-  const num = v => v==null ? null : (isNaN(+v) ? null : +v);
   let stockouts = 0, declining = 0, nonmoving = 0;
   for(const n of Object.keys(STOCK)){
-    const p = STOCK[n]; const inv = num(p.inventory);
-    const wk = week.reduce((a,d)=>a+(num(p.daily[d])||0), 0);
-    const pv = prev.reduce((a,d)=>a+(num(p.daily[d])||0), 0);
-    const everSold = Object.values(p.daily).reduce((a,v)=>a+(num(v)||0), 0);
-    if(inv != null && inv <= 0) stockouts++;
-    if(pv > 0 && wk < pv) declining++;
-    if(inv != null && inv > 0 && everSold === 0) nonmoving++;
+    const sg = stockSignals(n);
+    if(sg.out) stockouts++;
+    if(sg.declining) declining++;
+    if(sg.nonmoving) nonmoving++;
   }
-  const tile = (page, icon, title, big, sub, tint, color) => `<div class="stat-tile" style="background:${tint};cursor:pointer" onclick="showPage('${page}')" title="Open ${title}">
+  const tile = (go, icon, title, big, sub, tint, color) => `<div class="stat-tile" style="background:${tint};cursor:pointer" onclick="${go}" title="Show the ${title.toLowerCase()}">
     <div class="tl">${icon} ${title}</div><div class="tv" style="${color?`color:${color}`:''}">${big}</div>
     <div style="font-size:11px;color:var(--muted)">${sub} <span style="color:var(--accent)">→</span></div></div>`;
+  const stock = v => `openStockView('${v}')`;
   el.innerHTML =
-    tile('advertising','💸','Ad Spend Waste', fmtGBP0(wasteSpend), `${fmtNum(wasteN)} SKU${wasteN===1?'':'s'} · spend, no orders`, 'var(--pastel-2)', wasteSpend>0?'var(--red)':'') +
-    tile('skumgt','📦','Stockouts', fmtNum(stockouts), 'SKUs out of stock now', 'var(--pastel-1)') +
-    tile('skumgt','📉','Declining Sales', fmtNum(declining), 'SKUs down vs previous 7 days', 'var(--pastel-4)') +
-    tile('skumgt','🐌','Non-Moving SKUs', fmtNum(nonmoving), 'in stock, 0 units ever sold', 'var(--pastel-3)');
+    tile('openAdWaste()','💸','Ad Spend Waste', fmtGBP0(wasteSpend), `${fmtNum(wasteN)} SKU${wasteN===1?'':'s'} · spend, no orders`, 'var(--pastel-2)', wasteSpend>0?'var(--red)':'') +
+    tile(stock('out'),'📦','Stockouts', fmtNum(stockouts), 'SKUs out of stock now', 'var(--pastel-1)') +
+    tile(stock('declining'),'📉','Declining Sales', fmtNum(declining), 'SKUs down vs previous 7 days', 'var(--pastel-4)') +
+    tile(stock('nonmoving'),'🐌','Non-Moving SKUs', fmtNum(nonmoving), 'in stock, 0 units ever sold', 'var(--pastel-3)');
 }
 
 // ---- Consolidated ----
@@ -7811,7 +7865,12 @@ function renderStock(){
   const q = (document.getElementById('stockSearch').value || '').toLowerCase();
   const num = v => v == null ? null : (isNaN(+v) ? null : +v);
 
-  const names = Object.keys(STOCK).filter(n => !q || n.toLowerCase().includes(q));
+  const names = Object.keys(STOCK).filter(n => {
+    if(q && !n.toLowerCase().includes(q)) return false;
+    if(STOCK_FILTER === 'all') return true;
+    const sg = stockSignals(n);
+    return STOCK_FILTER === 'out' ? sg.out : STOCK_FILTER === 'declining' ? sg.declining : sg.nonmoving;
+  });
   const calc = n => {
     const p = STOCK[n];
     const weekTotal = week.reduce((a,d) => a + (num(p.daily[d]) || 0), 0);
@@ -11917,6 +11976,7 @@ document.getElementById('stockSalesFile').addEventListener('change', e => { if(e
 document.getElementById('stockInvFile').addEventListener('change', e => { if(e.target.files[0]) readStockFile(e.target.files[0], 'inv'); e.target.value=''; });
 document.getElementById('stockThreshold').addEventListener('input', () => renderStock());
 document.getElementById('stockShowOlder').addEventListener('change', renderStock);
+document.getElementById('stockView').addEventListener('change', e => { STOCK_FILTER = e.target.value; renderStock(); });
 document.getElementById('stockSearch').addEventListener('input', renderStock);
 document.getElementById('stockDelGo').addEventListener('click', () => {
   stockDeleteDay(document.getElementById('stockDelDay').value);
