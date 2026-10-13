@@ -1250,6 +1250,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
             <div class="fs-item" data-t="tt_orders"><span class="check">○</span><span>All Orders export</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="tt_aff"><span class="check">○</span><span>Affiliate orders</span><span class="cnt">-</span></div>
             <div class="fs-item" data-t="tt_ads"><span class="check">○</span><span>Ads (product / campaign)</span><span class="cnt">-</span></div>
+            <div class="fs-item" data-t="tt_settle"><span class="check">○</span><span>Income / settlement (real fees)</span><span class="cnt">-</span></div>
           </div>
         </div>
         <div class="up-zone" style="border-color:var(--ch-ebay)" data-drop="">
@@ -1818,7 +1819,7 @@ function keepFocus(containerSel, render){
 }
 
 // ================= state =================
-const EMPTY_RAW = () => ({master:[], zero_vat:[], tt_orders:[], tt_aff:[], tt_ads:[], amz_biz:[], amz_ads:[], amz_txn:[], amz_txn2:[], amz_orders:[], amz2_biz:[], amz2_ads:[], amz2_txn:[], amz2_txn2:[], amz2_orders:[], ebay_list:[], ebay_txn:[], ebay_pl:[], ebay_ppc:[], shop_orders:[], sku_map:[]});
+const EMPTY_RAW = () => ({master:[], zero_vat:[], tt_orders:[], tt_aff:[], tt_ads:[], tt_settle:[], amz_biz:[], amz_ads:[], amz_txn:[], amz_txn2:[], amz_orders:[], amz2_biz:[], amz2_ads:[], amz2_txn:[], amz2_txn2:[], amz2_orders:[], ebay_list:[], ebay_txn:[], ebay_pl:[], ebay_ppc:[], shop_orders:[], sku_map:[]});
 // Amazon report types that get remapped to the Amazon-2 (Vefive) buckets when dropped in that slot
 const AMZ2_REMAP = {amz_biz:'amz2_biz', amz_ads:'amz2_ads', amz_txn:'amz2_txn', amz_txn2:'amz2_txn2', amz_orders:'amz2_orders'};
 const STATE = {
@@ -2228,6 +2229,9 @@ function detectSheet(sheet){
     if(s.has('SKU') && s.has('Stock Level') && s.has('Stock Level Available Allocation')) return {type:'dc_stock_level', headerRow:i};
     if(s.has('Action Quantity') && s.has('Log Created Date') && s.has('Action')) return {type:'dc_stock_txn', headerRow:i};
     if(s.has('SKU Subtotal After Discount') && s.has('Seller SKU') && s.has('Order ID')) return {type:'tt_orders', headerRow:i};
+    // TikTok's income/settlement export ("Order details" sheet). Every other sheet in that
+    // workbook - Statements, Payments, Reports, Fees explanation - carries none of these.
+    if(s.has('Order/adjustment ID') && s.has('TikTok Shop commission fee')) return {type:'tt_settle', headerRow:i};
     if(s.has('Est. standard commission payment') || s.has('Est. Shop Ads commission payment')) return {type:'tt_aff', headerRow:i};
     if(s.has('(Child) ASIN') && s.has('Ordered Product Sales')
        && !cells.some(c => /^(product cost|total product cost|refrral %|referral %)$/i.test(c)))
@@ -2563,6 +2567,7 @@ const TYPE_LABEL = {master:'Master cost sheet', tt_orders:'TikTok orders', tt_af
   amz_orders:'Amazon 1 (Vemart) All Orders Report', amz2_orders:'Amazon 2 (Vefive) All Orders Report',
   zero_vat:'Zero-rated (non-VAT) products', pnl_hist:'P&L history (month by month)',
   asin_items:'Vemart/Vefive item list (ASIN to product)',
+  tt_settle:'TikTok income / settlement (actual fees)',
   ebay_list:'eBay Listings Sales', ebay_txn:'eBay transactions', ebay_pl:'eBay General Campaigns Report', ebay_ppc:'eBay Priority Campaigns Report', shop_orders:'Shopify orders', sku_map:'SKU Management map'};
 const TYPE_CH = {tt_orders:'tiktok', tt_aff:'tiktok', tt_ads:'tiktok', amz_biz:'amazon', amz_ads:'amazon', amz_txn:'amazon', amz_txn2:'amazon', amz_orders:'amazon', amz2_biz:'amazon2', amz2_ads:'amazon2', amz2_txn:'amazon2', amz2_txn2:'amazon2', amz2_orders:'amazon2', ebay_list:'ebay', ebay_txn:'ebay', ebay_pl:'ebay', ebay_ppc:'ebay', shop_orders:'shopify'};
 const FILE_DATE_COLS = {tt_orders:['Created Time','Paid Time'], tt_aff:['Time Created','Payment time'], amz_txn:['date/time'], amz_txn2:['Date'], amz_orders:['purchase-date'], amz2_orders:['purchase-date'], amz2_txn:['date/time'], amz2_txn2:['Date'], ebay_txn:['Transaction creation date'], shop_orders:['Created at','Paid at']};
@@ -3557,6 +3562,33 @@ function computeTikTok(){
     shop: (() => {const a=cleanMoney(r['Actual Shop Ads commission payment']); return a>0?a:cleanMoney(r['Est. Shop Ads commission payment']);})()
   })).filter(a => a.oid && inRange(a.date||''));
 
+  // ---- What TikTok actually charged, from the income/settlement export ----
+  // The modelled fee cannot be right. TikTok's own formula is
+  //   commission = (net sales + customer shipping - shipping refund) x rate
+  // and the rate is set per PRODUCT CATEGORY - 5% on some of these products, 9% on others - so a
+  // single percentage over-charges half the catalogue and under-charges the rest. The settlement
+  // file carries the real figure per order line, along with the real affiliate commission, shop
+  // ads commission and the shipping service fee TikTok deducts. Where a line has settled, those
+  // numbers are used as they stand; a line that has not settled yet keeps the modelled rate, so
+  // the current month still works before its statements arrive.
+  const settle = {}; let settleLines = 0;
+  for(const r of R.tt_settle){
+    const oid = String(r['Order/adjustment ID'] || '').trim();
+    if(!oid) continue;
+    const k = oid + '|' + String(r['SKU ID'] || '').trim();
+    const e = settle[k] = settle[k] || {comm:0, aff:0, shop:0, ship:0, adj:0};
+    // A fee is written negative and a credit positive - a refunded line hands the commission
+    // back, e.g. "-14.99 net sales, +0.94 commission". Flipping the sign turns a charge into a
+    // cost and a credit into a deduction; taking the size of it would have billed the refund.
+    const fee = c => -cleanMoney(r[c]);
+    e.comm += fee('TikTok Shop commission fee');
+    e.aff  += fee('Affiliate Commission') + fee('Affiliate partner commission');
+    e.shop += fee('Affiliate Shop Ads commission') + fee('Affiliate Partner shop ads commission');
+    e.ship += fee('Shipping service fee');
+    e.adj  += cleanMoney(r['Adjustment amount']);          // either sign - left as it stands
+  }
+  const settleFor = o => settle[o.oid + '|' + o.sku_id] || settle[o.oid + '|'] || null;
+
   const skuIdToSeller = {};
   for(const o of orders) if(o.sku_id && o.seller_sku && !skuIdToSeller[o.sku_id]) skuIdToSeller[o.sku_id] = o.seller_sku;
   for(const a of aff) a.seller_sku = skuIdToSeller[a.sku_id] || '';
@@ -3617,7 +3649,17 @@ function computeTikTok(){
     s.units += o.net_qty;
     s.revenue_gross += o.gross;
     s.refunds += o.refund;
-    s._feeBase = (s._feeBase || 0) + o.fee_base;
+    const st = o.cancelled ? null : settleFor(o);
+    if(st){
+      s._stComm = (s._stComm || 0) + st.comm;
+      s._stAff  = (s._stAff  || 0) + st.aff;
+      s._stShop = (s._stShop || 0) + st.shop;
+      s._stShip = (s._stShip || 0) + st.ship;
+      s._stAdj  = (s._stAdj  || 0) + st.adj;
+      settleLines++;
+    } else {
+      s._feeBase = (s._feeBase || 0) + o.fee_base;   // not settled yet - fall back to the rate
+    }
     if(!o.cancelled) s._oids.add(o.oid);
     const e = M.tiktok.bySku[o.seller_sku];
     if(e && !o.cancelled){
@@ -3647,6 +3689,9 @@ function computeTikTok(){
     if(tot <= 0){ samples.shipping += ship; samples.oper += op; }
   }
   for(const a of aff){
+    // A settled line already carries the commission TikTok actually paid out; the affiliate
+    // export's figure for the same line is an estimate, and adding both would charge it twice.
+    if(settle[a.oid + '|' + a.sku_id] || settle[a.oid + '|']) continue;
     if(a.seller_sku && map[a.seller_sku]){ map[a.seller_sku].affiliate += a.com; map[a.seller_sku].shop_ads += a.shop; }
   }
   const pidUnits = {};
@@ -3665,9 +3710,13 @@ function computeTikTok(){
     const e = s._e;
     s.buying = e ? s.units * e.buying : 0;
     const rate = (e && e.referral != null) ? e.referral : STATE.ttRate;
-    // on the product subtotal only: revenue_gross includes the buyer's shipping, the fee does not
-    s.mkt_fee = (s._feeBase || 0) * rate;
-    delete s._feeBase;
+    // Settled lines bring the charge TikTok actually made, including its shipping service fee;
+    // only what has not settled is still worked out from the rate, on the product subtotal alone
+    // (revenue_gross includes the buyer's shipping, the modelled fee does not).
+    s.mkt_fee = (s._feeBase || 0) * rate + (s._stComm || 0) + (s._stShip || 0) + (s._stAdj || 0);
+    s.affiliate += (s._stAff || 0);
+    s.shop_ads  += (s._stShop || 0);
+    delete s._feeBase; delete s._stComm; delete s._stShip; delete s._stAdj; delete s._stAff; delete s._stShop;
     if(mode === 'product'){
       const a = adsByPid[s._pid];
       const tu = pidUnits[s._pid]||0;
@@ -3728,6 +3777,7 @@ function computeTikTok(){
   for(const d of Object.keys(daily)) daily[d].orders = daily[d].orders.size;
   const rows = finalizeRows(Object.values(map));
   return {rows, extras:{daily, adsTotal, adRevTotal, adsMode:mode, ignoredAdsRows, ordersList, fullSpan:{min:fullMin, max:fullMax},
+    settle:{lines:settleLines, rows:R.tt_settle.length, orderLines:orders.filter(o => !o.cancelled).length},
     samples:{units:samples.units, orders:samples.orders.size, buying:samples.buying, shipping:samples.shipping, oper:samples.oper,
              cost:samples.buying + samples.shipping + samples.oper}}};
 }
@@ -4675,7 +4725,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-05-c';
+const BUILD_ID = '2026-10-13-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5520,6 +5570,14 @@ function buildDiagnostics(){
     const nf = Object.values(fr).reduce((a, f) => a + Object.keys(f).length, 0);
     const nr = Object.values(fr).reduce((a, f) => a + Object.values(f).reduce((b, r) => b + (r ? r.length : 0), 0), 0);
     if(nf) L.push(`Uploaded files held locally: ${fmtNum(nf)} file(s), ${fmtNum(nr)} row(s)`);
+  }
+  {
+    const st = (STATE.extras.tiktok || {}).settle;
+    if(st && st.rows) L.push(`TikTok fees from the income/settlement export: ${fmtNum(st.lines)} of ${fmtNum(st.orderLines)} order line(s) `
+      + `in range are priced on what TikTok actually charged - commission, affiliate, shop ads and the shipping service fee - `
+      + `from ${fmtNum(st.rows)} settlement row(s). The rest have not settled yet and still use the referral % from the master sheet. `
+      + `TikTok's own rate is set per product category (5% on some of these products, 9% on others) and is charged on the product `
+      + `subtotal PLUS the buyer's shipping, so no single percentage can match it.`);
   }
   {
     const sm = (STATE.extras.tiktok || {}).samples;
