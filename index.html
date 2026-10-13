@@ -1243,7 +1243,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
         </div>
         <div class="up-zone" style="border-color:var(--ch-tiktok)" data-drop="">
           <div class="up-title"><i style="background:var(--ch-tiktok)"></i>TikTok Shop</div>
-          <div class="up-hint">TikTok Shop exports — All Orders, Affiliate orders, and Ads.</div>
+          <div class="up-hint">TikTok Shop exports — All Orders, Affiliate orders, Ads, and the <b>Income / settlement</b> workbook (Finance &rarr; Income &rarr; Export). The settlement file carries the fee TikTok actually charged on every order it covers, so those lines stop being costed at a flat referral %.</div>
           <button class="btn secondary up-pick" data-for="inTikTok">📂 Choose TikTok files</button>
           <input type="file" id="inTikTok" class="up-input" multiple accept=".xlsx,.xls,.csv" style="display:none">
           <div class="up-list">
@@ -4725,7 +4725,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-13-a';
+const BUILD_ID = '2026-10-13-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
