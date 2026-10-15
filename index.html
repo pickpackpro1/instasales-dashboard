@@ -1672,8 +1672,12 @@ function parseDate(v){
     if(d) return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
   }
   const s = String(v).trim();
+  // YYYY/MM/DD - the TikTok income/settlement export. Tested BEFORE the day-first form below:
+  // a 4-digit year can only be the year, so there is nothing ambiguous to get wrong.
+  let m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+  if(m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
   // DD/MM/YYYY (TikTok exports use 4-digit year, day first)
-  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
   // M/D/YY - SheetJS's default re-format of date-parsed CSV cells (month first, 2-digit year)
   m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
@@ -2570,7 +2574,7 @@ const TYPE_LABEL = {master:'Master cost sheet', tt_orders:'TikTok orders', tt_af
   tt_settle:'TikTok income / settlement (actual fees)',
   ebay_list:'eBay Listings Sales', ebay_txn:'eBay transactions', ebay_pl:'eBay General Campaigns Report', ebay_ppc:'eBay Priority Campaigns Report', shop_orders:'Shopify orders', sku_map:'SKU Management map'};
 const TYPE_CH = {tt_orders:'tiktok', tt_aff:'tiktok', tt_ads:'tiktok', tt_settle:'tiktok', amz_biz:'amazon', amz_ads:'amazon', amz_txn:'amazon', amz_txn2:'amazon', amz_orders:'amazon', amz2_biz:'amazon2', amz2_ads:'amazon2', amz2_txn:'amazon2', amz2_txn2:'amazon2', amz2_orders:'amazon2', ebay_list:'ebay', ebay_txn:'ebay', ebay_pl:'ebay', ebay_ppc:'ebay', shop_orders:'shopify'};
-const FILE_DATE_COLS = {tt_orders:['Created Time','Paid Time'], tt_aff:['Time Created','Payment time'], amz_txn:['date/time'], amz_txn2:['Date'], amz_orders:['purchase-date'], amz2_orders:['purchase-date'], amz2_txn:['date/time'], amz2_txn2:['Date'], ebay_txn:['Transaction creation date'], shop_orders:['Created at','Paid at']};
+const FILE_DATE_COLS = {tt_orders:['Created Time','Paid Time'], tt_settle:['Order created date','Statement date'], tt_aff:['Time Created','Payment time'], amz_txn:['date/time'], amz_txn2:['Date'], amz_orders:['purchase-date'], amz2_orders:['purchase-date'], amz2_txn:['date/time'], amz2_txn2:['Date'], ebay_txn:['Transaction creation date'], shop_orders:['Created at','Paid at']};
 function fileMeta(type, rows){
   let dates = null;
   const dc = FILE_DATE_COLS[type];
@@ -4725,7 +4729,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-15-a';
+const BUILD_ID = '2026-10-15-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
