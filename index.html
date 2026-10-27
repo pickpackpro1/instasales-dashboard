@@ -4756,7 +4756,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-26-a';
+const BUILD_ID = '2026-10-27-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5954,7 +5954,13 @@ function openPlDrawer(from, to, title){
   // ---- expandable VAT / Tax Liability breakdown (click the row to open) ----
   const V = STATE.vat, vd = 1 + V.rate, vatOf = g => g - g/vd;
   const vsub = (l,v) => `<div class="pls-row sub"><span>${l}</span><span class="amt" style="color:${v<0?'var(--red)':'var(--green)'}">${v<0?'-':'+'}${fmtGBP(Math.abs(v))}</span></div>`;
+  // With "Revenue includes VAT" switched off the sales figure is already net, so nothing is
+  // charged on it - a silent 0.00 reads as a fault rather than a setting, so it says which.
   const vatLines = [vsub('Output VAT charged on sales', -t.output_vat)];
+  if(!V.revIncVAT) vatLines.push(`<div class="pls-row sub" style="color:#9a6a00;font-size:11px"><span>`
+    + `Nothing is charged because <b>&ldquo;Revenue includes VAT&rdquo; is switched off</b> in ⚙ Settings &mdash; `
+    + `sales are being treated as already ex-VAT. Turn it on if your sales figures are VAT-inclusive.`
+    + `</span><span></span></div>`);
   // Itemise from what was ACTUALLY reclaimed row by row, not from the global settings -
   // channels reach the same ex-VAT cost by different routes (grossed up first, or already
   // gross), so recomputing rate x total here would not match the VAT actually due.
@@ -5980,7 +5986,7 @@ function openPlDrawer(from, to, title){
       `<div class="pls-row" id="plsVatHead" style="cursor:pointer"><span id="plsVatLabel">▸ VAT / Tax Liability</span>${money(-t.net_vat_due, t.net_vat_due>=0?'neg':'pos')}</div>`
     + `<div id="plsVatDetail" class="hidden" style="background:#f6f9fd;border-radius:8px;padding:2px 8px;margin:2px 0">${vatLines.join('')}`
     + `<div class="pls-row sub" style="border-top:1px solid var(--border);font-weight:700"><span>= Net VAT ${t.net_vat_due>=0?'due to HMRC':'reclaim'}</span><span class="amt" style="color:${vatDueColor}">${t.net_vat_due>=0?'-':'+'}${fmtGBP(Math.abs(t.net_vat_due))}</span></div>`
-    + `<div class="pls-row sub" style="color:var(--muted);font-size:11px">Rate ${fmtPct(V.rate*100)} · sales treated as VAT-inclusive · ${Object.values(V.feesExVat||{}).some(x=>x) ? 'referral/ads are ex-VAT and their VAT is reclaimed at '+fmtPct(V.rate*100) : 'referral/ads are ex-VAT and excluded from the VAT calc (no reclaim)'}.</div></div>`;
+    + `<div class="pls-row sub" style="color:var(--muted);font-size:11px">Rate ${fmtPct(V.rate*100)} · sales treated as ${V.revIncVAT ? 'VAT-inclusive' : '<b>already ex-VAT (no output VAT)</b>'} · ${Object.values(V.feesExVat||{}).some(x=>x) ? 'referral/ads are ex-VAT and their VAT is reclaimed at '+fmtPct(V.rate*100) : 'referral/ads are ex-VAT and excluded from the VAT calc (no reclaim)'}.</div></div>`;
   document.getElementById('plsDrawerBody').innerHTML =
       `<div class="pls-row group"><span>Net Sales (Inc VAT)</span>${money(t.revenue_gross)}</div>`
     + `<div class="pls-row sub"><span>${fmtNum(t.units)} units · ${fmtNum(t.orders_count)} orders</span><span></span></div>`
