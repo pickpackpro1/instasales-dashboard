@@ -4756,7 +4756,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-27-a';
+const BUILD_ID = '2026-10-30-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -11838,7 +11838,19 @@ document.getElementById('cbAddVersion').addEventListener('click', () => {
   ['cbNewBuy','cbNewShip','cbNewOper','cbNewRef'].forEach(x => document.getElementById(x).value='');
   renderCostBook();
   renderCostHistory();
-  showBanner(`Added ${fam==='amazon'?chan.toUpperCase():fam.toUpperCase()} cost for ${id}, effective ${from}. Earlier reports keep the previous cost.`, 'success');
+  // A version dated after the period the loaded reports cover changes nothing on screen, which
+  // reads as "my edit did not save". Say so plainly, with the date to use if it was meant to
+  // apply now - "earlier reports keep the previous cost" is true but easy to read past.
+  const ref = costRefDate();
+  const lbl = fam==='amazon' ? chan.toUpperCase() : fam.toUpperCase();
+  if(from > ref){
+    showBanner(`Saved ${lbl} cost for ${id}, effective ${from} — but your loaded reports are `
+      + `costed as at ${ref}, which is earlier, so this will NOT change the figures you are `
+      + `looking at. Date it ${ref} or before to apply it to them.`, 'error');
+  } else {
+    showBanner(`Added ${lbl} cost for ${id}, effective ${from}. Reports from that date on now use `
+      + `it; earlier ones keep the previous cost.`, 'success');
+  }
 });
 // Fulfilment options follow the platform, since FBM/FBA mean nothing on eBay.
 function cbSyncNewPlatChan(){
