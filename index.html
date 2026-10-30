@@ -372,6 +372,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
     <button class="nav-item has-sub" data-group="analyticsG"><span class="ic">📈</span>Analytics<span class="chev">▶</span></button>
     <div class="submenu" id="analyticsG">
       <button class="nav-item" data-page="daily"><span class="ic">📅</span>Daily Analysis</button>
+      <button class="nav-item" data-page="weekly"><span class="ic">🗓️</span>Weekly Analysis</button>
       <button class="nav-item" data-page="skuperf"><span class="ic">📉</span>SKU Performance</button>
       <button class="nav-item" data-page="intel"><span class="ic">🧠</span>Product Intelligence</button>
       <button class="nav-item" data-page="comparison"><span class="ic">⚖️</span>Comparison Charts</button>
@@ -1077,6 +1078,39 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
 
   <!-- ============ COMPARISON ============ -->
   <!-- ============ COMPARISON PNL ============ -->
+  <div class="page" id="page-weekly">
+    <div class="card" style="margin-bottom:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-tiktok)"></span>Weekly Analysis</h3>
+        <span style="flex:1"></span>
+        <input type="search" id="wkSearch" placeholder="Search SKU / ASIN / product..." style="min-width:220px">
+        <div class="count" id="wkCount"></div>
+      </div>
+      <div class="fbar" style="flex-wrap:wrap;gap:6px">
+        <span class="flabel">Weeks</span>
+        <button class="btn wk-n" data-n="5">Last 5</button>
+        <button class="btn secondary wk-n" data-n="8">Last 8</button>
+        <button class="btn secondary wk-n" data-n="13">Last 13</button>
+        <button class="btn secondary wk-n" data-n="26">Last 26</button>
+        <span class="flabel" style="margin-left:10px">Sort</span>
+        <button class="btn wk-s" data-s="latest">Latest week</button>
+        <button class="btn secondary wk-s" data-s="total">Total units</button>
+        <button class="btn secondary wk-s" data-s="drop">Biggest drop</button>
+        <button class="btn secondary wk-s" data-s="rise">Biggest rise</button>
+        <button class="btn secondary wk-s" data-s="name">Product</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer;margin-left:10px">
+          <input type="checkbox" id="wkMoved" checked> Hide listings with no sales</label>
+        <span style="flex:1"></span>
+        <button class="btn secondary" id="wkExport">⬇️ Export</button>
+      </div>
+      <div class="sub-title" id="wkSub"></div>
+      <div id="wkNotice"></div>
+      <div class="table-wrap" style="max-height:720px"><table id="wkTable" class="freeze-1">
+        <thead></thead><tbody></tbody><tfoot></tfoot>
+      </table></div>
+    </div>
+  </div>
+
   <div class="page" id="page-cmppnl">
     <div class="card" style="margin-bottom:14px">
       <div class="toolbar">
@@ -4758,7 +4792,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-30-b';
+const BUILD_ID = '2026-10-30-c';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5232,9 +5266,9 @@ let _cmpCache = null;
 function recompute(){
   STATE.channels = {}; STATE.extras = {};
   // Any recompute means the data or the filters moved, so the month-by-month roll-up behind
-  // Comparison PNL is stale. Safe to clear here: cmpSeries fills the cache only after its own
-  // recompute has finished, so it never clears what it just built.
-  _cmpCache = null;
+  // Comparison PNL and Weekly Analysis are stale. Safe to clear here: both fill their cache only
+  // after their own recompute has finished, so neither clears what it just built.
+  _cmpCache = null; _wkCache = null;
   // TikTok + eBay first: Amazon's date-proration uses their dated span as the period basis
   const tt = computeTikTok(); if(tt){ STATE.channels.tiktok = tt.rows; STATE.extras.tiktok = tt.extras; }
   const eb = computeEbay(); if(eb){ STATE.channels.ebay = eb.rows; STATE.extras.ebay = eb.extras; }
@@ -5738,8 +5772,8 @@ function kpiCard(c){
 }
 
 // ================= pages =================
-const PAGE_TITLES = {cmppnl:'Comparison PNL', dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Product ROIs', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
-const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily','cmppnl']);
+const PAGE_TITLES = {cmppnl:'Comparison PNL', weekly:'Weekly Analysis', dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Product ROIs', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
+const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily','cmppnl','weekly']);
 
 function showPage(id){
   STATE.page = id;
@@ -5770,7 +5804,7 @@ function renderPage(){
       inventory:renderStock, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
       economics:renderEconomics, fees:renderFees, reports:renderReports, opex:renderOpex, advertising:renderAds,
       grow:renderGrow, tasks:renderTasks, workspace:renderLoadedReports, products:renderProducts, skumgt:renderSkuMgt,
-      costbook:renderCostBook, daily:renderDaily, cmppnl:renderComparePL}[id] || (()=>{}))();
+      costbook:renderCostBook, daily:renderDaily, cmppnl:renderComparePL, weekly:renderWeekly}[id] || (()=>{}))();
   } catch(err){
     showBanner('Render error: ' + err.message, 'error');
     console.error(err);
@@ -6933,7 +6967,7 @@ function applyRemoteAcctSettings(d){
   store.set(lsKey(LS_PNLHIST), JSON.stringify(PNL_HIST));
   store.set(lsKey(LS_ASINITEMS), JSON.stringify(ASIN_ITEMS));
   writeLocalAcctSettings();
-  _cmpCache = null; _histFamMap = null; _famNorm = null;
+  _cmpCache = null; _wkCache = null; _histFamMap = null; _famNorm = null;
   if(pushBack) cloudSaveCostBook();
   if(JSON.stringify(currentVatSettings()) !== vatBefore) refresh();
   else if(STATE.page === 'cmppnl' && STATE.master) renderComparePL();
@@ -8477,8 +8511,144 @@ function applyAsinItems(parsed){
     ASIN_ITEMS[a] = it;
   }
   saveAsinItems();
-  _cmpCache = null; _histFamMap = null; _famNorm = null;
+  _cmpCache = null; _wkCache = null; _histFamMap = null; _famNorm = null;
   return {added, changed};
+}
+
+// ================= Weekly Analysis =================
+// Units per LISTING per week, the shape of the sheet this replaces: one line per ASIN / SKU so
+// an FBA offer and its FBM twin stay apart, a column per week, and two notes of your own at the
+// end. Weeks run Monday to Sunday.
+//
+// Each week is a real run of the engines pinned to those seven days - the same route Comparison
+// PNL takes for a month - so a week here is the sum of the same P&L the Dashboard shows for that
+// range, not a total carved up afterwards.
+const LS_WKNOTES = 'mcpd_wk_notes';
+let WK_NOTES = {};           // "channel|key" -> {rank, sales}
+let WK_N = 5, WK_SORT = 'latest', WK_Q = '';
+let _wkCache = null;
+function loadWkNotes(){ try{ WK_NOTES = JSON.parse(store.get(lsKey(LS_WKNOTES))) || {}; }catch(e){ WK_NOTES = {}; } }
+function saveWkNotes(){ try{ store.set(lsKey(LS_WKNOTES), JSON.stringify(WK_NOTES)); }catch(e){} markAcctDirty('wknotes'); cloudSaveCostBook(); }
+
+const mondayOf = iso => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0,10); };
+const wkLabel = w => {
+  const a = new Date(w + 'T00:00:00Z'), b = new Date(w + 'T00:00:00Z');
+  b.setUTCDate(b.getUTCDate() + 6);
+  const f = d => d.getUTCDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+  return f(a) + ' – ' + f(b);
+};
+// Every week the loaded data touches, newest last.
+function wkWeeks(){
+  const set = new Set();
+  for(const ch of ALL_CH){
+    const d = (STATE.extras[ch] || {}).daily || {};
+    for(const k of Object.keys(d)) if(k && k.length >= 10) set.add(mondayOf(k));
+  }
+  return [...set].sort();
+}
+function wkSeries(weeks){
+  const key = weeks.join(',') + '|' + filteredChannels().join(',');
+  if(_wkCache && _wkCache.key === key) return _wkCache.val;
+  const sf = STATE.dateFrom, st = STATE.dateTo;
+  const byRow = {};            // "ch|key" -> {ch, key, name, sku, w:{week:{units, profit}}}
+  try{
+    for(const w of weeks){
+      const end = new Date(w + 'T00:00:00Z'); end.setUTCDate(end.getUTCDate() + 6);
+      STATE.dateFrom = w; STATE.dateTo = end.toISOString().slice(0,10);
+      recompute();
+      for(const ch of filteredChannels()){
+        for(const r of (STATE.channels[ch] || [])){
+          if(!r.key) continue;
+          const id = ch + '|' + r.key;
+          const e = byRow[id] = byRow[id] || {ch, key:r.key, name:r.name || '', w:{}};
+          if(!e.name && r.name) e.name = r.name;
+          const c = e.w[w] = e.w[w] || {units:0, profit:0};
+          c.units += r.units || 0;
+          c.profit += r.net_profit_ex || 0;
+        }
+      }
+    }
+  } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
+  const val = Object.values(byRow);
+  _wkCache = {key, val};
+  return val;
+}
+function renderWeekly(){
+  const all = wkWeeks();
+  const head = document.querySelector('#wkTable thead');
+  const body = document.querySelector('#wkTable tbody');
+  const foot = document.querySelector('#wkTable tfoot');
+  if(!all.length){
+    head.innerHTML = ''; foot.innerHTML = '';
+    body.innerHTML = '<tr><td style="color:var(--muted);padding:18px">No dated sales loaded, so there are no weeks to show. Load a channel&rsquo;s reports in WorkSpace.</td></tr>';
+    document.getElementById('wkCount').textContent = '';
+    document.getElementById('wkSub').textContent = '';
+    return;
+  }
+  const weeks = all.slice(-WK_N);                       // oldest left, newest right - like the sheet
+  const rows = wkSeries(weeks);
+  const cur = weeks[weeks.length-1], prev = weeks[weeks.length-2];
+  const v = (r, w) => r.w[w] || {units:0, profit:0};
+  const q = WK_Q;
+  const onlyMoved = document.getElementById('wkMoved').checked;
+  const list = rows.filter(r => {
+    if(onlyMoved && !weeks.some(w => v(r,w).units)) return false;
+    if(!q) return true;
+    return (r.key + ' ' + r.name).toLowerCase().includes(q);
+  });
+  const tot = r => weeks.reduce((a,w) => a + v(r,w).units, 0);
+  const delta = r => prev ? v(r,cur).units - v(r,prev).units : 0;
+  const sorters = {
+    latest: (a,b) => v(b,cur).units - v(a,cur).units,
+    total:  (a,b) => tot(b) - tot(a),
+    drop:   (a,b) => delta(a) - delta(b),
+    rise:   (a,b) => delta(b) - delta(a),
+    name:   (a,b) => (a.name || a.key).localeCompare(b.name || b.key)
+  };
+  list.sort(sorters[WK_SORT] || sorters.latest);
+
+  const BL = 'border-left:2px solid var(--border)';
+  head.innerHTML = '<tr><th style="min-width:150px;text-align:left">SKU / ASIN</th><th style="min-width:200px;text-align:left">Item</th>'
+    + weeks.map(w => `<th class="num" style="${BL}">${wkLabel(w)}</th>`).join('')
+    + '<th class="num">Total</th><th style="min-width:170px">Ranking Analysis</th><th style="min-width:170px">Sales Analysis</th></tr>';
+
+  const CAP = 400;
+  const shown = list.slice(0, CAP);
+  const noteCell = (id, kind) => `<td><textarea data-wkn="${esc(id)}" data-kind="${kind}" rows="2" placeholder="&mdash;"
+    style="width:100%;min-width:160px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:11.5px;resize:vertical">${esc((WK_NOTES[id]||{})[kind] || '')}</textarea></td>`;
+  body.innerHTML = shown.map(r => {
+    const id = r.ch + '|' + r.key;
+    return '<tr><td style="max-width:170px"><span class="chip ' + r.ch + '">' + (CH_NAME[r.ch]||r.ch) + '</span> '
+      + '<span title="' + esc(r.key) + '">' + esc(String(r.key).substr(0,22)) + '</span></td>'
+      + '<td title="' + esc(r.name) + '" style="max-width:230px;overflow:hidden;text-overflow:ellipsis">' + esc(r.name.substr(0,40)) + '</td>'
+      + weeks.map((w,i) => {
+          const c = v(r,w);
+          const last = i === weeks.length-1;
+          return '<td class="num" style="' + BL + (last ? ';font-weight:700' : '') + '">'
+            + (c.units ? fmtNum(c.units) : '<span style="color:var(--muted)">&mdash;</span>') + '</td>';
+        }).join('')
+      + '<td class="num" style="font-weight:800">' + fmtNum(tot(r)) + '</td>'
+      + noteCell(id, 'rank') + noteCell(id, 'sales') + '</tr>';
+  }).join('') || '<tr><td colspan="' + (weeks.length+5) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
+
+  foot.innerHTML = '<tr><td style="font-weight:800" colspan="2">TOTAL &middot; ' + fmtNum(list.length) + ' listing(s)</td>'
+    + weeks.map(w => '<td class="num" style="font-weight:800;' + BL + '">' + fmtNum(list.reduce((a,r)=>a+v(r,w).units,0)) + '</td>').join('')
+    + '<td class="num" style="font-weight:800">' + fmtNum(list.reduce((a,r)=>a+tot(r),0)) + '</td><td></td><td></td></tr>';
+
+  document.getElementById('wkCount').textContent =
+    fmtNum(shown.length) + (list.length > CAP ? '+' : '') + ' of ' + fmtNum(rows.length) + ' listing(s) · ' + weeks.length + ' week(s)';
+  document.getElementById('wkSub').innerHTML =
+    'Units sold per week, Monday to Sunday. Each week is a real run of the engines over those seven days, so it matches the Dashboard '
+    + 'for the same range. One line per listing &mdash; an FBA offer and its FBM twin stay apart. '
+    + 'Your two notes are saved per listing and travel with the account.';
+
+  body.querySelectorAll('textarea[data-wkn]').forEach(el => el.addEventListener('change', () => {
+    const id = el.dataset.wkn, kind = el.dataset.kind;
+    const rec = WK_NOTES[id] = WK_NOTES[id] || {};
+    if(el.value.trim()) rec[kind] = el.value.trim(); else delete rec[kind];
+    if(!Object.keys(rec).length) delete WK_NOTES[id];
+    saveWkNotes();
+  }));
 }
 
 // ================= Comparison PNL =================
