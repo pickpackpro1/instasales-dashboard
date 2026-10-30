@@ -1098,6 +1098,10 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
         <button class="btn secondary wk-s" data-s="drop">Biggest drop</button>
         <button class="btn secondary wk-s" data-s="rise">Biggest rise</button>
         <button class="btn secondary wk-s" data-s="name">Product</button>
+        <span class="flabel" style="margin-left:10px">Show</span>
+        <button class="btn wk-v" data-v="units">Units</button>
+        <button class="btn secondary wk-v" data-v="profit">Profit</button>
+        <button class="btn secondary wk-v" data-v="both">Both</button>
         <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer;margin-left:10px">
           <input type="checkbox" id="wkMoved" checked> Hide listings with no sales</label>
         <span style="flex:1"></span>
@@ -4792,7 +4796,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-30-d';
+const BUILD_ID = '2026-10-30-e';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -8525,7 +8529,7 @@ function applyAsinItems(parsed){
 // range, not a total carved up afterwards.
 const LS_WKNOTES = 'mcpd_wk_notes';
 let WK_NOTES = {};           // "channel|key" -> {rank, sales}
-let WK_N = 5, WK_SORT = 'latest', WK_Q = '';
+let WK_N = 5, WK_SORT = 'latest', WK_Q = '', WK_VIEW = 'units';
 let _wkCache = null;
 function loadWkNotes(){ try{ WK_NOTES = JSON.parse(store.get(lsKey(LS_WKNOTES))) || {}; }catch(e){ WK_NOTES = {}; } }
 function saveWkNotes(){ try{ store.set(lsKey(LS_WKNOTES), JSON.stringify(WK_NOTES)); }catch(e){} markAcctDirty('wknotes'); cloudSaveCostBook(); }
@@ -8598,11 +8602,16 @@ function renderWeekly(){
     if(!q) return true;
     return (r.key + ' ' + r.name).toLowerCase().includes(q);
   });
-  const tot = r => weeks.reduce((a,w) => a + v(r,w).units, 0);
-  const delta = r => prev ? v(r,cur).units - v(r,prev).units : 0;
+  const tot  = r => weeks.reduce((a,w) => a + v(r,w).units, 0);
+  const totP = r => weeks.reduce((a,w) => a + v(r,w).profit, 0);
+  // Sorting follows what is on screen: asking for the biggest drop while looking at profit
+  // should rank by profit, not by units.
+  const byP = WK_VIEW === 'profit';
+  const metric = (r,w) => byP ? v(r,w).profit : v(r,w).units;
+  const delta = r => prev ? metric(r,cur) - metric(r,prev) : 0;
   const sorters = {
-    latest: (a,b) => v(b,cur).units - v(a,cur).units,
-    total:  (a,b) => tot(b) - tot(a),
+    latest: (a,b) => metric(b,cur) - metric(a,cur),
+    total:  (a,b) => (byP ? totP(b) - totP(a) : tot(b) - tot(a)),
     drop:   (a,b) => delta(a) - delta(b),
     rise:   (a,b) => delta(b) - delta(a),
     name:   (a,b) => (a.name || a.key).localeCompare(b.name || b.key)
@@ -8612,7 +8621,9 @@ function renderWeekly(){
   const BL = 'border-left:2px solid var(--border)';
   head.innerHTML = '<tr><th style="min-width:150px;text-align:left">SKU / ASIN</th><th style="min-width:200px;text-align:left">Item</th>'
     + weeks.map(w => `<th class="num" style="${BL}">${wkLabel(w)}</th>`).join('')
-    + '<th class="num">Total</th><th style="min-width:170px">Ranking Analysis</th><th style="min-width:170px">Sales Analysis</th></tr>';
+    + '<th class="num">Total ' + (WK_VIEW === 'profit' ? 'Profit' : 'Units') + '</th>'
+    + (WK_VIEW === 'both' ? '<th class="num">Total Profit</th>' : '')
+    + '<th style="min-width:170px">Ranking Analysis</th><th style="min-width:170px">Sales Analysis</th></tr>';
 
   const CAP = 400;
   const shown = list.slice(0, CAP);
@@ -8626,21 +8637,42 @@ function renderWeekly(){
       + weeks.map((w,i) => {
           const c = v(r,w);
           const last = i === weeks.length-1;
-          return '<td class="num" style="' + BL + (last ? ';font-weight:700' : '') + '">'
-            + (c.units ? fmtNum(c.units) : '<span style="color:var(--muted)">&mdash;</span>') + '</td>';
+          const any = c.units || Math.abs(c.profit) > 0.004;
+          const u = c.units ? fmtNum(c.units) : '<span style="color:var(--muted)">&mdash;</span>';
+          const pf = '<span style="color:' + (c.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(c.profit) + '</span>';
+          const body = WK_VIEW === 'units'  ? u
+                     : WK_VIEW === 'profit' ? (any ? pf : '<span style="color:var(--muted)">&mdash;</span>')
+                     : u + (any ? '<div style="font-size:10.5px">' + pf + '</div>' : '');
+          return '<td class="num" style="' + BL + (last ? ';font-weight:700' : '') + '">' + body + '</td>';
         }).join('')
-      + '<td class="num" style="font-weight:800">' + fmtNum(tot(r)) + '</td>'
+      + '<td class="num" style="font-weight:800">' + (WK_VIEW === 'profit' ? fmtGBP0(totP(r)) : fmtNum(tot(r))) + '</td>'
+      + (WK_VIEW === 'both'
+          ? '<td class="num" style="font-weight:800;color:' + (totP(r) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(totP(r)) + '</td>'
+          : '')
       + noteCell(id, 'rank') + noteCell(id, 'sales') + '</tr>';
-  }).join('') || '<tr><td colspan="' + (weeks.length+5) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
+  }).join('') || '<tr><td colspan="' + (weeks.length + (WK_VIEW === 'both' ? 6 : 5)) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
 
+  const sumU = w => list.reduce((a,r)=>a+v(r,w).units,0), sumP = w => list.reduce((a,r)=>a+v(r,w).profit,0);
+  const grandP = list.reduce((a,r)=>a+totP(r),0);
   foot.innerHTML = '<tr><td style="font-weight:800" colspan="2">TOTAL &middot; ' + fmtNum(list.length) + ' listing(s)</td>'
-    + weeks.map(w => '<td class="num" style="font-weight:800;' + BL + '">' + fmtNum(list.reduce((a,r)=>a+v(r,w).units,0)) + '</td>').join('')
-    + '<td class="num" style="font-weight:800">' + fmtNum(list.reduce((a,r)=>a+tot(r),0)) + '</td><td></td><td></td></tr>';
+    + weeks.map(w => {
+        const u = fmtNum(sumU(w));
+        const pf = '<span style="color:' + (sumP(w) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(sumP(w)) + '</span>';
+        return '<td class="num" style="font-weight:800;' + BL + '">'
+          + (WK_VIEW === 'units' ? u : WK_VIEW === 'profit' ? pf : u + '<div style="font-size:10.5px">' + pf + '</div>') + '</td>';
+      }).join('')
+    + '<td class="num" style="font-weight:800">'
+      + (WK_VIEW === 'profit' ? fmtGBP0(grandP) : fmtNum(list.reduce((a,r)=>a+tot(r),0))) + '</td>'
+    + (WK_VIEW === 'both' ? '<td class="num" style="font-weight:800">' + fmtGBP0(grandP) + '</td>' : '')
+    + '<td></td><td></td></tr>';
 
   document.getElementById('wkCount').textContent =
     fmtNum(shown.length) + (list.length > CAP ? '+' : '') + ' of ' + fmtNum(rows.length) + ' listing(s) · ' + weeks.length + ' week(s)';
   document.getElementById('wkSub').innerHTML =
-    'Units sold per week, Monday to Sunday. Each week is a real run of the engines over those seven days, so it matches the Dashboard '
+    (WK_VIEW === 'profit' ? 'Net profit (ex VAT) per week, Monday to Sunday.'
+       : WK_VIEW === 'both' ? 'Units sold with net profit (ex VAT) beneath it, per week, Monday to Sunday.'
+       : 'Units sold per week, Monday to Sunday.')
+    + ' Each week is a real run of the engines over those seven days, so it matches the Dashboard '
     + 'for the same range. One line per listing &mdash; an FBA offer and its FBM twin stay apart. '
     + 'Your two notes are saved per listing and travel with the account.';
 
@@ -12326,6 +12358,47 @@ Costs come from the Cost Book as at ${asAt}. Nothing already in the sheet is cha
   showBanner(`Added ${fmtNum(added)} master row(s) for ${fmtNum(miss.length)} product(s)`
     + `${named ? `, ${fmtNum(named)} with a seller SKU from your reports` : ''}. They now appear in Product ROIs.`, 'success');
 });
+// ---- Weekly Analysis controls ----
+document.querySelectorAll('.wk-n').forEach(b => b.addEventListener('click', () => {
+  WK_N = +b.dataset.n;
+  document.querySelectorAll('.wk-n').forEach(x => x.classList.toggle('secondary', x !== b));
+  renderWeekly();
+}));
+document.querySelectorAll('.wk-s').forEach(b => b.addEventListener('click', () => {
+  WK_SORT = b.dataset.s;
+  document.querySelectorAll('.wk-s').forEach(x => x.classList.toggle('secondary', x !== b));
+  renderWeekly();
+}));
+document.querySelectorAll('.wk-v').forEach(b => b.addEventListener('click', () => {
+  WK_VIEW = b.dataset.v;
+  document.querySelectorAll('.wk-v').forEach(x => x.classList.toggle('secondary', x !== b));
+  renderWeekly();
+}));
+document.getElementById('wkMoved').addEventListener('change', renderWeekly);
+document.getElementById('wkSearch').addEventListener('input', debounce(e => { WK_Q = e.target.value.trim().toLowerCase(); renderWeekly(); }, 200));
+document.getElementById('wkExport').addEventListener('click', () => {
+  const weeks = wkWeeks().slice(-WK_N);
+  const rows = wkSeries(weeks).map(r => {
+    const o = {Channel: CH_NAME[r.ch] || r.ch, 'SKU / ASIN': r.key, Item: r.name};
+    let t = 0, tp = 0;
+    for(const w of weeks){
+      const c = r.w[w] || {units:0, profit:0};
+      o[wkLabel(w) + ' units'] = c.units;
+      o[wkLabel(w) + ' profit'] = +c.profit.toFixed(2);
+      t += c.units; tp += c.profit;
+    }
+    o['Total units'] = t;
+    o['Total profit'] = +tp.toFixed(2);
+    const n = WK_NOTES[r.ch + '|' + r.key] || {};
+    o['Ranking Analysis'] = n.rank || '';
+    o['Sales Analysis'] = n.sales || '';
+    return o;
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Weekly');
+  XLSX.writeFile(wb, 'weekly-analysis-' + todayISO() + '.xlsx');
+});
+
 // ---- Comparison PNL controls ----
 document.querySelectorAll('.cmp-n').forEach(b => b.addEventListener('click', () => {
   CMP_N = +b.dataset.n;
