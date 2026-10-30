@@ -730,10 +730,12 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
       <div class="sub-title">
         <b>One row per offer.</b> An ASIN sold both FBA and FBM appears twice, tagged, because the two cost different
         amounts. Costs are <b>dated</b>: when a supplier or courier price changes, add a new version from the day it
-        takes effect and every past report keeps the cost that applied at the time. Edits save instantly and the P&amp;L
-        recalculates. <b>This is the only place costs come from</b> - use <b>Import</b> to load them in bulk.
+        takes effect and every past report keeps the cost that applied at the time. Type as many figures as you like,
+        then press the row's green <b>&#10003;</b> (or Enter) to save that product - nothing is written until you do,
+        so a row can be filled in without it moving under you. <b>Esc</b> undoes a row you have not saved. <b>This is the only place costs come from</b> - use <b>Import</b> to load them in bulk.
       </div>
       <div id="cbNote"></div>
+      <div id="cbUnsaved" class="hidden"></div>
       <div class="table-wrap" style="max-height:640px"><table id="cbTable" class="freeze-1">
         <thead><tr>
           <th>Product</th><th>Channel</th>
@@ -741,7 +743,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
           <th class="num" title="FBM: your own shipping. FBA: the Amazon fulfilment fee.">Ship / FBA fee &pound;</th>
           <th class="num">Operational &pound;</th>
           <th class="num">Referral %</th>
-          <th>In force from</th><th>Versions</th>
+          <th>In force from</th><th style="white-space:nowrap">Save &middot; versions</th>
         </tr></thead>
         <tbody></tbody>
       </table></div>
@@ -4756,7 +4758,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-30-a';
+const BUILD_ID = '2026-10-30-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -7275,6 +7277,16 @@ function renderFulPicker(famSel){
 // filters change, so an offer can be finished (COGS, then shipping, then operational) instead
 // of disappearing the moment its first field is filled.
 let CB_JUST_SET = new Set();
+// Figures typed into the table but not yet saved: "fam|id::chan" -> {field: raw text}.
+//
+// Every box used to write itself the moment it lost focus, which re-ran the engines and rebuilt
+// the table around the cursor - so filling COGS, then shipping, then operational on one product
+// meant the row moved (or left the "Missing a cost" filter) between fields. Nothing is written
+// now until that row's tick is pressed. What has been typed lives here in the meantime, so a
+// re-render, another row's save, or a filter change cannot throw it away.
+let CB_PENDING = {};
+const cbPendKey = (fam, id, chan) => cbId(fam, id) + '::' + chan;
+const cbPendCount = () => Object.keys(CB_PENDING).filter(k => Object.keys(CB_PENDING[k] || {}).length).length;
 // Seller SKUs behind a cost-book offer, for the search box. An Amazon family covers both
 // accounts, so ask each; the lookup is indexed, so this is cheap per row.
 // The SKUs for THIS offer rather than for the whole product. An ASIN's FBM row must name its
@@ -7478,8 +7490,15 @@ function renderCostBook(){
 
   const n2 = v => (v==null || v==='') ? '' : (+v).toFixed(2);
   const nRef = v => (v==null || v==='') ? '' : (+v > 1 ? (+v).toFixed(2) : (+v*100).toFixed(2));
-  const inp = (o, field, val) =>
-    '<td class="num"><input type="number" step="0.01" value="' + val + '" data-cb="' + esc(o.fam+'|'+o.id) + '" data-chan="' + o.chan + '" data-f="' + field + '" style="width:80px;text-align:right"></td>';
+  // A box shows what you last typed, saved or not, so a redraw cannot swallow an edit in flight.
+  const inp = (o, field, val) => {
+    const p = CB_PENDING[cbPendKey(o.fam, o.id, o.chan)];
+    const held = p && Object.prototype.hasOwnProperty.call(p, field);
+    return '<td class="num"><input type="number" step="0.01" value="' + esc(held ? p[field] : val) + '"'
+      + ' data-cb="' + esc(o.fam+'|'+o.id) + '" data-chan="' + o.chan + '" data-f="' + field + '"'
+      + (held ? ' title="Not saved yet - press the green tick on this row (or Enter)"' : '')
+      + ' style="width:80px;text-align:right' + (held ? ';background:#fff8d6;border-color:#e3c65a' : '') + '"></td>';
+  };
   const rows = list.map(o => {
     const v = costBookAt(o.id, o.chan, asAt, o.fam) || {};
     const rec = COSTBOOK[cbId(o.fam,o.id)];
@@ -7499,7 +7518,10 @@ function renderCostBook(){
         '>selling</span>'
       : '';
     const justSet = CB_JUST_SET.has(cbId(o.fam,o.id) + '::' + o.chan) && !noCost(o);
-    return '<tr' + (justSet ? ' style="background:#eefaf4"' : (o.live && noCost(o) ? ' style="background:#fff5f5"' : '')) + '>' +
+    const dirty = !!CB_PENDING[cbPendKey(o.fam, o.id, o.chan)];
+    return '<tr' + (dirty ? ' style="background:#fffbe9"'
+        : justSet ? ' style="background:#eefaf4"'
+        : (o.live && noCost(o) ? ' style="background:#fff5f5"' : '')) + '>' +
       '<td style="max-width:330px">' +
         '<div style="font-size:11.5px;color:var(--muted)">' + (() => {
           // The seller SKU leads, because that is what a product is recognised by and what gets
@@ -7533,7 +7555,16 @@ function renderCostBook(){
       inp(o,'oper', n2(v.oper)) +
       inp(o,'ref', nRef(v.ref)) +
       '<td>' + (v.from ? esc(v.from) : '<span style="color:var(--muted)">not set</span>') + '</td>' +
-      '<td><button class="act-link" data-cbhist="' + esc(o.fam+'|'+o.id) + '" data-cbchan="' + o.chan + '" title="Dated cost history for this offer - add, change or delete a single version">&#128197; ' + nv + '</button></td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn" data-cbsave="' + esc(o.fam+'|'+o.id) + '" data-cbsavechan="' + o.chan + '"' +
+          ' title="' + (dirty
+            ? esc('Save the figures typed in this row, effective ' + asAt)
+            : esc('Nothing typed in this row yet. Change a figure, then press this to save it.')) + '"' +
+          ' style="padding:4px 9px;font-size:11px' +
+            (dirty ? ';background:var(--green);border-color:var(--green);color:#fff' : ';opacity:.5') + '"' +
+        '>&#10003;</button> ' +
+        '<button class="act-link" data-cbhist="' + esc(o.fam+'|'+o.id) + '" data-cbchan="' + o.chan + '" title="Dated cost history for this offer - add, change or delete a single version">&#128197; ' + nv + '</button>' +
+      '</td>' +
     '</tr>';
   }).join('');
   document.querySelector('#cbTable tbody').innerHTML = rows ||
@@ -7621,19 +7652,131 @@ function renderCostBook(){
       } else { console.log(txt); showBanner('The report is in the browser console (F12).', 'error'); }
     });
   }
-  document.querySelectorAll('#cbTable input[data-cb]').forEach(el => el.addEventListener('change', () => {
-    const key = el.dataset.cb, chan = el.dataset.chan, field = el.dataset.f;
-    const bar = key.indexOf('|'), fam = key.slice(0,bar), id = key.slice(bar+1);
-    const raw = el.value.trim();
-    const val = raw === '' ? null : (field === 'ref' ? (+raw > 1 ? +raw/100 : +raw) : +raw);
-    const k = cbId(fam, id);
+  // ---- typing, then saving a row on purpose ----
+  const CB_FLD = {buy:'COGS', ship:'shipping', fee:'FBA fee', oper:'operational', ref:'referral %'};
+  const cbSplitPend = pk => {
+    const i = pk.lastIndexOf('::'), key = pk.slice(0, i), bar = key.indexOf('|');
+    return {fam: key.slice(0, bar), id: key.slice(bar + 1), chan: pk.slice(i + 2)};
+  };
+  // One field of one offer. Shared by the row tick, Enter and Save all, so the three gestures
+  // cannot drift apart.
+  const cbWriteField = (fam, id, chan, field, raw) => {
+    const txt = String(raw == null ? '' : raw).trim();
+    const val = txt === '' ? null : (field === 'ref' ? (+txt > 1 ? +txt/100 : +txt) : +txt);
+    if(val != null && !isFinite(val)) return false;
     const known = all.find(x => x.fam===fam && x.id===id);
     cbSetCost(fam, id, chan, field, val, asAt, known ? known.name : '');
+    return true;
+  };
+  // Every figure typed into one row, written in a single pass - so COGS, shipping, operational
+  // and referral land in ONE dated version, and the table is rebuilt once at the end rather than
+  // after each box.
+  const cbSaveRow = (fam, id, chan) => {
+    const pk = cbPendKey(fam, id, chan), p = CB_PENDING[pk];
+    if(!p) return [];
+    const done = [];
+    for(const field of Object.keys(p)){
+      // What is in the box right now beats what was staged, so a digit typed a moment ago can
+      // never be left behind by the very gesture meant to save it.
+      const el = document.querySelector('#cbTable input[data-cb=' + JSON.stringify(fam + '|' + id)
+        + '][data-chan=' + JSON.stringify(chan) + '][data-f=' + JSON.stringify(field) + ']');
+      if(cbWriteField(fam, id, chan, field, el ? el.value : p[field])) done.push(CB_FLD[field] || field);
+    }
+    delete CB_PENDING[pk];
     CB_JUST_SET.add(cbId(fam,id) + '::' + chan);
+    return done;
+  };
+  const cbCommit = msg => {
     if(STATE.raw.master.length || Object.keys(COSTBOOK).length) STATE.master = buildMaster();
     if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
     keepFocus('#cbTable', renderCostBook);
-    showBanner('Saved ' + cbChanLabel(fam, chan) + ' ' + field + ' for ' + id + ', effective ' + asAt + '.', 'success');
+    showBanner(msg, 'success');
+  };
+  const cbSavedMsg = (fam, id, chan, done) => 'Saved ' + done.join(', ') + ' for ' + id
+    + ' (' + cbChanLabel(fam, chan) + '), effective ' + asAt + '.';
+  // Unsaved work has to be visible, because a pending edit now outlives a re-render and a filter
+  // change - without this line a figure typed under one filter could sit unsaved out of sight.
+  const cbShowUnsaved = () => {
+    const box = document.getElementById('cbUnsaved');
+    if(!box) return;
+    const keys = Object.keys(CB_PENDING).filter(k => Object.keys(CB_PENDING[k] || {}).length);
+    if(!keys.length){ box.className = 'hidden'; box.innerHTML = ''; return; }
+    box.className = 'notice';
+    box.style.background = '#fffbe9';
+    box.style.borderColor = '#e3c65a';
+    box.innerHTML = '<b>&#9888; ' + fmtNum(keys.length) + ' row(s) typed but not saved.</b> '
+      + 'Press the green &#10003; on a row to save that product, or do the lot: '
+      + '<button class="btn" id="cbSaveAll" style="padding:2px 9px;font-size:11px;background:var(--green);border-color:var(--green);color:#fff">&#10003; Save all</button> '
+      + '<button class="btn" id="cbDiscardAll" style="padding:2px 9px;font-size:11px;margin-left:4px">Discard</button>';
+    document.getElementById('cbSaveAll').addEventListener('click', () => {
+      let rows = 0, fields = 0;
+      for(const pk of Object.keys(CB_PENDING)){
+        const q = cbSplitPend(pk), done = cbSaveRow(q.fam, q.id, q.chan);
+        if(done.length){ rows++; fields += done.length; }
+      }
+      CB_PENDING = {};
+      cbCommit(rows
+        ? 'Saved ' + fmtNum(fields) + ' figure(s) across ' + fmtNum(rows) + ' row(s), effective ' + asAt + '.'
+        : 'Nothing to save.');
+    });
+    document.getElementById('cbDiscardAll').addEventListener('click', () => {
+      CB_PENDING = {};
+      keepFocus('#cbTable', renderCostBook);
+      showBanner('Unsaved cost edits discarded - nothing was written.', 'success');
+    });
+  };
+  cbShowUnsaved();
+  // Marking the row by hand rather than re-rendering it: the row you are typing in must not move.
+  const cbMarkDirty = el => {
+    el.style.background = '#fff8d6';
+    el.style.borderColor = '#e3c65a';
+    el.title = 'Not saved yet - press the green tick on this row (or Enter)';
+    const tr = el.closest('tr');
+    if(tr){
+      tr.style.background = '#fffbe9';
+      const b = tr.querySelector('[data-cbsave]');
+      if(b){
+        b.style.opacity = 1;
+        b.style.background = 'var(--green)';
+        b.style.borderColor = 'var(--green)';
+        b.style.color = '#fff';
+        b.title = 'Save the figures typed in this row, effective ' + asAt;
+      }
+    }
+    cbShowUnsaved();
+  };
+  document.querySelectorAll('#cbTable input[data-cb]').forEach(el => {
+    const key = el.dataset.cb, chan = el.dataset.chan, bar = key.indexOf('|');
+    const fam = key.slice(0, bar), id = key.slice(bar + 1);
+    const stage = () => {
+      const pk = cbPendKey(fam, id, chan);
+      (CB_PENDING[pk] || (CB_PENDING[pk] = {}))[el.dataset.f] = el.value;
+      cbMarkDirty(el);
+    };
+    el.addEventListener('input', stage);
+    el.addEventListener('keydown', ev => {
+      if(ev.key === 'Enter'){
+        ev.preventDefault();
+        stage();
+        const done = cbSaveRow(fam, id, chan);
+        cbCommit(done.length ? cbSavedMsg(fam, id, chan, done) : 'Nothing to save on this row.');
+      } else if(ev.key === 'Escape'){
+        ev.preventDefault();
+        delete CB_PENDING[cbPendKey(fam, id, chan)];
+        keepFocus('#cbTable', renderCostBook);
+        showBanner('Row put back to the costs it has saved.', 'success');
+      }
+    });
+  });
+  document.querySelectorAll('#cbTable [data-cbsave]').forEach(b => b.addEventListener('click', () => {
+    const key = b.dataset.cbsave, chan = b.dataset.cbsavechan, bar = key.indexOf('|');
+    const fam = key.slice(0, bar), id = key.slice(bar + 1);
+    const done = cbSaveRow(fam, id, chan);
+    if(!done.length){
+      showBanner('Nothing new typed in this row - its costs are already saved.', 'success');
+      return;
+    }
+    cbCommit(cbSavedMsg(fam, id, chan, done));
   }));
   document.querySelectorAll('#cbTable [data-cbhist]').forEach(b => b.addEventListener('click', () => {
     CB_OPEN = b.dataset.cbhist;
