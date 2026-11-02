@@ -373,6 +373,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
     <div class="submenu" id="analyticsG">
       <button class="nav-item" data-page="daily"><span class="ic">📅</span>Daily Analysis</button>
       <button class="nav-item" data-page="weekly"><span class="ic">🗓️</span>Weekly Analysis</button>
+      <button class="nav-item" data-page="monthly"><span class="ic">📆</span>Monthly Analysis</button>
       <button class="nav-item" data-page="skuperf"><span class="ic">📉</span>SKU Performance</button>
       <button class="nav-item" data-page="intel"><span class="ic">🧠</span>Product Intelligence</button>
       <button class="nav-item" data-page="comparison"><span class="ic">⚖️</span>Comparison Charts</button>
@@ -1103,13 +1104,50 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
         <button class="btn secondary wk-v" data-v="profit">Profit</button>
         <button class="btn secondary wk-v" data-v="both">Both</button>
         <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer;margin-left:10px">
-          <input type="checkbox" id="wkMoved" checked> Hide listings with no sales</label>
+          <input type="checkbox" id="wkMoved" checked> Hide listings with no activity</label>
         <span style="flex:1"></span>
         <button class="btn secondary" id="wkExport">⬇️ Export</button>
       </div>
       <div class="sub-title" id="wkSub"></div>
       <div id="wkNotice"></div>
       <div class="table-wrap" style="max-height:720px"><table id="wkTable" class="freeze-1">
+        <thead></thead><tbody></tbody><tfoot></tfoot>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="page" id="page-monthly">
+    <div class="card" style="margin-bottom:14px">
+      <div class="toolbar">
+        <h3 style="margin:0"><span class="dot" style="background:var(--ch-amazon)"></span>Monthly Analysis</h3>
+        <span style="flex:1"></span>
+        <input type="search" id="moSearch" placeholder="Search SKU / ASIN / product..." style="min-width:220px">
+        <div class="count" id="moCount"></div>
+      </div>
+      <div class="fbar" style="flex-wrap:wrap;gap:6px">
+        <span class="flabel">Months</span>
+        <button class="btn secondary mo-n" data-n="3">Last 3</button>
+        <button class="btn mo-n" data-n="6">Last 6</button>
+        <button class="btn secondary mo-n" data-n="12">Last 12</button>
+        <button class="btn secondary mo-n" data-n="24">Last 24</button>
+        <span class="flabel" style="margin-left:10px">Sort</span>
+        <button class="btn mo-s" data-s="latest">Latest month</button>
+        <button class="btn secondary mo-s" data-s="total">Total units</button>
+        <button class="btn secondary mo-s" data-s="drop">Biggest drop</button>
+        <button class="btn secondary mo-s" data-s="rise">Biggest rise</button>
+        <button class="btn secondary mo-s" data-s="name">Product</button>
+        <span class="flabel" style="margin-left:10px">Show</span>
+        <button class="btn mo-v" data-v="units">Units</button>
+        <button class="btn secondary mo-v" data-v="profit">Profit</button>
+        <button class="btn secondary mo-v" data-v="both">Both</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer;margin-left:10px">
+          <input type="checkbox" id="moMoved" checked> Hide listings with no activity</label>
+        <span style="flex:1"></span>
+        <button class="btn secondary" id="moExport">⬇️ Export</button>
+      </div>
+      <div class="sub-title" id="moSub"></div>
+      <div id="moNotice"></div>
+      <div class="table-wrap" style="max-height:720px"><table id="moTable" class="freeze-1">
         <thead></thead><tbody></tbody><tfoot></tfoot>
       </table></div>
     </div>
@@ -4796,7 +4834,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-10-30-e';
+const BUILD_ID = '2026-11-02-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5269,10 +5307,10 @@ function buildAll(){
 let _cmpCache = null;
 function recompute(){
   STATE.channels = {}; STATE.extras = {};
-  // Any recompute means the data or the filters moved, so the month-by-month roll-up behind
-  // Comparison PNL and Weekly Analysis are stale. Safe to clear here: both fill their cache only
-  // after their own recompute has finished, so neither clears what it just built.
-  _cmpCache = null; _wkCache = null;
+  // Any recompute means the data or the filters moved, so the roll-ups behind Comparison PNL and
+  // the Weekly / Monthly pages are stale. Safe to clear here: each fills its cache only after its
+  // own recompute has finished, so none of them clears what it just built.
+  _cmpCache = null; panResetCache();
   // TikTok + eBay first: Amazon's date-proration uses their dated span as the period basis
   const tt = computeTikTok(); if(tt){ STATE.channels.tiktok = tt.rows; STATE.extras.tiktok = tt.extras; }
   const eb = computeEbay(); if(eb){ STATE.channels.ebay = eb.rows; STATE.extras.ebay = eb.extras; }
@@ -5776,8 +5814,8 @@ function kpiCard(c){
 }
 
 // ================= pages =================
-const PAGE_TITLES = {cmppnl:'Comparison PNL', weekly:'Weekly Analysis', dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Product ROIs', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
-const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily','cmppnl','weekly']);
+const PAGE_TITLES = {cmppnl:'Comparison PNL', weekly:'Weekly Analysis', monthly:'Monthly Analysis', dashboard:'Dashboard', consolidated:'Consolidated Dashboard', orders:'Orders', refunds:'Refunds', inventory:'Inventory', skumgt:'SKU Management', pls:'PLS - Profit & Loss Statement', products:'Product ROIs', skuperf:'SKU Performance', intel:'Product Intelligence', comparison:'Comparison Charts', economics:'Product Economics', fees:'Product Fee Changes', bsr:'BSR Changes', pricing:'Pricing Health', reports:'Reports', opex:'OpEx', advertising:'Advertising', reviews:'Reviews & Feedback', workspace:'WorkSpace', grow:'Grow your Sales', tasks:'Tasks', support:'Support'};
+const NEED_DATA = new Set(['dashboard','consolidated','orders','refunds','pls','skuperf','intel','comparison','economics','fees','advertising','grow','daily','cmppnl','weekly','monthly']);
 
 function showPage(id){
   STATE.page = id;
@@ -5808,7 +5846,7 @@ function renderPage(){
       inventory:renderStock, pls:renderPLS, skuperf:renderSkuPerf, intel:renderIntel, comparison:renderComparison,
       economics:renderEconomics, fees:renderFees, reports:renderReports, opex:renderOpex, advertising:renderAds,
       grow:renderGrow, tasks:renderTasks, workspace:renderLoadedReports, products:renderProducts, skumgt:renderSkuMgt,
-      costbook:renderCostBook, daily:renderDaily, cmppnl:renderComparePL, weekly:renderWeekly}[id] || (()=>{}))();
+      costbook:renderCostBook, daily:renderDaily, cmppnl:renderComparePL, weekly:renderWeekly, monthly:renderMonthly}[id] || (()=>{}))();
   } catch(err){
     showBanner('Render error: ' + err.message, 'error');
     console.error(err);
@@ -6806,7 +6844,7 @@ let COSTS_PULLED = false;          // likewise the Cost Book and Price Book
 let VAT_SETTINGS_LOCAL = false;    // this browser holds VAT settings - its own or the shared ones
 // Changes made here that the cloud has not confirmed, per section, kept across reloads. While
 // a section is dirty this browser's copy is the newest and wins; once a save lands, the cloud's.
-let ACCT_DIRTY = {vat:0, notes:0, hist:0};
+let ACCT_DIRTY = {vat:0, notes:0, hist:0, pnotes:0};
 let ACCT_EDIT_SEQ = 0;
 let ACCT_SAVE_GEN = 0;             // bumped on every save that lands
 let COST_EDIT_SEQ = 0, COST_SAVED_SEQ = 0;   // cost / price edits made, and sent
@@ -6883,8 +6921,8 @@ function loadAcctSettings(){
   let saved = null;
   try{ saved = JSON.parse(store.get(lsKey(LS_ACCTSETTINGS))); }catch(e){ saved = null; }
   const d = (saved && saved.dirty && typeof saved.dirty === 'object') ? saved.dirty : {};
-  ACCT_DIRTY = {vat: +d.vat || 0, notes: +d.notes || 0, hist: +d.hist || 0, items: +d.items || 0};
-  ACCT_EDIT_SEQ = Math.max(ACCT_DIRTY.vat, ACCT_DIRTY.notes, ACCT_DIRTY.hist, ACCT_DIRTY.items);
+  ACCT_DIRTY = {vat: +d.vat || 0, notes: +d.notes || 0, hist: +d.hist || 0, items: +d.items || 0, pnotes: +d.pnotes || 0};
+  ACCT_EDIT_SEQ = Math.max(ACCT_DIRTY.vat, ACCT_DIRTY.notes, ACCT_DIRTY.hist, ACCT_DIRTY.items, ACCT_DIRTY.pnotes);
   VAT_SETTINGS_LOCAL = !!(saved && saved.vat);
   applyVatSettings(saved && saved.vat ? saved.vat : null);
   // Notes and history from before they were ever sent anywhere: the cloud has never had them,
@@ -6893,6 +6931,7 @@ function loadAcctSettings(){
     if(!isEmptyObj(CMP_NOTES))  ACCT_DIRTY.notes = ++ACCT_EDIT_SEQ;
     if(!isEmptyObj(PNL_HIST))   ACCT_DIRTY.hist  = ++ACCT_EDIT_SEQ;
     if(!isEmptyObj(ASIN_ITEMS)) ACCT_DIRTY.items = ++ACCT_EDIT_SEQ;
+    if(!isEmptyObj(WK_NOTES) || !isEmptyObj(MO_NOTES)) ACCT_DIRTY.pnotes = ++ACCT_EDIT_SEQ;
     if(ACCT_DIRTY.notes || ACCT_DIRTY.hist || ACCT_DIRTY.items) writeLocalAcctSettings();
   }
 }
@@ -6931,11 +6970,15 @@ function acctSettingsPayload(){
     out.cmpNotes = CMP_NOTES;
     out.pnlHist = PNL_HIST;
     out.asinItems = ASIN_ITEMS;
+    out.wkNotes = WK_NOTES;
+    out.moNotes = MO_NOTES;
     if(VAT_SETTINGS_LOCAL) out.vatSettings = currentVatSettings();
   } else {
     out.cmpNotes  = ACCT_DIRTY.notes ? Object.assign({}, remote.cmpNotes || {}, CMP_NOTES)   : (remote.cmpNotes || CMP_NOTES);
     out.asinItems = ACCT_DIRTY.items ? Object.assign({}, remote.asinItems || {}, ASIN_ITEMS) : (remote.asinItems || ASIN_ITEMS);
     out.pnlHist  = ACCT_DIRTY.hist  ? mergeHist(remote.pnlHist, PNL_HIST)                 : (remote.pnlHist  || PNL_HIST);
+    out.wkNotes  = ACCT_DIRTY.pnotes ? Object.assign({}, remote.wkNotes || {}, WK_NOTES)  : (remote.wkNotes || WK_NOTES);
+    out.moNotes  = ACCT_DIRTY.pnotes ? Object.assign({}, remote.moNotes || {}, MO_NOTES)  : (remote.moNotes || MO_NOTES);
     if(ACCT_DIRTY.vat || (!remote.vatSettings && VAT_SETTINGS_LOCAL)) out.vatSettings = currentVatSettings();
   }
   for(const k of Object.keys(out)) if(out[k] === undefined) delete out[k];
@@ -6961,6 +7004,15 @@ function applyRemoteAcctSettings(d){
   else if(cloudItems) ASIN_ITEMS = Object.assign({}, cloudItems);
   else if(!isEmptyObj(ASIN_ITEMS)) pushBack = true;
 
+  // The Weekly and Monthly pages' two notes per listing.
+  for(const [field, get, set] of [['wkNotes', () => WK_NOTES, v => WK_NOTES = v],
+                                  ['moNotes', () => MO_NOTES, v => MO_NOTES = v]]){
+    const cloud = (d[field] && typeof d[field] === 'object') ? d[field] : null;
+    if(ACCT_DIRTY.pnotes){ set(Object.assign({}, cloud || {}, get())); pushBack = true; }
+    else if(cloud) set(Object.assign({}, cloud));
+    else if(!isEmptyObj(get())) pushBack = true;
+  }
+
   const cloudHist = (d.pnlHist && typeof d.pnlHist === 'object') ? d.pnlHist : null;
   if(ACCT_DIRTY.hist){ PNL_HIST = mergeHist(cloudHist, PNL_HIST); pushBack = true; }
   else if(cloudHist) PNL_HIST = mergeHist(cloudHist, null);
@@ -6970,11 +7022,14 @@ function applyRemoteAcctSettings(d){
   store.set(lsKey(LS_CMPNOTES), JSON.stringify(CMP_NOTES));
   store.set(lsKey(LS_PNLHIST), JSON.stringify(PNL_HIST));
   store.set(lsKey(LS_ASINITEMS), JSON.stringify(ASIN_ITEMS));
+  store.set(lsKey(LS_WKNOTES), JSON.stringify(WK_NOTES));
+  store.set(lsKey(LS_MONOTES), JSON.stringify(MO_NOTES));
   writeLocalAcctSettings();
-  _cmpCache = null; _wkCache = null; _histFamMap = null; _famNorm = null;
+  _cmpCache = null; panResetCache(); _histFamMap = null; _famNorm = null;
   if(pushBack) cloudSaveCostBook();
   if(JSON.stringify(currentVatSettings()) !== vatBefore) refresh();
   else if(STATE.page === 'cmppnl' && STATE.master) renderComparePL();
+  else if((STATE.page === 'weekly' || STATE.page === 'monthly') && STATE.master) renderPage();
 }
 // Read early, beside the master sheet - the cost-book pull waits for the uploaded files, which
 // can take long enough for a note to be typed or a VAT box ticked in the meantime.
@@ -8515,52 +8570,85 @@ function applyAsinItems(parsed){
     ASIN_ITEMS[a] = it;
   }
   saveAsinItems();
-  _cmpCache = null; _wkCache = null; _histFamMap = null; _famNorm = null;
+  _cmpCache = null; panResetCache(); _histFamMap = null; _famNorm = null;
   return {added, changed};
 }
 
-// ================= Weekly Analysis =================
-// Units per LISTING per week, the shape of the sheet this replaces: one line per ASIN / SKU so
-// an FBA offer and its FBM twin stay apart, a column per week, and two notes of your own at the
-// end. Weeks run Monday to Sunday.
+// ================= Weekly / Monthly Analysis =================
+// Units per LISTING per period, the shape of the sheet this replaces: one line per ASIN / SKU so
+// an FBA offer and its FBM twin stay apart, a column per period, and two notes of your own at the
+// end.
 //
-// Each week is a real run of the engines pinned to those seven days - the same route Comparison
-// PNL takes for a month - so a week here is the sum of the same P&L the Dashboard shows for that
-// range, not a total carved up afterwards.
+// Weekly buckets the days Monday to Sunday, Monthly by calendar month. Everything else - the two
+// notes, the Units / Profit / Both switch, the sorting and the export - is the same on both pages,
+// so it lives here once and each page hands over its own bucketing.
+//
+// Each column is a real run of the engines pinned to that period - the same route Comparison PNL
+// takes for a month - so a column here is the sum of the same P&L the Dashboard shows for that
+// range, not a longer total carved up afterwards.
 const LS_WKNOTES = 'mcpd_wk_notes';
-let WK_NOTES = {};           // "channel|key" -> {rank, sales}
-let WK_N = 5, WK_SORT = 'latest', WK_Q = '', WK_VIEW = 'units';
-let _wkCache = null;
+const LS_MONOTES = 'mcpd_mo_notes';
+let WK_NOTES = {};           // "channel|key" -> {rank, sales}, the weekly page's notes
+let MO_NOTES = {};           // the same for the monthly page, kept apart so each reads cleanly
 function loadWkNotes(){ try{ WK_NOTES = JSON.parse(store.get(lsKey(LS_WKNOTES))) || {}; }catch(e){ WK_NOTES = {}; } }
-function saveWkNotes(){ try{ store.set(lsKey(LS_WKNOTES), JSON.stringify(WK_NOTES)); }catch(e){} markAcctDirty('wknotes'); cloudSaveCostBook(); }
+function loadMoNotes(){ try{ MO_NOTES = JSON.parse(store.get(lsKey(LS_MONOTES))) || {}; }catch(e){ MO_NOTES = {}; } }
+function savePanNotes(P){
+  try{ store.set(lsKey(P.lsNotes), JSON.stringify(P.notes())); }catch(e){}
+  markAcctDirty('pnotes'); cloudSaveCostBook();
+}
 
+const MON3 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const mondayOf = iso => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0,10); };
+const monthOf = iso => String(iso).slice(0,7);
+const lastDayOf = m => { const [y, mm] = String(m).split('-').map(Number); return new Date(Date.UTC(y, mm, 0)).toISOString().slice(0,10); };
 const wkLabel = w => {
   const a = new Date(w + 'T00:00:00Z'), b = new Date(w + 'T00:00:00Z');
   b.setUTCDate(b.getUTCDate() + 6);
-  const f = d => d.getUTCDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
-  return f(a) + ' – ' + f(b);
+  const f = d => d.getUTCDate() + ' ' + MON3[d.getUTCMonth()];
+  return f(a) + ' – ' + f(b);        // a real en dash: this label also heads an export column
 };
-// Every week the SELECTED channels traded in, newest last. Following the filter matters: taking
-// every channel put up a column for a week when only eBay sold anything, so choosing Amazon gave
-// a row of dashes across weeks it was never going to have figures for.
-function wkWeeks(){
+const moLabel = m => { const [y, mm] = String(m).split('-'); return MON3[+mm - 1] + ' ' + y; };
+
+const PANELS = {
+  weekly: {
+    id: 'wk', noun: 'week', sheet: 'Weekly', file: 'weekly-analysis',
+    lsNotes: LS_WKNOTES, notes: () => WK_NOTES,
+    bucketOf: mondayOf, label: wkLabel,
+    rangeOf: w => { const e = new Date(w + 'T00:00:00Z'); e.setUTCDate(e.getUTCDate() + 6); return [w, e.toISOString().slice(0,10)]; },
+    blurb: 'Monday to Sunday', span: 'those seven days',
+    N: 5, sort: 'latest', q: '', view: 'units', cache: null
+  },
+  monthly: {
+    id: 'mo', noun: 'month', sheet: 'Monthly', file: 'monthly-analysis',
+    lsNotes: LS_MONOTES, notes: () => MO_NOTES,
+    bucketOf: monthOf, label: moLabel,
+    rangeOf: m => [m + '-01', lastDayOf(m)],
+    blurb: 'first to last day of the calendar month', span: 'that month',
+    N: 6, sort: 'latest', q: '', view: 'units', cache: null
+  }
+};
+function panResetCache(){ for(const k in PANELS) PANELS[k].cache = null; }
+
+// Every period the SELECTED channels traded in, newest last. Following the filter matters: taking
+// every channel put up a column for a period when only eBay sold anything, so choosing Amazon gave
+// a row of dashes across periods it was never going to have figures for.
+function panBuckets(P){
   const set = new Set();
   for(const ch of filteredChannels()){
     const d = (STATE.extras[ch] || {}).daily || {};
-    for(const k of Object.keys(d)) if(k && k.length >= 10) set.add(mondayOf(k));
+    for(const k of Object.keys(d)) if(k && k.length >= 10) set.add(P.bucketOf(k));
   }
   return [...set].sort();
 }
-function wkSeries(weeks){
-  const key = weeks.join(',') + '|' + filteredChannels().join(',');
-  if(_wkCache && _wkCache.key === key) return _wkCache.val;
+function panSeries(P, keys){
+  const ck = keys.join(',') + '|' + filteredChannels().join(',');
+  if(P.cache && P.cache.key === ck) return P.cache.val;
   const sf = STATE.dateFrom, st = STATE.dateTo;
-  const byRow = {};            // "ch|key" -> {ch, key, name, sku, w:{week:{units, profit}}}
+  const byRow = {};            // "ch|key" -> {ch, key, name, w:{period:{units, profit}}}
   try{
-    for(const w of weeks){
-      const end = new Date(w + 'T00:00:00Z'); end.setUTCDate(end.getUTCDate() + 6);
-      STATE.dateFrom = w; STATE.dateTo = end.toISOString().slice(0,10);
+    for(const b of keys){
+      const [from, to] = P.rangeOf(b);
+      STATE.dateFrom = from; STATE.dateTo = to;
       recompute();
       for(const ch of filteredChannels()){
         for(const r of (STATE.channels[ch] || [])){
@@ -8568,7 +8656,7 @@ function wkSeries(weeks){
           const id = ch + '|' + r.key;
           const e = byRow[id] = byRow[id] || {ch, key:r.key, name:r.name || '', w:{}};
           if(!e.name && r.name) e.name = r.name;
-          const c = e.w[w] = e.w[w] || {units:0, profit:0};
+          const c = e.w[b] = e.w[b] || {units:0, profit:0};
           c.units += r.units || 0;
           c.profit += r.net_profit_ex || 0;
         }
@@ -8576,38 +8664,42 @@ function wkSeries(weeks){
     }
   } finally { STATE.dateFrom = sf; STATE.dateTo = st; recompute(); }
   const val = Object.values(byRow);
-  _wkCache = {key, val};
+  P.cache = {key: ck, val};        // after the finally: that last recompute clears every cache
   return val;
 }
-function renderWeekly(){
-  const all = wkWeeks();
-  const head = document.querySelector('#wkTable thead');
-  const body = document.querySelector('#wkTable tbody');
-  const foot = document.querySelector('#wkTable tfoot');
+function renderPanel(P){
+  const all = panBuckets(P);
+  const head = document.querySelector('#' + P.id + 'Table thead');
+  const body = document.querySelector('#' + P.id + 'Table tbody');
+  const foot = document.querySelector('#' + P.id + 'Table tfoot');
+  const NOTES = P.notes();
   if(!all.length){
     head.innerHTML = ''; foot.innerHTML = '';
-    body.innerHTML = '<tr><td style="color:var(--muted);padding:18px">No dated sales loaded, so there are no weeks to show. Load a channel&rsquo;s reports in WorkSpace.</td></tr>';
-    document.getElementById('wkCount').textContent = '';
-    document.getElementById('wkSub').textContent = '';
+    body.innerHTML = '<tr><td style="color:var(--muted);padding:18px">No dated sales loaded, so there are no '
+      + P.noun + 's to show. Load a channel&rsquo;s reports in WorkSpace.</td></tr>';
+    document.getElementById(P.id + 'Count').textContent = '';
+    document.getElementById(P.id + 'Sub').textContent = '';
     return;
   }
-  const weeks = all.slice(-WK_N);                       // oldest left, newest right - like the sheet
-  const rows = wkSeries(weeks);
-  const cur = weeks[weeks.length-1], prev = weeks[weeks.length-2];
-  const v = (r, w) => r.w[w] || {units:0, profit:0};
-  const q = WK_Q;
-  const onlyMoved = document.getElementById('wkMoved').checked;
+  const keys = all.slice(-P.N);                         // oldest left, newest right - like the sheet
+  const rows = panSeries(P, keys);
+  const cur = keys[keys.length-1], prev = keys[keys.length-2];
+  const v = (r, b) => r.w[b] || {units:0, profit:0};
+  const q = P.q;
+  const onlyMoved = document.getElementById(P.id + 'Moved').checked;
   const list = rows.filter(r => {
-    if(onlyMoved && !weeks.some(w => v(r,w).units)) return false;
+    // "Nothing happened" has to mean no units AND no money, or a listing that sold nothing while
+    // still burning ad spend would drop out and the TOTAL row would stop matching the Dashboard.
+    if(onlyMoved && !keys.some(b => { const c = v(r,b); return c.units || Math.abs(c.profit) > 0.004; })) return false;
     if(!q) return true;
     return (r.key + ' ' + r.name).toLowerCase().includes(q);
   });
-  const tot  = r => weeks.reduce((a,w) => a + v(r,w).units, 0);
-  const totP = r => weeks.reduce((a,w) => a + v(r,w).profit, 0);
+  const tot  = r => keys.reduce((a,b) => a + v(r,b).units, 0);
+  const totP = r => keys.reduce((a,b) => a + v(r,b).profit, 0);
   // Sorting follows what is on screen: asking for the biggest drop while looking at profit
   // should rank by profit, not by units.
-  const byP = WK_VIEW === 'profit';
-  const metric = (r,w) => byP ? v(r,w).profit : v(r,w).units;
+  const byP = P.view === 'profit';
+  const metric = (r,b) => byP ? v(r,b).profit : v(r,b).units;
   const delta = r => prev ? metric(r,cur) - metric(r,prev) : 0;
   const sorters = {
     latest: (a,b) => metric(b,cur) - metric(a,cur),
@@ -8616,73 +8708,101 @@ function renderWeekly(){
     rise:   (a,b) => delta(b) - delta(a),
     name:   (a,b) => (a.name || a.key).localeCompare(b.name || b.key)
   };
-  list.sort(sorters[WK_SORT] || sorters.latest);
+  list.sort(sorters[P.sort] || sorters.latest);
 
   const BL = 'border-left:2px solid var(--border)';
   head.innerHTML = '<tr><th style="min-width:150px;text-align:left">SKU / ASIN</th><th style="min-width:200px;text-align:left">Item</th>'
-    + weeks.map(w => `<th class="num" style="${BL}">${wkLabel(w)}</th>`).join('')
-    + '<th class="num">Total ' + (WK_VIEW === 'profit' ? 'Profit' : 'Units') + '</th>'
-    + (WK_VIEW === 'both' ? '<th class="num">Total Profit</th>' : '')
+    + keys.map(b => '<th class="num" style="' + BL + '">' + P.label(b) + '</th>').join('')
+    + '<th class="num">Total ' + (P.view === 'profit' ? 'Profit' : 'Units') + '</th>'
+    + (P.view === 'both' ? '<th class="num">Total Profit</th>' : '')
     + '<th style="min-width:170px">Ranking Analysis</th><th style="min-width:170px">Sales Analysis</th></tr>';
 
   const CAP = 400;
   const shown = list.slice(0, CAP);
-  const noteCell = (id, kind) => `<td><textarea data-wkn="${esc(id)}" data-kind="${kind}" rows="2" placeholder="&mdash;"
-    style="width:100%;min-width:160px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:11.5px;resize:vertical">${esc((WK_NOTES[id]||{})[kind] || '')}</textarea></td>`;
+  const noteCell = (id, kind) => '<td><textarea data-pan="' + esc(id) + '" data-kind="' + kind + '" rows="2" placeholder="&mdash;"'
+    + ' style="width:100%;min-width:160px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:11.5px;resize:vertical">'
+    + esc((NOTES[id]||{})[kind] || '') + '</textarea></td>';
   body.innerHTML = shown.map(r => {
     const id = r.ch + '|' + r.key;
     return '<tr><td style="max-width:170px"><span class="chip ' + r.ch + '">' + (CH_NAME[r.ch]||r.ch) + '</span> '
       + '<span title="' + esc(r.key) + '">' + esc(String(r.key).substr(0,22)) + '</span></td>'
       + '<td title="' + esc(r.name) + '" style="max-width:230px;overflow:hidden;text-overflow:ellipsis">' + esc(r.name.substr(0,40)) + '</td>'
-      + weeks.map((w,i) => {
-          const c = v(r,w);
-          const last = i === weeks.length-1;
+      + keys.map((b,i) => {
+          const c = v(r,b);
+          const last = i === keys.length-1;
           const any = c.units || Math.abs(c.profit) > 0.004;
           const u = c.units ? fmtNum(c.units) : '<span style="color:var(--muted)">&mdash;</span>';
           const pf = '<span style="color:' + (c.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(c.profit) + '</span>';
-          const body = WK_VIEW === 'units'  ? u
-                     : WK_VIEW === 'profit' ? (any ? pf : '<span style="color:var(--muted)">&mdash;</span>')
+          const cell = P.view === 'units'  ? u
+                     : P.view === 'profit' ? (any ? pf : '<span style="color:var(--muted)">&mdash;</span>')
                      : u + (any ? '<div style="font-size:10.5px">' + pf + '</div>' : '');
-          return '<td class="num" style="' + BL + (last ? ';font-weight:700' : '') + '">' + body + '</td>';
+          return '<td class="num" style="' + BL + (last ? ';font-weight:700' : '') + '">' + cell + '</td>';
         }).join('')
-      + '<td class="num" style="font-weight:800">' + (WK_VIEW === 'profit' ? fmtGBP0(totP(r)) : fmtNum(tot(r))) + '</td>'
-      + (WK_VIEW === 'both'
+      + '<td class="num" style="font-weight:800">' + (P.view === 'profit' ? fmtGBP0(totP(r)) : fmtNum(tot(r))) + '</td>'
+      + (P.view === 'both'
           ? '<td class="num" style="font-weight:800;color:' + (totP(r) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(totP(r)) + '</td>'
           : '')
       + noteCell(id, 'rank') + noteCell(id, 'sales') + '</tr>';
-  }).join('') || '<tr><td colspan="' + (weeks.length + (WK_VIEW === 'both' ? 6 : 5)) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
+  }).join('') || '<tr><td colspan="' + (keys.length + (P.view === 'both' ? 6 : 5)) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
 
-  const sumU = w => list.reduce((a,r)=>a+v(r,w).units,0), sumP = w => list.reduce((a,r)=>a+v(r,w).profit,0);
+  const sumU = b => list.reduce((a,r)=>a+v(r,b).units,0), sumP = b => list.reduce((a,r)=>a+v(r,b).profit,0);
   const grandP = list.reduce((a,r)=>a+totP(r),0);
   foot.innerHTML = '<tr><td style="font-weight:800" colspan="2">TOTAL &middot; ' + fmtNum(list.length) + ' listing(s)</td>'
-    + weeks.map(w => {
-        const u = fmtNum(sumU(w));
-        const pf = '<span style="color:' + (sumP(w) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(sumP(w)) + '</span>';
+    + keys.map(b => {
+        const u = fmtNum(sumU(b));
+        const pf = '<span style="color:' + (sumP(b) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(sumP(b)) + '</span>';
         return '<td class="num" style="font-weight:800;' + BL + '">'
-          + (WK_VIEW === 'units' ? u : WK_VIEW === 'profit' ? pf : u + '<div style="font-size:10.5px">' + pf + '</div>') + '</td>';
+          + (P.view === 'units' ? u : P.view === 'profit' ? pf : u + '<div style="font-size:10.5px">' + pf + '</div>') + '</td>';
       }).join('')
     + '<td class="num" style="font-weight:800">'
-      + (WK_VIEW === 'profit' ? fmtGBP0(grandP) : fmtNum(list.reduce((a,r)=>a+tot(r),0))) + '</td>'
-    + (WK_VIEW === 'both' ? '<td class="num" style="font-weight:800">' + fmtGBP0(grandP) + '</td>' : '')
+      + (P.view === 'profit' ? fmtGBP0(grandP) : fmtNum(list.reduce((a,r)=>a+tot(r),0))) + '</td>'
+    + (P.view === 'both' ? '<td class="num" style="font-weight:800">' + fmtGBP0(grandP) + '</td>' : '')
     + '<td></td><td></td></tr>';
 
-  document.getElementById('wkCount').textContent =
-    fmtNum(shown.length) + (list.length > CAP ? '+' : '') + ' of ' + fmtNum(rows.length) + ' listing(s) · ' + weeks.length + ' week(s)';
-  document.getElementById('wkSub').innerHTML =
-    (WK_VIEW === 'profit' ? 'Net profit (ex VAT) per week, Monday to Sunday.'
-       : WK_VIEW === 'both' ? 'Units sold with net profit (ex VAT) beneath it, per week, Monday to Sunday.'
-       : 'Units sold per week, Monday to Sunday.')
-    + ' Each week is a real run of the engines over those seven days, so it matches the Dashboard '
-    + 'for the same range. One line per listing &mdash; an FBA offer and its FBM twin stay apart. '
-    + 'Your two notes are saved per listing and travel with the account.';
+  document.getElementById(P.id + 'Count').textContent =
+    fmtNum(shown.length) + (list.length > CAP ? '+' : '') + ' of ' + fmtNum(rows.length)
+    + ' listing(s) · ' + keys.length + ' ' + P.noun + '(s)';
+  const per = 'per ' + P.noun + ', ' + P.blurb + '.';
+  document.getElementById(P.id + 'Sub').innerHTML =
+    (P.view === 'profit' ? 'Net profit (ex VAT) ' + per
+       : P.view === 'both' ? 'Units sold with net profit (ex VAT) beneath it, ' + per
+       : 'Units sold ' + per)
+    + ' Each ' + P.noun + ' is a real run of the engines over ' + P.span + ', so it matches the '
+    + 'Dashboard for the same range. One line per listing &mdash; an FBA offer and its FBM twin '
+    + 'stay apart. Your two notes are saved per listing and travel with the account.';
 
-  body.querySelectorAll('textarea[data-wkn]').forEach(el => el.addEventListener('change', () => {
-    const id = el.dataset.wkn, kind = el.dataset.kind;
-    const rec = WK_NOTES[id] = WK_NOTES[id] || {};
+  body.querySelectorAll('textarea[data-pan]').forEach(el => el.addEventListener('change', () => {
+    const id = el.dataset.pan, kind = el.dataset.kind;
+    const rec = NOTES[id] = NOTES[id] || {};
     if(el.value.trim()) rec[kind] = el.value.trim(); else delete rec[kind];
-    if(!Object.keys(rec).length) delete WK_NOTES[id];
-    saveWkNotes();
+    if(!Object.keys(rec).length) delete NOTES[id];
+    savePanNotes(P);
   }));
+}
+function renderWeekly(){ renderPanel(PANELS.weekly); }
+function renderMonthly(){ renderPanel(PANELS.monthly); }
+function panExport(P){
+  const keys = panBuckets(P).slice(-P.N);
+  const NOTES = P.notes();
+  const rows = panSeries(P, keys).map(r => {
+    const o = {Channel: CH_NAME[r.ch] || r.ch, 'SKU / ASIN': r.key, Item: r.name};
+    let t = 0, tp = 0;
+    for(const b of keys){
+      const c = r.w[b] || {units:0, profit:0};
+      o[P.label(b) + ' units'] = c.units;
+      o[P.label(b) + ' profit'] = +c.profit.toFixed(2);
+      t += c.units; tp += c.profit;
+    }
+    o['Total units'] = t;
+    o['Total profit'] = +tp.toFixed(2);
+    const n = NOTES[r.ch + '|' + r.key] || {};
+    o['Ranking Analysis'] = n.rank || '';
+    o['Sales Analysis'] = n.sales || '';
+    return o;
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), P.sheet);
+  XLSX.writeFile(wb, P.file + '-' + todayISO() + '.xlsx');
 }
 
 // ================= Comparison PNL =================
@@ -12358,46 +12478,23 @@ Costs come from the Cost Book as at ${asAt}. Nothing already in the sheet is cha
   showBanner(`Added ${fmtNum(added)} master row(s) for ${fmtNum(miss.length)} product(s)`
     + `${named ? `, ${fmtNum(named)} with a seller SKU from your reports` : ''}. They now appear in Product ROIs.`, 'success');
 });
-// ---- Weekly Analysis controls ----
-document.querySelectorAll('.wk-n').forEach(b => b.addEventListener('click', () => {
-  WK_N = +b.dataset.n;
-  document.querySelectorAll('.wk-n').forEach(x => x.classList.toggle('secondary', x !== b));
-  renderWeekly();
-}));
-document.querySelectorAll('.wk-s').forEach(b => b.addEventListener('click', () => {
-  WK_SORT = b.dataset.s;
-  document.querySelectorAll('.wk-s').forEach(x => x.classList.toggle('secondary', x !== b));
-  renderWeekly();
-}));
-document.querySelectorAll('.wk-v').forEach(b => b.addEventListener('click', () => {
-  WK_VIEW = b.dataset.v;
-  document.querySelectorAll('.wk-v').forEach(x => x.classList.toggle('secondary', x !== b));
-  renderWeekly();
-}));
-document.getElementById('wkMoved').addEventListener('change', renderWeekly);
-document.getElementById('wkSearch').addEventListener('input', debounce(e => { WK_Q = e.target.value.trim().toLowerCase(); renderWeekly(); }, 200));
-document.getElementById('wkExport').addEventListener('click', () => {
-  const weeks = wkWeeks().slice(-WK_N);
-  const rows = wkSeries(weeks).map(r => {
-    const o = {Channel: CH_NAME[r.ch] || r.ch, 'SKU / ASIN': r.key, Item: r.name};
-    let t = 0, tp = 0;
-    for(const w of weeks){
-      const c = r.w[w] || {units:0, profit:0};
-      o[wkLabel(w) + ' units'] = c.units;
-      o[wkLabel(w) + ' profit'] = +c.profit.toFixed(2);
-      t += c.units; tp += c.profit;
-    }
-    o['Total units'] = t;
-    o['Total profit'] = +tp.toFixed(2);
-    const n = WK_NOTES[r.ch + '|' + r.key] || {};
-    o['Ranking Analysis'] = n.rank || '';
-    o['Sales Analysis'] = n.sales || '';
-    return o;
-  });
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Weekly');
-  XLSX.writeFile(wb, 'weekly-analysis-' + todayISO() + '.xlsx');
-});
+// ---- Weekly / Monthly Analysis controls ----
+// Both pages carry the same controls, named by their panel's prefix (wk- / mo-), so one loop
+// wires them and each page keeps its own choice of range, sort and view.
+for(const pk of Object.keys(PANELS)){
+  const P = PANELS[pk], p = P.id;
+  const group = (suffix, set) => document.querySelectorAll('.' + p + '-' + suffix).forEach(b => b.addEventListener('click', () => {
+    set(b);
+    document.querySelectorAll('.' + p + '-' + suffix).forEach(x => x.classList.toggle('secondary', x !== b));
+    renderPanel(P);
+  }));
+  group('n', b => P.N = +b.dataset.n);
+  group('s', b => P.sort = b.dataset.s);
+  group('v', b => P.view = b.dataset.v);
+  document.getElementById(p + 'Moved').addEventListener('change', () => renderPanel(P));
+  document.getElementById(p + 'Search').addEventListener('input', debounce(e => { P.q = e.target.value.trim().toLowerCase(); renderPanel(P); }, 200));
+  document.getElementById(p + 'Export').addEventListener('click', () => panExport(P));
+}
 
 // ---- Comparison PNL controls ----
 document.querySelectorAll('.cmp-n').forEach(b => b.addEventListener('click', () => {
@@ -12733,6 +12830,8 @@ function switchAccount(id){
   restoreSkuMap();
   loadStock();
   loadCmpNotes();
+  loadWkNotes();
+  loadMoNotes();
   loadAsinItems();
   loadPriceBook();
   loadRoiBook();
@@ -12797,6 +12896,8 @@ function startApp(){
   restoreSkuMap();
   loadStock();
   loadCmpNotes();
+  loadWkNotes();
+  loadMoNotes();
   loadAsinItems();
   loadPriceBook();
   loadRoiBook();
