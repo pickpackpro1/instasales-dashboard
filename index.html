@@ -1102,7 +1102,9 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
         <span class="flabel" style="margin-left:10px">Show</span>
         <button class="btn wk-v" data-v="units">Units</button>
         <button class="btn secondary wk-v" data-v="profit">Profit</button>
-        <button class="btn secondary wk-v" data-v="both">Both</button>
+        <button class="btn secondary wk-v" data-v="margin">Margin</button>
+        <button class="btn secondary wk-v" data-v="tacos">TACoS</button>
+        <button class="btn secondary wk-v" data-v="all">All</button>
         <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer;margin-left:10px">
           <input type="checkbox" id="wkMoved" checked> Hide listings with no activity</label>
         <span style="flex:1"></span>
@@ -1139,7 +1141,9 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
         <span class="flabel" style="margin-left:10px">Show</span>
         <button class="btn mo-v" data-v="units">Units</button>
         <button class="btn secondary mo-v" data-v="profit">Profit</button>
-        <button class="btn secondary mo-v" data-v="both">Both</button>
+        <button class="btn secondary mo-v" data-v="margin">Margin</button>
+        <button class="btn secondary mo-v" data-v="tacos">TACoS</button>
+        <button class="btn secondary mo-v" data-v="all">All</button>
         <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer;margin-left:10px">
           <input type="checkbox" id="moMoved" checked> Hide listings with no activity</label>
         <span style="flex:1"></span>
@@ -4834,7 +4838,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-02-a';
+const BUILD_ID = '2026-11-02-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -8644,7 +8648,9 @@ function panSeries(P, keys){
   const ck = keys.join(',') + '|' + filteredChannels().join(',');
   if(P.cache && P.cache.key === ck) return P.cache.val;
   const sf = STATE.dateFrom, st = STATE.dateTo;
-  const byRow = {};            // "ch|key" -> {ch, key, name, w:{period:{units, profit}}}
+  // Margin and TACoS cannot be averaged across periods, so the series carries what they are
+  // made of - revenue and ad spend - and each cell divides at the moment it is drawn.
+  const byRow = {};            // "ch|key" -> {ch, key, name, w:{period:{units, profit, rev, revEx, ads}}}
   try{
     for(const b of keys){
       const [from, to] = P.rangeOf(b);
@@ -8656,9 +8662,12 @@ function panSeries(P, keys){
           const id = ch + '|' + r.key;
           const e = byRow[id] = byRow[id] || {ch, key:r.key, name:r.name || '', w:{}};
           if(!e.name && r.name) e.name = r.name;
-          const c = e.w[b] = e.w[b] || {units:0, profit:0};
+          const c = e.w[b] = e.w[b] || {units:0, profit:0, rev:0, revEx:0, ads:0};
           c.units += r.units || 0;
           c.profit += r.net_profit_ex || 0;
+          c.rev += r.revenue || 0;
+          c.revEx += r.revenue_ex || 0;
+          c.ads += r.ads || 0;
         }
       }
     }
@@ -8684,26 +8693,46 @@ function renderPanel(P){
   const keys = all.slice(-P.N);                         // oldest left, newest right - like the sheet
   const rows = panSeries(P, keys);
   const cur = keys[keys.length-1], prev = keys[keys.length-2];
-  const v = (r, b) => r.w[b] || {units:0, profit:0};
+  const EMPTY = {units:0, profit:0, rev:0, revEx:0, ads:0};
+  const v = (r, b) => r.w[b] || EMPTY;
+  // Same rules as the rest of the app: margin is profit over revenue ex VAT, TACoS is ad spend
+  // over revenue, and no ad spend reads as "not advertised" rather than a 0% TACoS.
+  // Same -100%% the engine uses when something cost money and returned no revenue at all, so a
+  // listing that only burned ad spend reads the same here as it does everywhere else.
+  const marginOf = c => c.revEx ? c.profit / c.revEx * 100 : ((c.revEx - c.profit) > 0.004 ? -100 : null);
+  const tacosOf  = c => (c.ads > 0 && c.rev > 0) ? c.ads / c.rev * 100 : null;
+  const addUp = cs => cs.reduce((a, c) => ({units: a.units + c.units, profit: a.profit + c.profit,
+    rev: a.rev + c.rev, revEx: a.revEx + c.revEx, ads: a.ads + c.ads}), Object.assign({}, EMPTY));
+  const rowTotal = r => addUp(keys.map(b => v(r,b)));
+  const colTotal = b => addUp(list.map(r => v(r,b)));
+  const METRIC = {
+    units:  {head: 'Units',  cell: c => c.units ? fmtNum(c.units) : null,
+             val: c => c.units},
+    profit: {head: 'Profit', cell: c => money(c.profit), val: c => c.profit},
+    margin: {head: 'Margin', cell: c => pct(marginOf(c)), val: c => marginOf(c)},
+    tacos:  {head: 'TACoS',  cell: c => pct(tacosOf(c), true), val: c => tacosOf(c)}
+  };
+  const ALL = ['units','profit','margin','tacos'];
+  const view = P.view === 'both' ? 'all' : P.view;        // "Both" was this button's old name
+  const shownMetrics = view === 'all' ? ALL : [view];
   const q = P.q;
   const onlyMoved = document.getElementById(P.id + 'Moved').checked;
   const list = rows.filter(r => {
     // "Nothing happened" has to mean no units AND no money, or a listing that sold nothing while
     // still burning ad spend would drop out and the TOTAL row would stop matching the Dashboard.
-    if(onlyMoved && !keys.some(b => { const c = v(r,b); return c.units || Math.abs(c.profit) > 0.004; })) return false;
+    if(onlyMoved && !keys.some(b => { const c = v(r,b); return c.units || Math.abs(c.profit) > 0.004 || c.ads > 0.004; })) return false;
     if(!q) return true;
     return (r.key + ' ' + r.name).toLowerCase().includes(q);
   });
-  const tot  = r => keys.reduce((a,b) => a + v(r,b).units, 0);
-  const totP = r => keys.reduce((a,b) => a + v(r,b).profit, 0);
-  // Sorting follows what is on screen: asking for the biggest drop while looking at profit
-  // should rank by profit, not by units.
-  const byP = P.view === 'profit';
-  const metric = (r,b) => byP ? v(r,b).profit : v(r,b).units;
+  // Sorting follows what is on screen: asking for the biggest drop while looking at TACoS should
+  // rank by TACoS, not by units. On "All" there is no single metric, so units lead as before.
+  const sortBy = view === 'all' ? 'units' : view;
+  const metric = (r,b) => METRIC[sortBy].val(v(r,b)) || 0;
+  const totalBy = r => METRIC[sortBy].val(rowTotal(r)) || 0;
   const delta = r => prev ? metric(r,cur) - metric(r,prev) : 0;
   const sorters = {
     latest: (a,b) => metric(b,cur) - metric(a,cur),
-    total:  (a,b) => (byP ? totP(b) - totP(a) : tot(b) - tot(a)),
+    total:  (a,b) => totalBy(b) - totalBy(a),
     drop:   (a,b) => delta(a) - delta(b),
     rise:   (a,b) => delta(b) - delta(a),
     name:   (a,b) => (a.name || a.key).localeCompare(b.name || b.key)
@@ -8711,10 +8740,21 @@ function renderPanel(P){
   list.sort(sorters[P.sort] || sorters.latest);
 
   const BL = 'border-left:2px solid var(--border)';
+  const DASH = '<span style="color:var(--muted)">&mdash;</span>';
+  const money = v => Math.abs(v) < 0.005 ? null
+    : '<span style="color:' + (v >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(v) + '</span>';
+  // Margin is green when it is healthy, TACoS when it is LOW - the colours run opposite ways.
+  const pct = (v, lowIsGood) => v == null ? null
+    : '<span style="color:' + ((lowIsGood ? v <= 15 : v >= 0) ? 'var(--green)' : 'var(--red)') + '">' + fmtPct(v) + '</span>';
+  // One cell: the chosen metric, or all four stacked with the headline on top.
+  const stack = c => {
+    const parts = shownMetrics.map(m => METRIC[m].cell(c)).filter(Boolean);
+    if(!parts.length) return DASH;
+    return parts[0] + parts.slice(1).map(x => '<div style="font-size:10.5px">' + x + '</div>').join('');
+  };
   head.innerHTML = '<tr><th style="min-width:150px;text-align:left">SKU / ASIN</th><th style="min-width:200px;text-align:left">Item</th>'
     + keys.map(b => '<th class="num" style="' + BL + '">' + P.label(b) + '</th>').join('')
-    + '<th class="num">Total ' + (P.view === 'profit' ? 'Profit' : 'Units') + '</th>'
-    + (P.view === 'both' ? '<th class="num">Total Profit</th>' : '')
+    + shownMetrics.map(m => '<th class="num">Total ' + METRIC[m].head + '</th>').join('')
     + '<th style="min-width:170px">Ranking Analysis</th><th style="min-width:170px">Sales Analysis</th></tr>';
 
   const CAP = 400;
@@ -8727,49 +8767,33 @@ function renderPanel(P){
     return '<tr><td style="max-width:170px"><span class="chip ' + r.ch + '">' + (CH_NAME[r.ch]||r.ch) + '</span> '
       + '<span title="' + esc(r.key) + '">' + esc(String(r.key).substr(0,22)) + '</span></td>'
       + '<td title="' + esc(r.name) + '" style="max-width:230px;overflow:hidden;text-overflow:ellipsis">' + esc(r.name.substr(0,40)) + '</td>'
-      + keys.map((b,i) => {
-          const c = v(r,b);
-          const last = i === keys.length-1;
-          const any = c.units || Math.abs(c.profit) > 0.004;
-          const u = c.units ? fmtNum(c.units) : '<span style="color:var(--muted)">&mdash;</span>';
-          const pf = '<span style="color:' + (c.profit >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(c.profit) + '</span>';
-          const cell = P.view === 'units'  ? u
-                     : P.view === 'profit' ? (any ? pf : '<span style="color:var(--muted)">&mdash;</span>')
-                     : u + (any ? '<div style="font-size:10.5px">' + pf + '</div>' : '');
-          return '<td class="num" style="' + BL + (last ? ';font-weight:700' : '') + '">' + cell + '</td>';
-        }).join('')
-      + '<td class="num" style="font-weight:800">' + (P.view === 'profit' ? fmtGBP0(totP(r)) : fmtNum(tot(r))) + '</td>'
-      + (P.view === 'both'
-          ? '<td class="num" style="font-weight:800;color:' + (totP(r) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(totP(r)) + '</td>'
-          : '')
+      + keys.map((b,i) => '<td class="num" style="' + BL + (i === keys.length-1 ? ';font-weight:700' : '') + '">'
+          + stack(v(r,b)) + '</td>').join('')
+      + shownMetrics.map(m => '<td class="num" style="font-weight:800">'
+          + (METRIC[m].cell(rowTotal(r)) || DASH) + '</td>').join('')
       + noteCell(id, 'rank') + noteCell(id, 'sales') + '</tr>';
-  }).join('') || '<tr><td colspan="' + (keys.length + (P.view === 'both' ? 6 : 5)) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
+  }).join('') || '<tr><td colspan="' + (keys.length + 4 + shownMetrics.length) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
 
-  const sumU = b => list.reduce((a,r)=>a+v(r,b).units,0), sumP = b => list.reduce((a,r)=>a+v(r,b).profit,0);
-  const grandP = list.reduce((a,r)=>a+totP(r),0);
+  // The percentages are divided from the summed money, never averaged across rows or periods.
+  const grand = addUp(list.map(r => rowTotal(r)));
   foot.innerHTML = '<tr><td style="font-weight:800" colspan="2">TOTAL &middot; ' + fmtNum(list.length) + ' listing(s)</td>'
-    + keys.map(b => {
-        const u = fmtNum(sumU(b));
-        const pf = '<span style="color:' + (sumP(b) >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtGBP0(sumP(b)) + '</span>';
-        return '<td class="num" style="font-weight:800;' + BL + '">'
-          + (P.view === 'units' ? u : P.view === 'profit' ? pf : u + '<div style="font-size:10.5px">' + pf + '</div>') + '</td>';
-      }).join('')
-    + '<td class="num" style="font-weight:800">'
-      + (P.view === 'profit' ? fmtGBP0(grandP) : fmtNum(list.reduce((a,r)=>a+tot(r),0))) + '</td>'
-    + (P.view === 'both' ? '<td class="num" style="font-weight:800">' + fmtGBP0(grandP) + '</td>' : '')
+    + keys.map(b => '<td class="num" style="font-weight:800;' + BL + '">' + stack(colTotal(b)) + '</td>').join('')
+    + shownMetrics.map(m => '<td class="num" style="font-weight:800">' + (METRIC[m].cell(grand) || DASH) + '</td>').join('')
     + '<td></td><td></td></tr>';
 
   document.getElementById(P.id + 'Count').textContent =
     fmtNum(shown.length) + (list.length > CAP ? '+' : '') + ' of ' + fmtNum(rows.length)
     + ' listing(s) · ' + keys.length + ' ' + P.noun + '(s)';
   const per = 'per ' + P.noun + ', ' + P.blurb + '.';
-  document.getElementById(P.id + 'Sub').innerHTML =
-    (P.view === 'profit' ? 'Net profit (ex VAT) ' + per
-       : P.view === 'both' ? 'Units sold with net profit (ex VAT) beneath it, ' + per
-       : 'Units sold ' + per)
+  const what = {units: 'Units sold', profit: 'Net profit (ex VAT)',
+                margin: 'Profit margin &mdash; net profit over revenue, both ex VAT',
+                tacos: 'TACoS &mdash; ad spend over revenue, blank where nothing was advertised',
+                all: 'Units sold, net profit (ex VAT), profit margin and TACoS, stacked'}[view];
+  document.getElementById(P.id + 'Sub').innerHTML = what + ' ' + per
     + ' Each ' + P.noun + ' is a real run of the engines over ' + P.span + ', so it matches the '
-    + 'Dashboard for the same range. One line per listing &mdash; an FBA offer and its FBM twin '
-    + 'stay apart. Your two notes are saved per listing and travel with the account.';
+    + 'Dashboard for the same range. Percentages are worked out from the money in the column, not '
+    + 'averaged. One line per listing &mdash; an FBA offer and its FBM twin stay apart. Your two '
+    + 'notes are saved per listing and travel with the account.';
 
   body.querySelectorAll('textarea[data-pan]').forEach(el => el.addEventListener('change', () => {
     const id = el.dataset.pan, kind = el.dataset.kind;
@@ -8786,15 +8810,19 @@ function panExport(P){
   const NOTES = P.notes();
   const rows = panSeries(P, keys).map(r => {
     const o = {Channel: CH_NAME[r.ch] || r.ch, 'SKU / ASIN': r.key, Item: r.name};
-    let t = 0, tp = 0;
+    const sum = {units:0, profit:0, rev:0, revEx:0, ads:0};
     for(const b of keys){
-      const c = r.w[b] || {units:0, profit:0};
+      const c = r.w[b] || {units:0, profit:0, rev:0, revEx:0, ads:0};
       o[P.label(b) + ' units'] = c.units;
       o[P.label(b) + ' profit'] = +c.profit.toFixed(2);
-      t += c.units; tp += c.profit;
+      o[P.label(b) + ' margin %'] = c.revEx > 0 ? +(c.profit / c.revEx * 100).toFixed(1) : '';
+      o[P.label(b) + ' TACoS %'] = (c.ads > 0 && c.rev > 0) ? +(c.ads / c.rev * 100).toFixed(1) : '';
+      for(const k in sum) sum[k] += c[k] || 0;
     }
-    o['Total units'] = t;
-    o['Total profit'] = +tp.toFixed(2);
+    o['Total units'] = sum.units;
+    o['Total profit'] = +sum.profit.toFixed(2);
+    o['Total margin %'] = sum.revEx > 0 ? +(sum.profit / sum.revEx * 100).toFixed(1) : '';
+    o['Total TACoS %'] = (sum.ads > 0 && sum.rev > 0) ? +(sum.ads / sum.rev * 100).toFixed(1) : '';
     const n = NOTES[r.ch + '|' + r.key] || {};
     o['Ranking Analysis'] = n.rank || '';
     o['Sales Analysis'] = n.sales || '';
