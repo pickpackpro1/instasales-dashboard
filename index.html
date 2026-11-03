@@ -4845,7 +4845,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-03-c';
+const BUILD_ID = '2026-11-03-d';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -8678,12 +8678,19 @@ function panSizeCols(P){
 }
 
 const PANELS = {
+  // totals: which metrics get a TOTAL column of their own. Units only - a profit, margin or
+  // TACoS summed over the whole span answers a question the period columns already answer
+  // better, and the extra columns pushed the notes off the side of the screen.
+  // subcols: on "All", the four metrics take a column each UNDER the period instead of stacking
+  // inside one cell - a column of units can be read down the page, a stack of four cannot.
   weekly: {
     id: 'wk', noun: 'week', sheet: 'Weekly', file: 'weekly-analysis',
     lsNotes: LS_WKNOTES, notes: () => WK_NOTES,
     bucketOf: mondayOf, label: wkLabel,
     rangeOf: w => { const e = new Date(w + 'T00:00:00Z'); e.setUTCDate(e.getUTCDate() + 6); return [w, e.toISOString().slice(0,10)]; },
     blurb: 'Monday to Sunday', span: 'those seven days',
+    totals: ['units'],
+    subcols: true,
     N: 5, sort: 'latest', q: '', view: 'units', cache: null
   },
   monthly: {
@@ -8692,12 +8699,7 @@ const PANELS = {
     bucketOf: monthOf, label: moLabel,
     rangeOf: m => [m + '-01', lastDayOf(m)],
     blurb: 'first to last day of the calendar month', span: 'that month',
-    // Which metrics get a TOTAL column of their own. Only units here: a profit, margin or TACoS
-    // summed across six months answers a question the month columns already answer better, and
-    // the three columns were pushing the notes off the side of the screen.
     totals: ['units'],
-    // On "All", the four metrics get a column each UNDER the month instead of stacking inside
-    // one cell: a column of units can be read down the page, a stack of four cannot.
     subcols: true,
     N: 6, sort: 'latest', q: '', view: 'units', cache: null
   }
