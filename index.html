@@ -4838,7 +4838,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-03-a';
+const BUILD_ID = '2026-11-03-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -8632,6 +8632,9 @@ const PANELS = {
     // summed across six months answers a question the month columns already answer better, and
     // the three columns were pushing the notes off the side of the screen.
     totals: ['units'],
+    // On "All", the four metrics get a column each UNDER the month instead of stacking inside
+    // one cell: a column of units can be read down the page, a stack of four cannot.
+    subcols: true,
     N: 6, sort: 'latest', q: '', view: 'units', cache: null
   }
 };
@@ -8722,6 +8725,9 @@ function renderPanel(P){
   // The TOTAL columns used to mirror whatever was stacked in the month cells. A panel can now
   // name the ones it wants instead; without that it keeps mirroring, as Weekly Analysis does.
   const totalMetrics = P.totals ? P.totals.filter(m => METRIC[m]) : shownMetrics;
+  // Stacked inside one cell, or broken out into a sub-column each? Only worth splitting when
+  // more than one metric is on show - a single metric is already one column per period.
+  const subCols = !!P.subcols && shownMetrics.length > 1;
   const q = P.q;
   const onlyMoved = document.getElementById(P.id + 'Moved').checked;
   const list = rows.filter(r => {
@@ -8759,10 +8765,28 @@ function renderPanel(P){
     if(!parts.length) return DASH;
     return parts[0] + parts.slice(1).map(x => '<div style="font-size:10.5px">' + x + '</div>').join('');
   };
-  head.innerHTML = '<tr><th style="min-width:150px;text-align:left">SKU / ASIN</th><th style="min-width:200px;text-align:left">Item</th>'
-    + keys.map(b => '<th class="num" style="' + BL + '">' + P.label(b) + '</th>').join('')
-    + totalMetrics.map(m => '<th class="num">Total ' + METRIC[m].head + '</th>').join('')
-    + '<th style="min-width:170px">Ranking Analysis</th><th style="min-width:170px">Sales Analysis</th></tr>';
+  // One period for one row: a single stacked cell, or a cell per metric. The newest period is
+  // bold either way, and the border that separates periods sits on the first cell of the group.
+  const periodCells = (c, newest) => {
+    const em = newest ? 'font-weight:700' : '';
+    if(!subCols) return '<td class="num" style="' + [BL, em].filter(Boolean).join(';') + '">' + stack(c) + '</td>';
+    return shownMetrics.map((m, j) =>
+      '<td class="num" style="' + [j === 0 ? BL : '', em].filter(Boolean).join(';') + '">'
+      + (METRIC[m].cell(c) || DASH) + '</td>').join('');
+  };
+  // Sub-column headings sit in a second row, with every other heading spanning both - the same
+  // shape Comparison PNL uses, and the one the freeze-1 rules are written for.
+  const span = subCols ? ' rowspan="2"' : '';
+  head.innerHTML = '<tr><th' + span + ' style="min-width:150px;text-align:left">SKU / ASIN</th>'
+    + '<th' + span + ' style="min-width:200px;text-align:left">Item</th>'
+    + keys.map(b => '<th class="num" style="' + BL + (subCols ? ';text-align:center' : '') + '"'
+        + (subCols ? ' colspan="' + shownMetrics.length + '"' : '') + '>' + P.label(b) + '</th>').join('')
+    + totalMetrics.map(m => '<th class="num"' + span + '>Total ' + METRIC[m].head + '</th>').join('')
+    + '<th' + span + ' style="min-width:170px">Ranking Analysis</th>'
+    + '<th' + span + ' style="min-width:170px">Sales Analysis</th></tr>'
+    + (subCols ? '<tr>' + keys.map(b => shownMetrics.map((m, j) =>
+        '<th class="num" style="font-size:10.5px;font-weight:600;color:var(--muted)'
+        + (j === 0 ? ';' + BL : '') + '">' + METRIC[m].head + '</th>').join('')).join('') + '</tr>' : '');
 
   const CAP = 400;
   const shown = list.slice(0, CAP);
@@ -8774,17 +8798,19 @@ function renderPanel(P){
     return '<tr><td style="max-width:170px"><span class="chip ' + r.ch + '">' + (CH_NAME[r.ch]||r.ch) + '</span> '
       + '<span title="' + esc(r.key) + '">' + esc(String(r.key).substr(0,22)) + '</span></td>'
       + '<td title="' + esc(r.name) + '" style="max-width:230px;overflow:hidden;text-overflow:ellipsis">' + esc(r.name.substr(0,40)) + '</td>'
-      + keys.map((b,i) => '<td class="num" style="' + BL + (i === keys.length-1 ? ';font-weight:700' : '') + '">'
-          + stack(v(r,b)) + '</td>').join('')
+      + keys.map((b,i) => periodCells(v(r,b), i === keys.length-1)).join('')
       + totalMetrics.map(m => '<td class="num" style="font-weight:800">'
           + (METRIC[m].cell(rowTotal(r)) || DASH) + '</td>').join('')
       + noteCell(id, 'rank') + noteCell(id, 'sales') + '</tr>';
-  }).join('') || '<tr><td colspan="' + (keys.length + 4 + totalMetrics.length) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
+  }).join('') || '<tr><td colspan="' + (keys.length * (subCols ? shownMetrics.length : 1) + 4 + totalMetrics.length) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
 
   // The percentages are divided from the summed money, never averaged across rows or periods.
   const grand = addUp(list.map(r => rowTotal(r)));
   foot.innerHTML = '<tr><td style="font-weight:800" colspan="2">TOTAL &middot; ' + fmtNum(list.length) + ' listing(s)</td>'
-    + keys.map(b => '<td class="num" style="font-weight:800;' + BL + '">' + stack(colTotal(b)) + '</td>').join('')
+    + keys.map(b => subCols
+        ? shownMetrics.map((m, j) => '<td class="num" style="font-weight:800' + (j === 0 ? ';' + BL : '') + '">'
+            + (METRIC[m].cell(colTotal(b)) || DASH) + '</td>').join('')
+        : '<td class="num" style="font-weight:800;' + BL + '">' + stack(colTotal(b)) + '</td>').join('')
     + totalMetrics.map(m => '<td class="num" style="font-weight:800">' + (METRIC[m].cell(grand) || DASH) + '</td>').join('')
     + '<td></td><td></td></tr>';
 
@@ -8795,7 +8821,8 @@ function renderPanel(P){
   const what = {units: 'Units sold', profit: 'Net profit (ex VAT)',
                 margin: 'Profit margin &mdash; net profit over revenue, both ex VAT',
                 tacos: 'TACoS &mdash; ad spend over revenue, blank where nothing was advertised',
-                all: 'Units sold, net profit (ex VAT), profit margin and TACoS, stacked'}[view];
+                all: 'Units sold, net profit (ex VAT), profit margin and TACoS, '
+                     + (subCols ? 'a column each' : 'stacked')}[view];
   document.getElementById(P.id + 'Sub').innerHTML = what + ' ' + per
     + ' Each ' + P.noun + ' is a real run of the engines over ' + P.span + ', so it matches the '
     + 'Dashboard for the same range. Percentages are worked out from the money in the column, not '
