@@ -296,6 +296,13 @@ table.freeze-1 tfoot td:first-child{position:sticky;left:0;z-index:7;background:
 /* the row tint has to be repainted on the frozen cell, which no longer shows the row behind it */
 table.freeze-1 tbody tr:hover td:first-child{background:#dceaf8}
 table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
+/* Draggable column edges. The handle sits inside the heading, hard against its right edge, and
+   only shows itself on hover so a header row still reads as a header row. */
+th.cgrip-h{position:relative}
+.cgrip{position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize;z-index:9}
+.cgrip:hover,.cgrip.on{background:var(--accent);opacity:.45}
+body.cgrip-drag{cursor:col-resize;user-select:none}
+body.cgrip-drag *{cursor:col-resize !important}
 #stockTable tbody tr.row-missing td:first-child{background:#fbe6ea}
 /* Fulfilment column: a compact code (FBA/FBM/FBS/FBP/FBT) with the full name on hover. */
 .fchan-fixed{display:inline-block;font-size:11.5px;font-weight:700;color:var(--muted);white-space:nowrap}
@@ -1584,7 +1591,7 @@ table.freeze-1 td[colspan]{position:static;background:none;border-right:0}
 var LS_CLOUDONLY = 'mcpd_cloud_only';
 var CLOUD_ONLY = false;
 try{ CLOUD_ONLY = localStorage.getItem(LS_CLOUDONLY) === '1'; }catch(e){}
-var LOCAL_ALWAYS = ['mcpd_cur_acct', 'mcpd_cloud_only', 'mcpd_kpi_sample_tiles'];
+var LOCAL_ALWAYS = ['mcpd_cur_acct', 'mcpd_cloud_only', 'mcpd_kpi_sample_tiles', 'mcpd_pan_colw'];
 const localAllowed = k => !CLOUD_ONLY || LOCAL_ALWAYS.indexOf(String(k).replace(/__.*$/, '')) >= 0;
 const store = {
   get(k){ try{ return localAllowed(k) ? localStorage.getItem(k) : null; }catch(e){ return null; } },
@@ -4838,7 +4845,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-03-b';
+const BUILD_ID = '2026-11-03-c';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -8613,6 +8620,63 @@ const wkLabel = w => {
 };
 const moLabel = m => { const [y, mm] = String(m).split('-'); return MON3[+mm - 1] + ' ' + y; };
 
+// ---- Column widths you set by dragging ----
+// The table is rebuilt from scratch on every filter, sort and search, so a width set by hand has
+// to be remembered somewhere and put back. It is keyed by COLUMN rather than by position, which
+// also means the "Units" sub-column keeps one width across every month instead of drifting apart.
+const LS_PANCOLW = 'mcpd_pan_colw';
+let PAN_COLW = null;
+function panColw(){
+  if(PAN_COLW) return PAN_COLW;
+  try{ PAN_COLW = JSON.parse(store.get(lsKey(LS_PANCOLW)) || '{}') || {}; }catch(e){ PAN_COLW = {}; }
+  return PAN_COLW;
+}
+function panColwSave(){ try{ store.set(lsKey(LS_PANCOLW), JSON.stringify(panColw())); }catch(e){} }
+// Put the saved widths back and hang a drag handle off every leaf heading. Called at the end of
+// each render, on the headings that render has just built.
+function panSizeCols(P){
+  const w = panColw()[P.id] || {};
+  const ths = document.querySelectorAll('#' + P.id + 'Table thead th[data-ck]');
+  ths.forEach(th => {
+    const px = w[th.dataset.ck];
+    if(px){ th.style.width = px + 'px'; th.style.minWidth = px + 'px'; th.style.maxWidth = px + 'px'; }
+    th.classList.add('cgrip-h');
+    const g = document.createElement('div');
+    g.className = 'cgrip';
+    g.title = 'Drag to set this column\u2019s width. Double-click to put it back.';
+    th.appendChild(g);
+    g.addEventListener('dblclick', ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      const store2 = panColw()[P.id]; if(store2) delete store2[th.dataset.ck];
+      panColwSave();
+      renderPanel(P);
+    });
+    g.addEventListener('mousedown', ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      const ck = th.dataset.ck, x0 = ev.clientX, w0 = th.getBoundingClientRect().width;
+      // Every heading on this key moves together - the same metric under each month is one column
+      // as far as the eye is concerned, so it has to stay one width.
+      const sibs = [...document.querySelectorAll('#' + P.id + 'Table thead th[data-ck=' + JSON.stringify(ck) + ']')];
+      g.classList.add('on');
+      document.body.classList.add('cgrip-drag');
+      const move = e2 => {
+        const px = Math.max(44, Math.min(640, Math.round(w0 + (e2.clientX - x0))));
+        sibs.forEach(t => { t.style.width = px + 'px'; t.style.minWidth = px + 'px'; t.style.maxWidth = px + 'px'; });
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        g.classList.remove('on');
+        document.body.classList.remove('cgrip-drag');
+        const px = parseInt(th.style.width);
+        if(px){ const all = panColw(); (all[P.id] = all[P.id] || {})[ck] = px; panColwSave(); }
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+  });
+}
+
 const PANELS = {
   weekly: {
     id: 'wk', noun: 'week', sheet: 'Weekly', file: 'weekly-analysis',
@@ -8777,15 +8841,17 @@ function renderPanel(P){
   // Sub-column headings sit in a second row, with every other heading spanning both - the same
   // shape Comparison PNL uses, and the one the freeze-1 rules are written for.
   const span = subCols ? ' rowspan="2"' : '';
-  head.innerHTML = '<tr><th' + span + ' style="min-width:150px;text-align:left">SKU / ASIN</th>'
-    + '<th' + span + ' style="min-width:200px;text-align:left">Item</th>'
+  // data-ck marks a LEAF column - one that can be dragged wider. A month heading spanning four
+  // sub-columns is not one, so it carries none and its sub-headings carry them instead.
+  head.innerHTML = '<tr><th data-ck="key"' + span + ' style="min-width:120px;text-align:left">SKU / ASIN</th>'
+    + '<th data-ck="item"' + span + ' style="min-width:180px;text-align:left">Item</th>'
     + keys.map(b => '<th class="num" style="' + BL + (subCols ? ';text-align:center' : '') + '"'
-        + (subCols ? ' colspan="' + shownMetrics.length + '"' : '') + '>' + P.label(b) + '</th>').join('')
-    + totalMetrics.map(m => '<th class="num"' + span + '>Total ' + METRIC[m].head + '</th>').join('')
-    + '<th' + span + ' style="min-width:170px">Ranking Analysis</th>'
-    + '<th' + span + ' style="min-width:170px">Sales Analysis</th></tr>'
+        + (subCols ? ' colspan="' + shownMetrics.length + '"' : ' data-ck="period"') + '>' + P.label(b) + '</th>').join('')
+    + totalMetrics.map(m => '<th class="num" data-ck="tot-' + m + '"' + span + '>Total ' + METRIC[m].head + '</th>').join('')
+    + '<th data-ck="rank"' + span + ' style="min-width:170px">Ranking Analysis</th>'
+    + '<th data-ck="sales"' + span + ' style="min-width:170px">Sales Analysis</th></tr>'
     + (subCols ? '<tr>' + keys.map(b => shownMetrics.map((m, j) =>
-        '<th class="num" style="font-size:10.5px;font-weight:600;color:var(--muted)'
+        '<th class="num" data-ck="m-' + m + '" style="font-size:10.5px;font-weight:600;color:var(--muted)'
         + (j === 0 ? ';' + BL : '') + '">' + METRIC[m].head + '</th>').join('')).join('') + '</tr>' : '');
 
   const CAP = 400;
@@ -8795,9 +8861,14 @@ function renderPanel(P){
     + esc((NOTES[id]||{})[kind] || '') + '</textarea></td>';
   body.innerHTML = shown.map(r => {
     const id = r.ch + '|' + r.key;
-    return '<tr><td style="max-width:170px"><span class="chip ' + r.ch + '">' + (CH_NAME[r.ch]||r.ch) + '</span> '
-      + '<span title="' + esc(r.key) + '">' + esc(String(r.key).substr(0,22)) + '</span></td>'
-      + '<td title="' + esc(r.name) + '" style="max-width:230px;overflow:hidden;text-overflow:ellipsis">' + esc(r.name.substr(0,40)) + '</td>'
+    // The channel chip and the id used to sit side by side in a 170px frozen cell, so a 10
+    // character ASIN was pushed past the cell's edge and drawn over the Item column next to it.
+    // Chip above, id below, each clipped to the column - and the column can now be dragged wider.
+    const CLIP = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+    return '<tr><td style="max-width:260px">'
+      + '<div style="' + CLIP + '"><span class="chip ' + r.ch + '">' + (CH_NAME[r.ch]||r.ch) + '</span></div>'
+      + '<div style="font-weight:700;' + CLIP + '" title="' + esc(r.key) + '">' + esc(r.key) + '</div></td>'
+      + '<td title="' + esc(r.name) + '" style="max-width:320px;' + CLIP + '">' + esc(r.name) + '</td>'
       + keys.map((b,i) => periodCells(v(r,b), i === keys.length-1)).join('')
       + totalMetrics.map(m => '<td class="num" style="font-weight:800">'
           + (METRIC[m].cell(rowTotal(r)) || DASH) + '</td>').join('')
@@ -8827,7 +8898,11 @@ function renderPanel(P){
     + ' Each ' + P.noun + ' is a real run of the engines over ' + P.span + ', so it matches the '
     + 'Dashboard for the same range. Percentages are worked out from the money in the column, not '
     + 'averaged. One line per listing &mdash; an FBA offer and its FBM twin stay apart. Your two '
-    + 'notes are saved per listing and travel with the account.';
+    + 'notes are saved per listing and travel with the account. <b>Drag the edge of any column '
+    + 'heading</b> to set its width (double-click the edge to put it back), and drag the corner '
+    + 'of a note to make a row taller.';
+
+  panSizeCols(P);
 
   body.querySelectorAll('textarea[data-pan]').forEach(el => el.addEventListener('change', () => {
     const id = el.dataset.pan, kind = el.dataset.kind;
