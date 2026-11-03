@@ -4838,7 +4838,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-02-b';
+const BUILD_ID = '2026-11-03-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -8628,6 +8628,10 @@ const PANELS = {
     bucketOf: monthOf, label: moLabel,
     rangeOf: m => [m + '-01', lastDayOf(m)],
     blurb: 'first to last day of the calendar month', span: 'that month',
+    // Which metrics get a TOTAL column of their own. Only units here: a profit, margin or TACoS
+    // summed across six months answers a question the month columns already answer better, and
+    // the three columns were pushing the notes off the side of the screen.
+    totals: ['units'],
     N: 6, sort: 'latest', q: '', view: 'units', cache: null
   }
 };
@@ -8715,6 +8719,9 @@ function renderPanel(P){
   const ALL = ['units','profit','margin','tacos'];
   const view = P.view === 'both' ? 'all' : P.view;        // "Both" was this button's old name
   const shownMetrics = view === 'all' ? ALL : [view];
+  // The TOTAL columns used to mirror whatever was stacked in the month cells. A panel can now
+  // name the ones it wants instead; without that it keeps mirroring, as Weekly Analysis does.
+  const totalMetrics = P.totals ? P.totals.filter(m => METRIC[m]) : shownMetrics;
   const q = P.q;
   const onlyMoved = document.getElementById(P.id + 'Moved').checked;
   const list = rows.filter(r => {
@@ -8754,7 +8761,7 @@ function renderPanel(P){
   };
   head.innerHTML = '<tr><th style="min-width:150px;text-align:left">SKU / ASIN</th><th style="min-width:200px;text-align:left">Item</th>'
     + keys.map(b => '<th class="num" style="' + BL + '">' + P.label(b) + '</th>').join('')
-    + shownMetrics.map(m => '<th class="num">Total ' + METRIC[m].head + '</th>').join('')
+    + totalMetrics.map(m => '<th class="num">Total ' + METRIC[m].head + '</th>').join('')
     + '<th style="min-width:170px">Ranking Analysis</th><th style="min-width:170px">Sales Analysis</th></tr>';
 
   const CAP = 400;
@@ -8769,16 +8776,16 @@ function renderPanel(P){
       + '<td title="' + esc(r.name) + '" style="max-width:230px;overflow:hidden;text-overflow:ellipsis">' + esc(r.name.substr(0,40)) + '</td>'
       + keys.map((b,i) => '<td class="num" style="' + BL + (i === keys.length-1 ? ';font-weight:700' : '') + '">'
           + stack(v(r,b)) + '</td>').join('')
-      + shownMetrics.map(m => '<td class="num" style="font-weight:800">'
+      + totalMetrics.map(m => '<td class="num" style="font-weight:800">'
           + (METRIC[m].cell(rowTotal(r)) || DASH) + '</td>').join('')
       + noteCell(id, 'rank') + noteCell(id, 'sales') + '</tr>';
-  }).join('') || '<tr><td colspan="' + (keys.length + 4 + shownMetrics.length) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
+  }).join('') || '<tr><td colspan="' + (keys.length + 4 + totalMetrics.length) + '" style="color:var(--muted);padding:18px;text-align:center">Nothing matches.</td></tr>';
 
   // The percentages are divided from the summed money, never averaged across rows or periods.
   const grand = addUp(list.map(r => rowTotal(r)));
   foot.innerHTML = '<tr><td style="font-weight:800" colspan="2">TOTAL &middot; ' + fmtNum(list.length) + ' listing(s)</td>'
     + keys.map(b => '<td class="num" style="font-weight:800;' + BL + '">' + stack(colTotal(b)) + '</td>').join('')
-    + shownMetrics.map(m => '<td class="num" style="font-weight:800">' + (METRIC[m].cell(grand) || DASH) + '</td>').join('')
+    + totalMetrics.map(m => '<td class="num" style="font-weight:800">' + (METRIC[m].cell(grand) || DASH) + '</td>').join('')
     + '<td></td><td></td></tr>';
 
   document.getElementById(P.id + 'Count').textContent =
