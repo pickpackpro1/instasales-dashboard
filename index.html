@@ -1037,7 +1037,8 @@ body.cgrip-drag *{cursor:col-resize !important}
           <option value="orders_count">Orders</option>
           <option value="units">Units</option>
           <option value="revenue_gross">Sales</option>
-          <option value="net_profit_ex">Est Profit</option>
+          <option value="net_profit">Est Profit</option>
+          <option value="net_profit_ex">Est Profit After Tax</option>
           <option value="margin_ex">Margin</option>
           <option value="ads">Ad Spend</option>
           <option value="acos">ACOS</option>
@@ -4845,7 +4846,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-03-e';
+const BUILD_ID = '2026-11-03-f';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -8806,6 +8807,11 @@ function renderPanel(P){
   // Sorting follows what is on screen: asking for the biggest drop while looking at TACoS should
   // rank by TACoS, not by units. On "All" there is no single metric, so units lead as before.
   const sortBy = view === 'all' ? 'units' : view;
+  // The Total button ranks by the metric on show, so it is named after that metric - left
+  // reading "Total units" it looked like the sort had ignored the Profit or TACoS you picked.
+  const TOTAL_LABEL = {units:'Total units', profit:'Total profit', margin:'Overall margin', tacos:'Overall TACoS'};
+  document.querySelectorAll('.' + P.id + '-s[data-s="total"]')
+    .forEach(b => b.textContent = TOTAL_LABEL[sortBy] || 'Total');
   const metric = (r,b) => METRIC[sortBy].val(v(r,b)) || 0;
   const totalBy = r => METRIC[sortBy].val(rowTotal(r)) || 0;
   const delta = r => prev ? metric(r,cur) - metric(r,prev) : 0;
