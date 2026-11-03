@@ -4845,7 +4845,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-03-d';
+const BUILD_ID = '2026-11-03-e';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -10906,16 +10906,20 @@ function spFiltered(){
     return (va<vb?-1:va>vb?1:0)*dir;
   };
   if(STATE.sp.group === 'parent'){
-    // Keep a variation family together so it is never split across two pages. Families are
-    // ordered by their strongest member on the chosen sort, and children keep that sort inside.
-    const best = {};
+    // Keep a variation family together so it is never split across two pages. A family takes
+    // its place from its OWN total - the very number the parent row shows - so the column you
+    // sorted on reads in order down the page. Ordering by the strongest child instead put a
+    // family that nets a profit among the losses, which looked like the sort was broken.
+    const fam = {};
     for(const r of rows){
       const f = spFamilyKey(r);
-      if(!(f in best) || cmp(r, best[f]) < 0) best[f] = r;
+      (fam[f] = fam[f] || []).push(r);
     }
+    const tot = {};
+    for(const f in fam) tot[f] = totalsOf(fam[f]);
     rows.sort((a,b) => {
       const fa = spFamilyKey(a), fb = spFamilyKey(b);
-      if(fa !== fb) return cmp(best[fa], best[fb]) || (fa < fb ? -1 : 1);
+      if(fa !== fb) return cmp(tot[fa], tot[fb]) || (fa < fb ? -1 : 1);
       return cmp(a,b);
     });
   } else {
