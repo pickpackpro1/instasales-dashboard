@@ -1146,6 +1146,9 @@ body.cgrip-drag *{cursor:col-resize !important}
         <button class="btn secondary mo-s" data-s="drop">Biggest drop</button>
         <button class="btn secondary mo-s" data-s="rise">Biggest rise</button>
         <button class="btn secondary mo-s" data-s="name">Product</button>
+        <span class="flabel" style="margin-left:10px">Rows</span>
+        <button class="btn mo-g" data-g="listing" title="One line per listing - an ASIN on each account, and an FBA offer and its FBM twin, stay apart">Per listing</button>
+        <button class="btn secondary mo-g" data-g="product" title="One line per product, using the SKU Management identifier - the same item on Vemart, Vefive, eBay and TikTok adds up into one row">Per product</button>
         <span class="flabel" style="margin-left:10px">Show</span>
         <button class="btn mo-v" data-v="units">Units</button>
         <button class="btn secondary mo-v" data-v="profit">Profit</button>
@@ -8702,6 +8705,7 @@ const PANELS = {
     blurb: 'first to last day of the calendar month', span: 'that month',
     totals: ['units'],
     subcols: true,
+    group: 'listing',          // or 'product' - see panByProduct
     N: 6, sort: 'latest', q: '', view: 'units', cache: null
   }
 };
@@ -8750,6 +8754,38 @@ function panSeries(P, keys){
   P.cache = {key: ck, val};        // after the finally: that last recompute clears every cache
   return val;
 }
+// One line per PRODUCT instead of per listing. The same item usually sells under several ids -
+// an ASIN on Vemart and another on Vefive, an FBA offer beside its FBM twin, the same thing again
+// on eBay and TikTok - and read a line at a time none of them is the product's month. SKU
+// Management already states which SKUs are one product, so that identifier does the folding here,
+// exactly as Comparison PNL does it; anything the map has never heard of keeps its own line under
+// its own name rather than disappearing.
+function panByProduct(src){
+  const out = {};
+  for(const r of src){
+    const f = cmpFamilyOf(r.ch, r.key, r.name);
+    const id = String(f.fam || r.name || r.key).trim();
+    const e = out[id.toUpperCase()] || (out[id.toUpperCase()] = {
+      ch: 'multi', key: id, name: id, w: {}, chans: [], parts: [], mapped: f.mapped});
+    if(!e.chans.includes(r.ch)) e.chans.push(r.ch);
+    e.parts.push(r.key);
+    if(!f.mapped) e.mapped = false;
+    for(const b of Object.keys(r.w)){
+      const c = e.w[b] || (e.w[b] = {units:0, profit:0, rev:0, revEx:0, ads:0});
+      const x = r.w[b];
+      c.units += x.units || 0; c.profit += x.profit || 0;
+      c.rev += x.rev || 0; c.revEx += x.revEx || 0; c.ads += x.ads || 0;
+    }
+  }
+  // Channels in the app's own order, so the chips do not shuffle between renders.
+  const ORD = ['tiktok','amazon','amazon2','ebay','shopify'];
+  for(const e of Object.values(out)) e.chans.sort((a,b) => ORD.indexOf(a) - ORD.indexOf(b));
+  return Object.values(out);
+}
+// What a row can be searched by: its own id, and in product mode every id folded into it, so
+// typing an ASIN still finds the product it belongs to.
+const panFindable = r => ((r.parts ? r.parts.join(' ') + ' ' : '') + r.key + ' ' + r.name).toLowerCase();
+
 function renderPanel(P){
   const all = panBuckets(P);
   const head = document.querySelector('#' + P.id + 'Table thead');
@@ -8765,7 +8801,9 @@ function renderPanel(P){
     return;
   }
   const keys = all.slice(-P.N);                         // oldest left, newest right - like the sheet
-  const rows = panSeries(P, keys);
+  const byListing = panSeries(P, keys);
+  const grouped = P.group === 'product';
+  const rows = grouped ? panByProduct(byListing) : byListing;
   const cur = keys[keys.length-1], prev = keys[keys.length-2];
   const EMPTY = {units:0, profit:0, rev:0, revEx:0, ads:0};
   const v = (r, b) => r.w[b] || EMPTY;
@@ -8802,7 +8840,7 @@ function renderPanel(P){
     // still burning ad spend would drop out and the TOTAL row would stop matching the Dashboard.
     if(onlyMoved && !keys.some(b => { const c = v(r,b); return c.units || Math.abs(c.profit) > 0.004 || c.ads > 0.004; })) return false;
     if(!q) return true;
-    return (r.key + ' ' + r.name).toLowerCase().includes(q);
+    return panFindable(r).includes(q);
   });
   // Sorting follows what is on screen: asking for the biggest drop while looking at TACoS should
   // rank by TACoS, not by units. On "All" there is no single metric, so units lead as before.
@@ -8851,8 +8889,10 @@ function renderPanel(P){
   const span = subCols ? ' rowspan="2"' : '';
   // data-ck marks a LEAF column - one that can be dragged wider. A month heading spanning four
   // sub-columns is not one, so it carries none and its sub-headings carry them instead.
-  head.innerHTML = '<tr><th data-ck="key"' + span + ' style="min-width:120px;text-align:left">SKU / ASIN</th>'
-    + '<th data-ck="item"' + span + ' style="min-width:180px;text-align:left">Item</th>'
+  head.innerHTML = '<tr><th data-ck="key"' + span + ' style="min-width:120px;text-align:left">'
+    + (grouped ? 'Channels' : 'SKU / ASIN') + '</th>'
+    + '<th data-ck="item"' + span + ' style="min-width:180px;text-align:left">'
+    + (grouped ? 'Product' : 'Item') + '</th>'
     + keys.map(b => '<th class="num" style="' + BL + (subCols ? ';text-align:center' : '') + '"'
         + (subCols ? ' colspan="' + shownMetrics.length + '"' : ' data-ck="period"') + '>' + P.label(b) + '</th>').join('')
     + totalMetrics.map(m => '<th class="num" data-ck="tot-' + m + '"' + span + '>Total ' + METRIC[m].head + '</th>').join('')
@@ -8873,9 +8913,19 @@ function renderPanel(P){
     // character ASIN was pushed past the cell's edge and drawn over the Item column next to it.
     // Chip above, id below, each clipped to the column - and the column can now be dragged wider.
     const CLIP = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+    // Grouped, the cell carries every channel the product sold on and how many listings are in
+    // the line, with the ids themselves on hover. Ungrouped it is the one chip and the one id.
+    const chips = (r.chans || [r.ch]).map(c => '<span class="chip ' + c + '">' + (CH_NAME[c]||c) + '</span>').join(' ');
+    const idLine = r.parts
+      ? '<span title="' + esc(r.parts.join(', ')) + '">' + fmtNum(r.parts.length) + ' listing'
+        + (r.parts.length === 1 ? '' : 's')
+        + (r.mapped ? '' : ' <span style="font-weight:400;opacity:.7" title="Not in SKU Management, '
+            + 'so this line is grouped by its own name - map its SKUs to fold it in with the rest.">?</span>')
+        + '</span>'
+      : '<span title="' + esc(r.key) + '">' + esc(r.key) + '</span>';
     return '<tr><td style="max-width:260px">'
-      + '<div style="' + CLIP + '"><span class="chip ' + r.ch + '">' + (CH_NAME[r.ch]||r.ch) + '</span></div>'
-      + '<div style="font-weight:700;' + CLIP + '" title="' + esc(r.key) + '">' + esc(r.key) + '</div></td>'
+      + '<div style="' + CLIP + '">' + chips + '</div>'
+      + '<div style="font-weight:700;' + CLIP + '">' + idLine + '</div></td>'
       + '<td title="' + esc(r.name) + '" style="max-width:320px;' + CLIP + '">' + esc(r.name) + '</td>'
       + keys.map((b,i) => periodCells(v(r,b), i === keys.length-1)).join('')
       + totalMetrics.map(m => '<td class="num" style="font-weight:800">'
@@ -8885,7 +8935,8 @@ function renderPanel(P){
 
   // The percentages are divided from the summed money, never averaged across rows or periods.
   const grand = addUp(list.map(r => rowTotal(r)));
-  foot.innerHTML = '<tr><td style="font-weight:800" colspan="2">TOTAL &middot; ' + fmtNum(list.length) + ' listing(s)</td>'
+  const NOUN = grouped ? ' product(s)' : ' listing(s)';
+  foot.innerHTML = '<tr><td style="font-weight:800" colspan="2">TOTAL &middot; ' + fmtNum(list.length) + NOUN + '</td>'
     + keys.map(b => subCols
         ? shownMetrics.map((m, j) => '<td class="num" style="font-weight:800' + (j === 0 ? ';' + BL : '') + '">'
             + (METRIC[m].cell(colTotal(b)) || DASH) + '</td>').join('')
@@ -8895,7 +8946,7 @@ function renderPanel(P){
 
   document.getElementById(P.id + 'Count').textContent =
     fmtNum(shown.length) + (list.length > CAP ? '+' : '') + ' of ' + fmtNum(rows.length)
-    + ' listing(s) · ' + keys.length + ' ' + P.noun + '(s)';
+    + NOUN + ' · ' + keys.length + ' ' + P.noun + '(s)';
   const per = 'per ' + P.noun + ', ' + P.blurb + '.';
   const what = {units: 'Units sold', profit: 'Net profit (ex VAT)',
                 margin: 'Profit margin &mdash; net profit over revenue, both ex VAT',
@@ -8905,8 +8956,14 @@ function renderPanel(P){
   document.getElementById(P.id + 'Sub').innerHTML = what + ' ' + per
     + ' Each ' + P.noun + ' is a real run of the engines over ' + P.span + ', so it matches the '
     + 'Dashboard for the same range. Percentages are worked out from the money in the column, not '
-    + 'averaged. One line per listing &mdash; an FBA offer and its FBM twin stay apart. Your two '
-    + 'notes are saved per listing and travel with the account. <b>Drag the edge of any column '
+    + 'averaged.'
+    + (grouped
+       ? ' One line per <b>product</b> &mdash; every listing SKU Management maps to it adds up, '
+         + 'across both Amazon accounts and the other channels. Your two notes are saved per '
+         + 'product and travel with the account.'
+       : ' One line per listing &mdash; an FBA offer and its FBM twin stay apart. Your two '
+         + 'notes are saved per listing and travel with the account.')
+    + ' <b>Drag the edge of any column '
     + 'heading</b> to set its width (double-click the edge to put it back), and drag the corner '
     + 'of a note to make a row taller.';
 
@@ -8925,8 +8982,11 @@ function renderMonthly(){ renderPanel(PANELS.monthly); }
 function panExport(P){
   const keys = panBuckets(P).slice(-P.N);
   const NOTES = P.notes();
-  const rows = panSeries(P, keys).map(r => {
-    const o = {Channel: CH_NAME[r.ch] || r.ch, 'SKU / ASIN': r.key, Item: r.name};
+  const src = P.group === 'product' ? panByProduct(panSeries(P, keys)) : panSeries(P, keys);
+  const rows = src.map(r => {
+    const o = r.parts
+      ? {Channel: r.chans.map(c => CH_NAME[c] || c).join(' + '), 'SKU / ASIN': r.parts.join(', '), Item: r.name}
+      : {Channel: CH_NAME[r.ch] || r.ch, 'SKU / ASIN': r.key, Item: r.name};
     const sum = {units:0, profit:0, rev:0, revEx:0, ads:0};
     for(const b of keys){
       const c = r.w[b] || {units:0, profit:0, rev:0, revEx:0, ads:0};
@@ -12640,6 +12700,7 @@ for(const pk of Object.keys(PANELS)){
   group('n', b => P.N = +b.dataset.n);
   group('s', b => P.sort = b.dataset.s);
   group('v', b => P.view = b.dataset.v);
+  group('g', b => P.group = b.dataset.g);      // Monthly only; Weekly has no such buttons
   document.getElementById(p + 'Moved').addEventListener('change', () => renderPanel(P));
   document.getElementById(p + 'Search').addEventListener('input', debounce(e => { P.q = e.target.value.trim().toLowerCase(); renderPanel(P); }, 200));
   document.getElementById(p + 'Export').addEventListener('click', () => panExport(P));
