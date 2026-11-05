@@ -417,12 +417,12 @@ body.cgrip-drag *{cursor:col-resize !important}
       <button class="ch-chip" id="gDateClear" title="Clear date filter">All dates</button>
     </div>
     <div class="ch-chips" id="chChips" title="Click a channel to see just that one, then click others to add them - e.g. eBay + TikTok together">
-      <button class="ch-chip active" data-ch="all">All Channels</button>
-      <button class="ch-chip c-tiktok" data-ch="tiktok">TikTok</button>
-      <button class="ch-chip c-amazon" data-ch="amazon">Amazon 1 (Vemart)</button>
-      <button class="ch-chip c-amazon2" data-ch="amazon2">Amazon 2 (Vefive)</button>
-      <button class="ch-chip c-ebay" data-ch="ebay">eBay</button>
-      <button class="ch-chip c-shopify" data-ch="shopify">Shopify</button>
+      <button class="ch-chip active" data-ch="all" title="Everything you have loaded. Click any single channel to narrow, then add more to it.">All Channels</button>
+      <button class="ch-chip c-tiktok" data-ch="tiktok" title="Click to show this channel on its own, then click another to add it &mdash; Vemart + Vefive, or Vefive + eBay. Click a lit chip to drop it.">TikTok</button>
+      <button class="ch-chip c-amazon" data-ch="amazon" title="Click to show this channel on its own, then click another to add it &mdash; Vemart + Vefive, or Vefive + eBay. Click a lit chip to drop it.">Amazon 1 (Vemart)</button>
+      <button class="ch-chip c-amazon2" data-ch="amazon2" title="Click to show this channel on its own, then click another to add it &mdash; Vemart + Vefive, or Vefive + eBay. Click a lit chip to drop it.">Amazon 2 (Vefive)</button>
+      <button class="ch-chip c-ebay" data-ch="ebay" title="Click to show this channel on its own, then click another to add it &mdash; Vemart + Vefive, or Vefive + eBay. Click a lit chip to drop it.">eBay</button>
+      <button class="ch-chip c-shopify" data-ch="shopify" title="Click to show this channel on its own, then click another to add it &mdash; Vemart + Vefive, or Vefive + eBay. Click a lit chip to drop it.">Shopify</button>
     </div>
     <button class="icon-btn" id="exportBtn" title="Export to Excel" disabled>⬇️ Excel</button>
     <button class="icon-btn" id="settingsBtn" title="Settings">⚙️</button>
@@ -4849,7 +4849,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-05-a';
+const BUILD_ID = '2026-11-05-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -11667,6 +11667,7 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
 
 // only real channel chips (data-ch) - the "All dates" button shares the styling
 // class but must NOT touch the channel filter
+let CH_MULTI_HINTED = false;     // the "channels combine" nudge, shown once per visit
 function paintChChips(){
   document.querySelectorAll('.ch-chip[data-ch]').forEach(x => {
     const ch = x.dataset.ch;
@@ -11684,6 +11685,14 @@ document.querySelectorAll('.ch-chip[data-ch]').forEach(c => c.addEventListener('
     STATE.chFilter = 'all';
   } else if(STATE.chFilter === 'all'){
     STATE.chFilter = ch;                       // narrow to the one just clicked
+    // The chips look like radio buttons, so nobody discovers that they combine. Said once per
+    // visit, at the only moment it is useful: the click that narrows to a single channel.
+    if(!CH_MULTI_HINTED){
+      CH_MULTI_HINTED = true;
+      showBanner('Showing ' + (CH_NAME[ch] || ch) + ' only. Click another channel to add it - '
+        + 'Vemart + Vefive, or Vefive + eBay. Click a lit chip to drop it, or "All Channels" to '
+        + 'go back.', 'success');
+    }
   } else {
     const sel = chSelection();
     const i = sel.indexOf(ch);
