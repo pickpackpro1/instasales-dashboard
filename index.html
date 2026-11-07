@@ -3655,7 +3655,7 @@ function computeTikTok(){
     // under-counted a refund on any order with more than one product in it.
     const refundLine = cancelled ? 0 : cleanMoney(r['Order Refund Amount']);
     orders.push({oid, sku_id:String(r['SKU ID']||'').trim(), seller_sku:fixText(r['Seller SKU']), name:fixText(r['Product Name']),
-      date, cancelled, status:fixText(r['Order Status']), sub,
+      date, cancelled, status:fixText(r['Order Status']), sub, ret,
       net_qty: cancelled ? 0 : Math.max(qty-ret,0),
       gross: cancelled ? 0 : cleanMoney(r['Order Amount'])*share,
       shipFee: cleanMoney(r['Shipping Fee After Discount']),
@@ -3696,23 +3696,73 @@ function computeTikTok(){
   // ads commission and the shipping service fee TikTok deducts. Where a line has settled, those
   // numbers are used as they stand; a line that has not settled yet keeps the modelled rate, so
   // the current month still works before its statements arrive.
-  const settle = {}; let settleLines = 0;
+  // Every column of this export that carries money. Named once, because the de-duplication
+  // signature below reads the same list: a column added to the sums is then automatically part
+  // of what makes two rows the same row.
+  const SETTLE_MONEY = ['Gross sales','Net sales','Customer payment','Customer refund',
+    'Customer-paid shipping fee','TikTok Shop commission fee','Affiliate Commission',
+    'Affiliate partner commission','Affiliate Shop Ads commission',
+    'Affiliate Partner shop ads commission','Shipping service fee','Return shipping fee',
+    'Return shipping fee reimbursement','Adjustment amount','Quantity'];
+  const settle = {}; let settleLines = 0, settleDupes = 0;
+  const seenSettle = new Set();
   for(const r of R.tt_settle){
     const oid = String(r['Order/adjustment ID'] || '').trim();
     if(!oid) continue;
+    // One income sheet uploaded twice repeats its lines exactly, and these are SUMMED - which
+    // would bank the sale and charge the fee twice over. A line that genuinely appears in two
+    // STATEMENTS - the sale in one, its refund in a later one - differs by statement ID, so it
+    // survives this and is still added up.
+    const sig = [r['Statement ID'], r['Payment ID'], oid, r['SKU ID']]
+      .concat(SETTLE_MONEY.map(c => cleanMoney(r[c]))).join('|');
+    if(seenSettle.has(sig)){ settleDupes++; continue; }
+    seenSettle.add(sig);
     const k = oid + '|' + String(r['SKU ID'] || '').trim();
-    const e = settle[k] = settle[k] || {comm:0, aff:0, shop:0, ship:0, adj:0};
+    const e = settle[k] = settle[k] || {pay:0, ref:0, qty:0, comm:0, aff:0, shop:0, ship:0, adj:0};
     // A fee is written negative and a credit positive - a refunded line hands the commission
     // back, e.g. "-14.99 net sales, +0.94 commission". Flipping the sign turns a charge into a
     // cost and a credit into a deduction; taking the size of it would have billed the refund.
     const fee = c => -cleanMoney(r[c]);
+    // What the buyer paid for THIS line and what went back to them. Both are per line in this
+    // export - a three-item order splits them between its lines - so they are taken as written.
+    e.pay  += cleanMoney(r['Customer payment']);
+    e.ref  += -cleanMoney(r['Customer refund']);           // written negative; held as a positive refund
+    e.qty  += cleanInt(r['Quantity']);
     e.comm += fee('TikTok Shop commission fee');
     e.aff  += fee('Affiliate Commission') + fee('Affiliate partner commission');
     e.shop += fee('Affiliate Shop Ads commission') + fee('Affiliate Partner shop ads commission');
-    e.ship += fee('Shipping service fee');
+    // Everything TikTok charges for carriage: the service fee on the parcel, and on a return the
+    // label it bills less whatever it reimburses.
+    e.ship += fee('Shipping service fee') + fee('Return shipping fee') + fee('Return shipping fee reimbursement');
     e.adj  += cleanMoney(r['Adjustment amount']);          // either sign - left as it stands
   }
-  const settleFor = o => settle[o.oid + '|' + o.sku_id] || settle[o.oid + '|'] || null;
+  // A row with no SKU ID answers for the whole order, so it can only be read onto a one-line
+  // order; spread over a three-line one it would hand every line the whole order's money.
+  const oLines = {};
+  for(const o of orders) if(!o.cancelled) oLines[o.oid] = (oLines[o.oid] || 0) + 1;
+  const settleFor = o => settle[o.oid + '|' + o.sku_id]
+    || ((oLines[o.oid] || 0) === 1 ? settle[o.oid + '|'] : null) || null;
+
+  // ---- A settled line answers for itself ----
+  // Sales, units and every fee come from the statement wherever there is one, because that is
+  // the money that actually moved; the orders file is left to cover what has not settled yet.
+  // Revenue is "Customer payment" - what the buyer handed over for this line, after discounts
+  // and including their delivery - which is the same thing the orders file's share of "Order
+  // Amount" was standing in for.
+  let settledRev = 0, unsettledRev = 0, settledLines = 0;
+  for(const o of orders){
+    if(o.cancelled) continue;
+    const st = settleFor(o);
+    if(!st){ unsettledRev += o.gross; continue; }
+    o.settled = true;
+    o.gross = st.pay;
+    // The statement's refund wins; the orders file still covers a return that landed after the
+    // statement was cut, which is the only way a refund reaches a settled line.
+    if(st.ref > 0.004) o.refund = st.ref;
+    // A statement counts what shipped, not what came back, so returns still come off the units.
+    o.net_qty = Math.max(st.qty - o.ret, 0);
+    settledRev += o.gross; settledLines++;
+  }
 
   const skuIdToSeller = {};
   for(const o of orders) if(o.sku_id && o.seller_sku && !skuIdToSeller[o.sku_id]) skuIdToSeller[o.sku_id] = o.seller_sku;
@@ -3902,7 +3952,8 @@ function computeTikTok(){
   for(const d of Object.keys(daily)) daily[d].orders = daily[d].orders.size;
   const rows = finalizeRows(Object.values(map));
   return {rows, extras:{daily, adsTotal, adRevTotal, adsMode:mode, ignoredAdsRows, ordersList, fullSpan:{min:fullMin, max:fullMax},
-    settle:{lines:settleLines, rows:R.tt_settle.length, orderLines:orders.filter(o => !o.cancelled).length},
+    settle:{lines:settleLines, rows:R.tt_settle.length, orderLines:orders.filter(o => !o.cancelled).length,
+            dupes:settleDupes, rev:settledRev, otherRev:unsettledRev, revLines:settledLines},
     samples:{units:samples.units, orders:samples.orders.size, buying:samples.buying, shipping:samples.shipping, oper:samples.oper,
              cost:samples.buying + samples.shipping + samples.oper}}};
 }
@@ -4850,7 +4901,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-06-b';
+const BUILD_ID = '2026-11-07-a';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5698,11 +5749,14 @@ function buildDiagnostics(){
   }
   {
     const st = (STATE.extras.tiktok || {}).settle;
-    if(st && st.rows) L.push(`TikTok fees from the income/settlement export: ${fmtNum(st.lines)} of ${fmtNum(st.orderLines)} order line(s) `
-      + `in range are priced on what TikTok actually charged - commission, affiliate, shop ads and the shipping service fee - `
-      + `from ${fmtNum(st.rows)} settlement row(s). The rest have not settled yet and still use the referral % from the master sheet. `
-      + `TikTok's own rate is set per product category (5% on some of these products, 9% on others) and is charged on the product `
-      + `subtotal PLUS the buyer's shipping, so no single percentage can match it.`);
+    if(st && st.rows) L.push(`TikTok from the income/settlement export: ${fmtNum(st.revLines)} of ${fmtNum(st.orderLines)} order line(s) `
+      + `in range take their sales, units and fees from what TikTok actually settled - ${fmtGBP(st.rev)} of revenue `
+      + `("Customer payment"), against ${fmtGBP(st.otherRev)} still read from the orders file. Fees on a settled line are the real `
+      + `commission, affiliate, shop ads, shipping service fee and return carriage, from ${fmtNum(st.rows)} settlement row(s)`
+      + (st.dupes ? ` (${fmtNum(st.dupes)} duplicate row(s) from re-uploaded income sheets ignored)` : '') + `. `
+      + `A line that has not settled yet keeps the referral % from the master sheet; TikTok's own rate is set per product category `
+      + `(5% on some of these products, 9% on others) and is charged on the product subtotal PLUS the buyer's shipping, so no `
+      + `single percentage can match it. Refunds come from the statement where it shows one, otherwise from the orders file.`);
   }
   {
     const sm = (STATE.extras.tiktok || {}).samples;
