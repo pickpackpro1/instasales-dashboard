@@ -3763,10 +3763,23 @@ function computeTikTok(){
   // Revenue is "Customer payment" - what the buyer handed over for this line, after discounts
   // and including their delivery - which is the same thing the orders file's share of "Order
   // Amount" was standing in for.
-  let settledRev = 0, unsettledRev = 0, settledLines = 0;
+  let settledRev = 0, unsettledRev = 0, settledLines = 0, cancelledSettled = 0, cancelledRef = 0;
   for(const o of orders){
-    if(o.cancelled) continue;
     const st = settleFor(o);
+    // A RETURNED order is written "Cancelled" in the orders export, so the whole line used to
+    // be dropped - yet the statement shows the buyer's money coming in and the same money
+    // going back out, with whatever TikTok kept out of it. Where such a line settled it now
+    // carries those figures, so sales, refunds and fees are complete. Units stay at nil
+    // because nothing was sold, and it is still not counted as an order, so no parcel is
+    // charged against it - the only thing that changed hands is the money.
+    if(o.cancelled){
+      if(!st) continue;
+      o.settled = true;
+      o.gross = st.pay; o.refund = st.ref; o.plat_disc = st.disc;
+      settledRev += o.gross; settledLines++;
+      cancelledSettled += o.gross; cancelledRef += o.refund;
+      continue;
+    }
     if(!st){ unsettledRev += o.gross; continue; }
     o.settled = true;
     o.gross = st.pay;
@@ -3840,7 +3853,7 @@ function computeTikTok(){
     s.revenue_gross += o.gross;
     s.refunds += o.refund;
     s.plat_disc += o.plat_disc || 0;
-    const st = o.cancelled ? null : settleFor(o);
+    const st = settleFor(o);   // a cancelled line that settled still carries what TikTok kept
     if(st){
       s._stComm = (s._stComm || 0) + st.comm;
       s._stAff  = (s._stAff  || 0) + st.aff;
@@ -3936,12 +3949,12 @@ function computeTikTok(){
   const daily = {};
   const ordersList = [];
   for(const o of orders){
-    if(o.date && !o.cancelled){
+    if(o.date && (!o.cancelled || o.settled)){
       if(!daily[o.date]) daily[o.date] = {rev:0, units:0, refunds:0, orders:new Set()};
       daily[o.date].rev += o.gross;
       daily[o.date].refunds += o.refund;
       daily[o.date].units += o.net_qty;
-      daily[o.date].orders.add(o.oid);
+      if(!o.cancelled) daily[o.date].orders.add(o.oid);   // a cancelled order is still not an order
     }
     // A free sample has no revenue, and the per-order view works every line's costs out from its
     // share of the SKU's revenue - so a sample showed as costing nothing, with a "no cost data"
@@ -3971,7 +3984,8 @@ function computeTikTok(){
   const rows = finalizeRows(Object.values(map));
   return {rows, extras:{daily, adsTotal, adRevTotal, adsMode:mode, ignoredAdsRows, ordersList, fullSpan:{min:fullMin, max:fullMax},
     settle:{lines:settleLines, rows:R.tt_settle.length, orderLines:orders.filter(o => !o.cancelled).length,
-            dupes:settleDupes, rev:settledRev, otherRev:unsettledRev, revLines:settledLines},
+            dupes:settleDupes, rev:settledRev, otherRev:unsettledRev, revLines:settledLines,
+            cancRev:cancelledSettled, cancRef:cancelledRef},
     samples:{units:samples.units, orders:samples.orders.size, buying:samples.buying, shipping:samples.shipping, oper:samples.oper,
              cost:samples.buying + samples.shipping + samples.oper}}};
 }
@@ -4919,7 +4933,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-07-b';
+const BUILD_ID = '2026-11-07-c';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5772,6 +5786,8 @@ function buildDiagnostics(){
       + `("Customer payment"), against ${fmtGBP(st.otherRev)} still read from the orders file. Fees on a settled line are the real `
       + `commission, affiliate, shop ads, shipping service fee and return carriage, from ${fmtNum(st.rows)} settlement row(s)`
       + (st.dupes ? ` (${fmtNum(st.dupes)} duplicate row(s) from re-uploaded income sheets ignored)` : '') + `. `
+      + (st.cancRef > 0.004 ? `${fmtGBP(st.cancRev)} of that is orders written "Cancelled" in the orders export - a RETURN reads as a cancellation there - `
+          + `where the statement shows the money in and ${fmtGBP(st.cancRef)} back out again; they count no units and no parcel, only the money. ` : '')
       + `A line that has not settled yet keeps the referral % from the master sheet; TikTok's own rate is set per product category `
       + `(5% on some of these products, 9% on others) and is charged on the product subtotal PLUS the buyer's shipping, so no `
       + `single percentage can match it. Refunds come from the statement where it shows one, otherwise from the orders file.`);
