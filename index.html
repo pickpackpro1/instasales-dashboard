@@ -4964,7 +4964,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-07-f';
+const BUILD_ID = '2026-11-07-g';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -7235,8 +7235,20 @@ async function cloudSaveCostBookNow(){
       COST_SAVED_SEQ = Math.max(COST_SAVED_SEQ, costSeqAtSend);
       // take on what the merge brought back from other browsers, so this one is now in step
       const before = JSON.stringify([COSTBOOK, PRICEBOOK, ROIBOOK]);
-      COSTBOOK = payload.costBook || {}; PRICEBOOK = payload.priceBook || {}; ROIBOOK = payload.roiBook || {};
+      // A merge coming back empty while this browser still holds costs is always a fault. A
+      // genuine "delete them all" can only reach here with the local book ALREADY empty, so
+      // refusing this can never block one. Keep what we have, clear the agreed-state for the
+      // cost book so every entry counts as changed, and send it again.
+      const lost = isEmptyObj(payload.costBook || {}) && !isEmptyObj(COSTBOOK);
+      if(!lost) COSTBOOK = payload.costBook || {};
+      PRICEBOOK = payload.priceBook || {}; ROIBOOK = payload.roiBook || {};
       snapshotBooks();
+      if(lost){
+        console.warn('cost book: merge returned empty while ' + Object.keys(COSTBOOK).length
+          + ' entr(ies) are held here - keeping them and pushing again');
+        ACCT_BOOK_SNAPSHOT.costBook = {};
+        cloudSaveCostBook();
+      }
       if(JSON.stringify([COSTBOOK, PRICEBOOK, ROIBOOK]) !== before){
         store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK));
         store.set(lsKey(LS_PRICEBOOK), JSON.stringify(PRICEBOOK));
@@ -7294,10 +7306,17 @@ async function cloudSyncCostBook(attempt){
       if(LOADING_ACCOUNT){ /* the one rebuild at the end of the load covers this */ }
       else if(STATE.master && loadedChannels().length){ recompute(); renderPage(); }
       else if(STATE.page === 'costbook') renderCostBook();
+      snapshotBooks();            // this browser and the database now agree
     } else if(Object.keys(COSTBOOK).length){
-      cloudSaveCostBook();          // cloud empty, push what we have
+      // The cloud holds no cost book and this browser does, so ours goes up. It must NOT be
+      // snapshotted first: that records every entry as already agreed, the save 800ms later
+      // then finds nothing changed, the merge hands back an empty book - and that empty book
+      // was written straight over this browser's copy. One sync against a settings row with
+      // no costBook wiped the lot, locally and in the cloud.
+      cloudSaveCostBook();
+    } else {
+      snapshotBooks();              // both empty - agreed on nothing, which is still agreement
     }
-    snapshotBooks();                // this browser and the database now agree
   }catch(e){ console.warn('cloud sync (cost book) pull failed:', e); }
 }
 // The date a cost lookup is answered "as of": the end of the active filter, else the newest
