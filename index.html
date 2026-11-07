@@ -591,6 +591,7 @@ body.cgrip-drag *{cursor:col-resize !important}
       <div class="sub-title">Per-order profit breakdown. TikTok / eBay / Shopify charges are prorated from each SKU's verified economics; <b>Amazon uses the Payments/Transaction report</b> (real per-order fees) when loaded — otherwise Amazon (Business Report only) has no order-level rows. Respects the channel + date filter.</div>
       <div class="table-wrap"><table id="ordTable"><thead><tr>
         <th>Order Info</th><th>Product</th><th class="num">Units</th><th class="num">Order Total</th>
+        <th class="num" title="Money the platform itself put towards the price. The buyer never paid it, so it is not in Order Total, but it is paid to you.">Platform Discount</th>
         <th class="num">Charges &amp; Expenses</th><th class="num">Profit</th><th>Margin</th><th>Details</th>
       </tr></thead><tbody></tbody></table></div>
     </div>
@@ -3511,6 +3512,10 @@ function buildSkuMap(){
 function newRow(channel, key, name, id){
   return {channel, key, name: name||'', id: id||key,
     units:0, orders_count:0, revenue_gross:0, refunds:0, revenue:0,
+    // Money the PLATFORM puts into a sale: TikTok funds part of a voucher, the buyer pays less
+    // than the seller earns. It is income, not a discount off what you take, so it is carried
+    // apart from revenue_gross - which is what the customer actually handed over.
+    plat_disc:0,
     mkt_fee:0, affiliate:0, shop_ads:0, buying:0, shipping:0, oper:0, ads:0,
     // eBay only: the regulatory operating fee and the per-order fixed fee, both already
     // INSIDE mkt_fee. Carried separately so each can be read on its own without being
@@ -3535,7 +3540,10 @@ function finalizeRows(rows){
       for(const k of COST_KEYS) if(r[k] && vatGrossUpFor(r.channel, k)) r[k] *= vDiv;
       r.__grossedUp = true;
     }
-    r.revenue = r.revenue_gross - r.refunds;
+    // Platform-funded discounts are consideration for the sale like any other - the buyer pays
+    // less and the platform makes up the difference - so they belong in revenue and carry
+    // output VAT. revenue_gross stays what the CUSTOMER paid.
+    r.revenue = r.revenue_gross - r.refunds + (r.plat_disc || 0);
     r.total_cost = r.mkt_fee + r.affiliate + r.shop_ads + r.buying + r.shipping + r.oper + r.ads;
     r.net_profit = r.revenue - r.total_cost;
     // Zero-rated goods: no output VAT on the sale, and the supplier's invoice for the goods
@@ -3571,7 +3579,7 @@ function finalizeRows(rows){
 function totalsOf(rows){
   // reg_fee and fixed_fee are a BREAKDOWN of mkt_fee, not extra costs - they are summed here
   // so they can be shown as their own tiles, and are deliberately absent from total_cost.
-  const t = {units:0,orders_count:0,revenue_gross:0,refunds:0,revenue:0,mkt_fee:0,reg_fee:0,fixed_fee:0,affiliate:0,shop_ads:0,buying:0,shipping:0,oper:0,ads:0,ad_sales:0,clicks:0,impressions:0,total_cost:0,net_profit:0,output_vat:0,revenue_ex:0,input_vat:0,total_cost_ex:0,net_profit_ex:0,net_vat_due:0};
+  const t = {units:0,orders_count:0,revenue_gross:0,refunds:0,plat_disc:0,revenue:0,mkt_fee:0,reg_fee:0,fixed_fee:0,affiliate:0,shop_ads:0,buying:0,shipping:0,oper:0,ads:0,ad_sales:0,clicks:0,impressions:0,total_cost:0,net_profit:0,output_vat:0,revenue_ex:0,input_vat:0,total_cost_ex:0,net_profit_ex:0,net_vat_due:0};
   for(const r of rows) for(const k of Object.keys(t)) t[k] += (r[k]||0);
   // per-cost VAT reclaim, kept out of the numeric loop above since it is a nested object
   t.vat_rec = {};
@@ -3703,7 +3711,8 @@ function computeTikTok(){
     'Customer-paid shipping fee','TikTok Shop commission fee','Affiliate Commission',
     'Affiliate partner commission','Affiliate Shop Ads commission',
     'Affiliate Partner shop ads commission','Shipping service fee','Return shipping fee',
-    'Return shipping fee reimbursement','Adjustment amount','Quantity'];
+    'Return shipping fee reimbursement','Adjustment amount','Quantity',
+    'Platform discounts','Platform discounts refund'];
   const settle = {}; let settleLines = 0, settleDupes = 0;
   const seenSettle = new Set();
   for(const r of R.tt_settle){
@@ -3718,7 +3727,7 @@ function computeTikTok(){
     if(seenSettle.has(sig)){ settleDupes++; continue; }
     seenSettle.add(sig);
     const k = oid + '|' + String(r['SKU ID'] || '').trim();
-    const e = settle[k] = settle[k] || {pay:0, ref:0, qty:0, comm:0, aff:0, shop:0, ship:0, adj:0};
+    const e = settle[k] = settle[k] || {pay:0, ref:0, qty:0, disc:0, comm:0, aff:0, shop:0, ship:0, adj:0};
     // A fee is written negative and a credit positive - a refunded line hands the commission
     // back, e.g. "-14.99 net sales, +0.94 commission". Flipping the sign turns a charge into a
     // cost and a credit into a deduction; taking the size of it would have billed the refund.
@@ -3728,6 +3737,11 @@ function computeTikTok(){
     e.pay  += cleanMoney(r['Customer payment']);
     e.ref  += -cleanMoney(r['Customer refund']);           // written negative; held as a positive refund
     e.qty  += cleanInt(r['Quantity']);
+    // What TikTok itself put towards the price, less any of it handed back with a refund. The
+    // buyer never paid it, so it is missing from "Customer payment", but the seller is paid it.
+    // Both columns are already signed - the discount positive, its refund negative - so they
+    // are added, not subtracted.
+    e.disc += cleanMoney(r['Platform discounts']) + cleanMoney(r['Platform discounts refund']);
     e.comm += fee('TikTok Shop commission fee');
     e.aff  += fee('Affiliate Commission') + fee('Affiliate partner commission');
     e.shop += fee('Affiliate Shop Ads commission') + fee('Affiliate Partner shop ads commission');
@@ -3761,6 +3775,7 @@ function computeTikTok(){
     if(st.ref > 0.004) o.refund = st.ref;
     // A statement counts what shipped, not what came back, so returns still come off the units.
     o.net_qty = Math.max(st.qty - o.ret, 0);
+    o.plat_disc = st.disc;
     settledRev += o.gross; settledLines++;
   }
 
@@ -3824,6 +3839,7 @@ function computeTikTok(){
     s.units += o.net_qty;
     s.revenue_gross += o.gross;
     s.refunds += o.refund;
+    s.plat_disc += o.plat_disc || 0;
     const st = o.cancelled ? null : settleFor(o);
     if(st){
       s._stComm = (s._stComm || 0) + st.comm;
@@ -3944,10 +3960,12 @@ function computeTikTok(){
       const op = (orderOper[o.oid] || 0) / lines;
       const costEx = exOf(buy, 'buying') + exOf(ship, 'shipping') + exOf(op, 'oper');
       const vatBack = (buy - exOf(buy, 'buying')) + (ship - exOf(ship, 'shipping')) + (op - exOf(op, 'oper'));
-      oecon = {orderTotal:0, revEx:0, platform:0, shipping:ship, cost:buy, oper:op, ads:0,
+      oecon = {orderTotal:0, platDisc:0, revEx:0, platform:0, shipping:ship, cost:buy, oper:op, ads:0,
                tax:-vatBack, charges:costEx - vatBack, profit:-costEx, net:null, gross:null, noCost:!es};
     }
-    ordersList.push({channel:'tiktok', date:o.date, order:o.oid, sku:o.seller_sku, name:o.name, qty:o.net_qty||o.sub&&0||0, qtyRaw:o.net_qty, rev:o.gross-o.refund, refund:o.refund, status:o.status, sample:isSample, oecon});
+    ordersList.push({channel:'tiktok', date:o.date, order:o.oid, sku:o.seller_sku, name:o.name, qty:o.net_qty||o.sub&&0||0, qtyRaw:o.net_qty, rev:o.gross-o.refund, refund:o.refund,
+      platDisc:o.plat_disc || 0,     // straight off the statement - this line's own, not prorated
+      status:o.status, sample:isSample, oecon});
   }
   for(const d of Object.keys(daily)) daily[d].orders = daily[d].orders.size;
   const rows = finalizeRows(Object.values(map));
@@ -4901,7 +4919,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-07-a';
+const BUILD_ID = '2026-11-07-b';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -6138,6 +6156,8 @@ function openPlDrawer(from, to, title){
   document.getElementById('plsDrawerBody').innerHTML =
       `<div class="pls-row group"><span>Net Sales (Inc VAT)</span>${money(t.revenue_gross)}</div>`
     + `<div class="pls-row sub"><span>${fmtNum(t.units)} units · ${fmtNum(t.orders_count)} orders</span><span></span></div>`
+    + ((t.plat_disc || 0) > 0.004 ? `<div class="pls-row"><span>Platform Discount (funded by the platform)</span>${money(t.plat_disc,'pos')}</div>`
+        + `<div class="pls-row sub" style="color:var(--muted);font-size:11px"><span>The platform's own share of a voucher. The buyer never paid it, so it is outside Net Sales, but it is paid to you.</span><span></span></div>` : '')
     + `<div class="pls-row group"><span>Marketplace Expenses</span>${money(-marketplaceTotal,'neg')}</div>`
     + sub('Referral / Marketplace Fee', mkt)
     + (aff>0.004 ? sub('Affiliate Commission', aff) : '')
@@ -6152,7 +6172,7 @@ function openPlDrawer(from, to, title){
         + `of which free samples (TikTok orders worth £0): <b>${fmtGBP(t.samples.cost)}</b> &mdash; `
         + `${fmtNum(t.samples.units)} unit(s) in ${fmtNum(t.samples.orders)} order(s), no revenue against them`
         + `</span><span></span></div>` : '')
-    + `<div class="pls-row total"><span>Total Revenue (Inc VAT)</span>${money(t.revenue_gross)}</div>`
+    + `<div class="pls-row total"><span>Total Revenue (Inc VAT)</span>${money(t.revenue_gross + (t.plat_disc || 0))}</div>`
     + `<div class="pls-row"><span>Total Charges &amp; Expenses</span>${money(-totalCharges,'neg')}</div>`
     + vatBlock
     + `<div class="pls-row"><span>Estimated Payouts</span>${money(payouts)}</div>`
@@ -6554,7 +6574,7 @@ function renderConsolidated(){
   const extraRef = unattachedRefunds(chans);
   const totalRefunds = sum('refunds') + extraRef;
   const cards = [
-    {label:'Total Revenue (Inc VAT)', value:fmtGBP0(sum('revenue_gross')), sub:`${fmtNum(sum('units'))} units`},
+    {label:'Total Revenue (Inc VAT)', value:fmtGBP0(sum('revenue_gross') + sum('plat_disc')), sub:`${fmtNum(sum('units'))} units`},
     {label:'Total Refunds', value:fmtGBP0(totalRefunds), sub:totalRev>0?`${fmtPct(totalRefunds/(sum('revenue_gross')||1)*100)} of gross`:'', valueCls:totalRefunds>0?'neg':''},
     {label:'Total Ad Spend', value:fmtGBP0(totalAds), sub:`blended TACOS ${fmtPct(totalRev>0?totalAds/totalRev*100:null)}`},
     {label:'Total Net Profit (Ex VAT)', value:fmtGBP0(totalProfit), sub:`margin ${fmtPct(totalRevEx>0?totalProfit/totalRevEx*100:null)}`, valueCls:totalProfit>=0?'pos':'neg'},
@@ -6618,27 +6638,31 @@ function renderOrders(){
     const k = keyOf(o), r = rowByKey[k], denom = lineRevSum[k];
     const orderTotal = o.rev||0;
     const share = (r && denom>0) ? orderTotal/denom : 0;
-    if(!r || share<=0) return {orderTotal, revEx:0, platform:0, shipping:0, cost:0, oper:0, ads:0, tax:0, charges:orderTotal, profit:0, net:null, gross:null, noCost:true};
+    if(!r || share<=0) return {orderTotal, platDisc:o.platDisc||0, revEx:0, platform:0, shipping:0, cost:0, oper:0, ads:0, tax:0, charges:orderTotal, profit:0, net:null, gross:null, noCost:true};
     const platform = (r.mkt_fee + r.affiliate + r.shop_ads) * share;
     const ads = r.ads * share, shipping = r.shipping * share, cost = r.buying * share, oper = r.oper * share;
     const tax = r.net_vat_due * share;
     const charges = (r.total_cost + r.net_vat_due) * share;   // everything deducted to reach profit
     const profit = r.net_profit_ex * share;
     const gross = orderTotal>0 ? (orderTotal - cost)/orderTotal*100 : null;
-    return {orderTotal, revEx:(r.revenue_ex||0)*share, platform, shipping, cost, oper, ads, tax, charges, profit, net:r.margin_ex, gross, noCost:!!r.no_cost};
+    // A TikTok line settled by statement knows its OWN platform discount; anything else takes
+    // its share of the SKU's, the same way every other figure on this row is worked out.
+    const platDisc = o.platDisc != null ? o.platDisc : (r.plat_disc || 0) * share;
+    return {orderTotal, platDisc, revEx:(r.revenue_ex||0)*share, platform, shipping, cost, oper, ads, tax, charges, profit, net:r.margin_ex, gross, noCost:!!r.no_cost};
   };
   const q = (document.getElementById('ordSearch').value||'').toLowerCase();
   let flist = q ? list.filter(o => (o.order||'').toLowerCase().includes(q) || (o.sku||'').toLowerCase().includes(q) || (o.name||'').toLowerCase().includes(q)) : list.slice();
   flist.sort((a,b) => (b.date||'').localeCompare(a.date||''));
 
   // summary strip over the filtered lines
-  let sU=0, sRev=0, sProfit=0, sCharges=0, sRevEx=0;
-  for(const o of flist){ const e=econ(o); sU+=(o.qtyRaw||0); sRev+=e.orderTotal; sProfit+=e.profit; sCharges+=e.charges; sRevEx+=e.revEx; }
+  let sU=0, sRev=0, sProfit=0, sCharges=0, sRevEx=0, sDisc=0;
+  for(const o of flist){ const e=econ(o); sU+=(o.qtyRaw||0); sRev+=e.orderTotal; sProfit+=e.profit; sCharges+=e.charges; sRevEx+=e.revEx; sDisc+=(e.platDisc||0); }
   const sMargin = sRevEx>0 ? sProfit/sRevEx*100 : null;
   document.getElementById('ordSummary').innerHTML = [
     {label:'Order lines', value:fmtNum(flist.length)},
     {label:'Units', value:fmtNum(sU)},
     {label:'Order Total', value:fmtGBP0(sRev)},
+    ...(sDisc > 0.005 ? [{label:'Platform Discount', value:'+'+fmtGBP0(sDisc), valueCls:'pos', sub:'funded by the platform'}] : []),
     {label:'Charges & Expenses', value:'-'+fmtGBP0(sCharges), valueCls:'neg'},
     {label:'Est Profit', value:fmtGBP0(sProfit), valueCls:sProfit>=0?'pos':'neg', sub:`margin ${fmtPct(sMargin)}`},
   ].map(kpiCard).join('');
@@ -6652,6 +6676,7 @@ function renderOrders(){
     const stBadge = (/cancel/i.test(st) ? '<span class="badge red">Cancelled</span>' : (st ? `<span class="badge grey">${esc(st)}</span>` : ''))
       + (o.sample ? ' <span class="badge purple" title="Sent free - no payment. The stock, the parcel and the prep are still charged.">Free sample</span>' : '');
     const details = drow('Order Total', fmtGBP(e.orderTotal))
+      + ((e.platDisc||0) > 0.005 ? drow('Platform Discount', '+'+fmtGBP(e.platDisc), clr(1)) : '')
       + drow('Platform Charges', '-'+fmtGBP(e.platform+e.ads), clr(-1))
       + (e.shipping>0.005 ? drow('Shipping', '-'+fmtGBP(e.shipping), clr(-1)) : '')
       + drow('Product Cost', '-'+fmtGBP(e.cost), clr(-1))
@@ -6667,12 +6692,13 @@ function renderOrders(){
         <div style="color:var(--muted);font-size:11px">${esc(o.sku||'')}</div></td>
       <td class="num" style="vertical-align:top">${fmtNum(o.qtyRaw)}</td>
       <td class="num" style="vertical-align:top">${fmtGBP(e.orderTotal)}</td>
+      <td class="num" style="vertical-align:top;color:${(e.platDisc||0)>0.005?'var(--green)':'var(--muted)'}">${(e.platDisc||0)>0.005?'+'+fmtGBP(e.platDisc):'&mdash;'}</td>
       <td class="num" style="vertical-align:top;color:var(--red)">-${fmtGBP(e.charges)}</td>
       <td class="num" style="vertical-align:top;font-weight:700;color:${clr(e.profit)}">${fmtGBP(e.profit)}</td>
       <td style="font-size:11px;vertical-align:top">Net: <b style="color:${e.net==null?'inherit':clr(e.net)}">${fmtPct(e.net)}</b><br>Gross: <b>${fmtPct(e.gross)}</b></td>
       <td style="min-width:210px;font-size:11px;vertical-align:top">${details}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8" style="color:var(--muted)">No order-level data for this selection. TikTok / eBay / Shopify order files are needed — Amazon Business Reports are day-aggregated with no per-order rows.</td></tr>`;
+  }).join('') || `<tr><td colspan="9" style="color:var(--muted)">No order-level data for this selection. TikTok / eBay / Shopify order files are needed — Amazon Business Reports are day-aggregated with no per-order rows.</td></tr>`;
 }
 function renderRefunds(){
   const chans = filteredChannels();
@@ -10473,6 +10499,7 @@ function renderPLS(){
   const tb = [
     row('Revenue (Inc VAT)', t=>t.revenue_gross, {bold:true}),
     row('− Refunds', t=>-t.refunds),
+    ...(tot('plat_disc') > 0.004 ? [row('+ Platform-funded discount', t=>t.plat_disc||0)] : []),
     row('− Output VAT', t=>-t.output_vat),
     row('= Revenue (Ex VAT)', t=>t.revenue_ex, {bold:true}),
     row('− Marketplace fees', (t,c)=>-exFor(t,c,'mkt_fee'), {indent:true}),
@@ -11044,7 +11071,7 @@ function spExpandOffers(rows){
       o.orders_count = (r.orders_count || 0) * p.share;
       o.fbaUnits = p.fba ? p.units : 0;
       o.buying = p.buying; o.shipping = p.shipping; o.oper = p.oper;
-      for(const k of ['revenue_gross','refunds','mkt_fee','affiliate','shop_ads','ads','ad_sales','clicks','impressions'])
+      for(const k of ['revenue_gross','refunds','plat_disc','mkt_fee','affiliate','shop_ads','ads','ad_sales','clicks','impressions'])
         o[k] = (r[k] || 0) * p.share;
       o.__grossedUp = true;      // the parent row was already grossed; do not do it twice
       finalizeRows([o]);
