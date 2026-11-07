@@ -3727,7 +3727,12 @@ function computeTikTok(){
     if(seenSettle.has(sig)){ settleDupes++; continue; }
     seenSettle.add(sig);
     const k = oid + '|' + String(r['SKU ID'] || '').trim();
-    const e = settle[k] = settle[k] || {pay:0, ref:0, qty:0, disc:0, comm:0, aff:0, shop:0, ship:0, adj:0};
+    const e = settle[k] = settle[k] || {pay:0, ref:0, qty:0, disc:0, comm:0, aff:0, shop:0, ship:0, adj:0,
+                                        date:'', name:'', order:false};
+    // Enough to stand the line up on its own if the orders export never carried it.
+    if(!e.date){ const d = parseDate(r['Order created date']); if(d) e.date = d; }
+    if(!e.name) e.name = fixText(r['Product name']);
+    if(fixText(r['Type']) === 'Order') e.order = true;
     // A fee is written negative and a credit positive - a refunded line hands the commission
     // back, e.g. "-14.99 net sales, +0.94 commission". Flipping the sign turns a charge into a
     // cost and a credit into a deduction; taking the size of it would have billed the refund.
@@ -3748,7 +3753,7 @@ function computeTikTok(){
     // Everything TikTok charges for carriage: the service fee on the parcel, and on a return the
     // label it bills less whatever it reimburses.
     e.ship += fee('Shipping service fee') + fee('Return shipping fee') + fee('Return shipping fee reimbursement');
-    e.adj  += cleanMoney(r['Adjustment amount']);          // either sign - left as it stands
+    e.adj  += fee('Adjustment amount');                    // either sign; flipped like the rest
   }
   // A row with no SKU ID answers for the whole order, so it can only be read onto a one-line
   // order; spread over a three-line one it would hand every line the whole order's money.
@@ -3794,6 +3799,31 @@ function computeTikTok(){
 
   const skuIdToSeller = {};
   for(const o of orders) if(o.sku_id && o.seller_sku && !skuIdToSeller[o.sku_id]) skuIdToSeller[o.sku_id] = o.seller_sku;
+
+  // ---- Lines the orders export never carried ----
+  // The orders file is this engine's spine, so a line missing from it stayed invisible however
+  // plainly the statement showed it - 25 orders over 1-3 October here, from an export that was
+  // never uploaded. Where the statement has a line and the orders file has nothing, the
+  // statement now stands on its own: it knows the date, the product, the units and every
+  // figure. Its SKU ID is matched to a Seller SKU from the orders this shop DOES have, so the
+  // line still picks up its costs; one for a SKU never seen before is keyed on the SKU ID
+  // itself and flags as missing from the master, the same as any other uncosted listing.
+  let orphanLines = 0, orphanRev = 0;
+  {
+    const have = new Set();
+    for(const o of orders) have.add(o.oid + '|' + o.sku_id);
+    for(const [k, e] of Object.entries(settle)){
+      const i = k.lastIndexOf('|');
+      const oid = k.slice(0, i), sid = k.slice(i + 1);
+      if(!e.order || !sid || !oid || have.has(k) || !inRange(e.date)) continue;
+      const seller = skuIdToSeller[sid] || sid;
+      orders.push({oid, sku_id:sid, seller_sku:seller, name:e.name || seller,
+        date:e.date, cancelled:false, settled:true, status:'Settled', sub:e.pay, ret:0,
+        net_qty:e.qty, gross:e.pay, shipFee:0, refund:e.ref, plat_disc:e.disc, fee_base:0});
+      orphanLines++; orphanRev += e.pay;
+      settledRev += e.pay; settledLines++;
+    }
+  }
   for(const a of aff) a.seller_sku = skuIdToSeller[a.sku_id] || '';
   const sellerToPid = {};
   for(const [sku,e] of Object.entries(M.tiktok.bySku)) if(e.pid) sellerToPid[sku] = e.pid;
@@ -3985,7 +4015,8 @@ function computeTikTok(){
   return {rows, extras:{daily, adsTotal, adRevTotal, adsMode:mode, ignoredAdsRows, ordersList, fullSpan:{min:fullMin, max:fullMax},
     settle:{lines:settleLines, rows:R.tt_settle.length, orderLines:orders.filter(o => !o.cancelled).length,
             dupes:settleDupes, rev:settledRev, otherRev:unsettledRev, revLines:settledLines,
-            cancRev:cancelledSettled, cancRef:cancelledRef},
+            cancRev:cancelledSettled, cancRef:cancelledRef,
+            orphans:orphanLines, orphanRev:orphanRev},
     samples:{units:samples.units, orders:samples.orders.size, buying:samples.buying, shipping:samples.shipping, oper:samples.oper,
              cost:samples.buying + samples.shipping + samples.oper}}};
 }
@@ -4933,7 +4964,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-07-c';
+const BUILD_ID = '2026-11-07-e';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -5788,6 +5819,7 @@ function buildDiagnostics(){
       + (st.dupes ? ` (${fmtNum(st.dupes)} duplicate row(s) from re-uploaded income sheets ignored)` : '') + `. `
       + (st.cancRef > 0.004 ? `${fmtGBP(st.cancRev)} of that is orders written "Cancelled" in the orders export - a RETURN reads as a cancellation there - `
           + `where the statement shows the money in and ${fmtGBP(st.cancRef)} back out again; they count no units and no parcel, only the money. ` : '')
+      + (st.orphans ? `${fmtNum(st.orphans)} line(s) worth ${fmtGBP(st.orphanRev)} are carried by the statement ALONE - the orders export has no row for them, so without it they would not be counted at all. ` : '')
       + `A line that has not settled yet keeps the referral % from the master sheet; TikTok's own rate is set per product category `
       + `(5% on some of these products, 9% on others) and is charged on the product subtotal PLUS the buyer's shipping, so no `
       + `single percentage can match it. Refunds come from the statement where it shows one, otherwise from the orders file.`);
