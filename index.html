@@ -4964,7 +4964,7 @@ const LS_MASTER = 'mcpd_master';
 // Bumped whenever behaviour changes, and shown in Cost Manager's SKU-naming line. Without it
 // there is no way to tell a stale cached page from a real fault - several rounds of "still not
 // working" turned out to be a browser holding an old copy of this file.
-const BUILD_ID = '2026-11-07-e';
+const BUILD_ID = '2026-11-07-f';
 // What a TikTok buyer pays for delivery, where the product carries no figure of its own.
 // Revenue on TikTok is the SKU subtotal, which excludes it, so it is added back before profit.
 const TT_BUYER_SHIPPING = 3.77;
@@ -7062,6 +7062,13 @@ function markAcctDirty(section){
 function loadAcctSettings(){
   ACCT_SETTINGS_REMOTE = null; SETTINGS_PULLED = false; COSTS_PULLED = false;
   COST_EDIT_SEQ = 0; COST_SAVED_SEQ = 0;
+  // The snapshot says what this browser last agreed with the database, and a save DELETES from
+  // the database anything in it that the local book no longer has. Switching account reloads
+  // the books but used to leave the previous account's snapshot standing, so the first save
+  // against the new account deleted every id the old account held and the new one did not -
+  // costs saved one day, gone the next. Cleared here, the same as on a fresh page load:
+  // nothing is deleted, and whatever is held locally is pushed up.
+  ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}};
   let saved = null;
   try{ saved = JSON.parse(store.get(lsKey(LS_ACCTSETTINGS))); }catch(e){ saved = null; }
   const d = (saved && saved.dirty && typeof saved.dirty === 'object') ? saved.dirty : {};
