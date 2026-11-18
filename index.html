@@ -7114,9 +7114,18 @@ function mergeBook(remoteBook, localBook, snap){
 function acctSettingsPayload(){
   const remote = ACCT_SETTINGS_REMOTE || {};
   const out = Object.assign({}, remote);
-  out.costBook  = mergeBook(remote.costBook,  COSTBOOK,  ACCT_BOOK_SNAPSHOT.costBook);
-  out.priceBook = mergeBook(remote.priceBook, PRICEBOOK, ACCT_BOOK_SNAPSHOT.priceBook);
-  out.roiBook   = mergeBook(remote.roiBook,   ROIBOOK,   ACCT_BOOK_SNAPSHOT.roiBook);
+  // A book must NEVER go up empty while this browser still holds one. settingsRowData() hands
+  // back {} for anything that is not a readable row - a dropped request, a row that momentarily
+  // reads as missing - and mergeBook starts from what it returned. An empty read therefore built
+  // an empty book and the upsert wrote it straight over the real one; the repair afterwards only
+  // ran if the page survived the next 800ms, and only in the browser that did it. Refusing the
+  // write here means the damage never happens. A genuine "delete them all" still gets through:
+  // it can only reach this point with the local book ALREADY empty.
+  const keepBook = (merged, local) => (isEmptyObj(merged) && !isEmptyObj(local))
+    ? Object.assign({}, local) : merged;
+  out.costBook  = keepBook(mergeBook(remote.costBook,  COSTBOOK,  ACCT_BOOK_SNAPSHOT.costBook),  COSTBOOK);
+  out.priceBook = keepBook(mergeBook(remote.priceBook, PRICEBOOK, ACCT_BOOK_SNAPSHOT.priceBook), PRICEBOOK);
+  out.roiBook   = keepBook(mergeBook(remote.roiBook,   ROIBOOK,   ACCT_BOOK_SNAPSHOT.roiBook),   ROIBOOK);
   if(SETTINGS_PULLED){
     out.cmpNotes = CMP_NOTES;
     out.pnlHist = PNL_HIST;
