@@ -7426,6 +7426,9 @@ function cbAsMasterEntry(v, chan, name){
 // ---- Cost Manager page ----
 let CB_OPEN = '';        // "fam|id" key whose history panel is open
 let CB_OPEN_CHAN = 'fbm';// which offer row it was opened from, so Add version defaults to it
+// True once the as-at box holds a date the user chose themselves. Until then the box follows
+// the loaded reports, so an edit is dated to the day the figures on screen are costed at.
+let CB_ASAT_PINNED = false;
 const cbKey = a => String(a||'').trim().toUpperCase();
 // Every ASIN worth showing: those selling right now, plus anything already in the book or
 // the uploaded master sheet.
@@ -7599,7 +7602,11 @@ function cbSkusFor(o){
 function renderCostBook(){
   renderBatchPicker();
   const asAtEl = document.getElementById('cbAsAt');
-  if(!asAtEl.value) asAtEl.value = costRefDate();
+  // The box used to be filled once and then left standing. Filled before the reports had
+  // loaded it held today's date for good, so every edit was stamped days into the future and
+  // silently missed the figures on screen. It now follows the reports until the user picks a
+  // date themselves.
+  if(!CB_ASAT_PINNED || !asAtEl.value) asAtEl.value = costRefDate();
   const asAt = asAtEl.value || todayISO();
   const scope = document.getElementById('cbScope').value;
   const famEl = document.getElementById('cbPlat');
@@ -7953,7 +7960,14 @@ function renderCostBook(){
     if(STATE.raw.master.length || Object.keys(COSTBOOK).length) STATE.master = buildMaster();
     if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
     keepFocus('#cbTable', renderCostBook);
-    showBanner(msg, 'success');
+    // A version dated after the period the loaded reports cover changes nothing on screen. The
+    // Add version dialog has always said so; saving a row said only "Saved", so a figure that
+    // had not reached any report still looked applied. Same warning, same wording.
+    const ref = costRefDate();
+    if(asAt > ref) showBanner(msg + ' But your loaded reports are costed as at ' + ref
+      + ', which is earlier, so this does NOT change the figures you are looking at. Set the'
+      + ' date box to ' + ref + ' or before and save again to apply it to them.', 'error');
+    else showBanner(msg, 'success');
   };
   const cbSavedMsg = (fam, id, chan, done) => 'Saved ' + done.join(', ') + ' for ' + id
     + ' (' + cbChanLabel(fam, chan) + '), effective ' + asAt + '.';
@@ -12570,6 +12584,9 @@ document.getElementById('daTrSearch').addEventListener('input', e => {
 // ---- Cost Manager controls ----
 ['cbAsAt','cbScope','cbSearch','cbPlat','cbFul'].forEach(id =>
   document.getElementById(id).addEventListener(id==='cbSearch'?'input':'change', () => {
+    // Choosing a date by hand pins the box there; setting it back to the reports' own date
+    // hands it back to them, so there is always a way out of a pinned date.
+    if(id === 'cbAsAt') CB_ASAT_PINNED = document.getElementById('cbAsAt').value !== costRefDate();
     CB_JUST_SET = new Set();      // changing a filter is the "I'm done with those" gesture
     renderCostBook();
   }));
