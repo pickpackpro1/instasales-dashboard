@@ -7586,7 +7586,11 @@ function cbOffers(){
   // listing falls back to, which is why nothing moves until a listing is costed separately.
   for(const o of Object.values(out).slice()){
     if(o.fam !== 'tiktok' || o.listingOf) continue;
-    for(const skuId of ttListingsFor(o.id)){
+    const ls = ttListingsFor(o.id);
+    // A seller SKU sold through ONE listing needs no second row - costing the SKU and costing
+    // its only listing are the same thing. Its SKU ID goes on the SKU's own row instead.
+    if(ls.length < 2) continue;
+    for(const skuId of ls){
       if(String(skuId).trim().toUpperCase() === String(o.id).trim().toUpperCase()) continue;
       const info = ttSkuIdIdx().bySkuId[skuId] || {};
       const t = touch('tiktok', skuId, info.name || o.name, 'fbm');
@@ -8018,30 +8022,31 @@ function renderCostBook(){
           // A TikTok listing row: the seller SKU names it, its own SKU ID is what the cost is
           // keyed on and what every order line carries, and the product ids follow.
           if(o.listingOf){
-            const lp = cbPidsFor(o);
             return '<b title="' + esc('Listing of seller SKU ' + o.listingOf) + '">&#8627; '
               + esc(cbCasedId(o.listingOf)) + '</b>'
               + ' <span style="opacity:.75">&middot; <span style="font-weight:400">SKU ID '
-              + esc(shown) + '</span></span>'
-              + (lp.length ? ' <span style="opacity:.75">&middot; <span style="font-weight:400">Product ID'
-                  + (lp.length > 1 ? 's' : '') + ' '
-                  + lp.map(p => '<span style="white-space:nowrap">' + esc(p) + '</span>').join(', ')
-                  + '</span></span>' : '');
+              + esc(shown) + '</span></span>';
           }
           const idBit = '<span style="font-weight:400">' + esc(ID_LBL[cbFamCh(o.fam)] || 'ID') + ' ' + esc(shown) + '</span>';
           // TikTok / Shopify: the id IS the seller SKU, so the row showed that alone and warned
           // that no SKU could be found - which was both wrong and unhelpful. Show the SKU and,
           // beside it, the marketplace product id the master sheet names for it.
           const pids = cbPidsFor(o);
-          // Shown here AS WELL as in the editable column: the column is for correcting them,
-          // this is for reading the row. Every id, never a "+2" - each listing is its own
-          // thing to look up against an export.
-          if(pids.length) return '<b title="' + esc('Seller SKU ' + shown + ' · '
-              + pids.length + ' listing(s): ' + pids.join(', ')) + '">' + esc(shown) + '</b>'
-            + ' <span style="opacity:.75">&middot; <span style="font-weight:400">Product ID'
-            + (pids.length > 1 ? 's' : '') + ' '
-            + pids.map(p => '<span style="white-space:nowrap">' + esc(p) + '</span>').join(', ')
+          // The seller SKU row names the SKU and says how many listings sit under it. The
+          // product id is deliberately NOT here: no TikTok export carries one, so it cannot be
+          // matched to a sale, and putting it on the row implied it could. The SKU ID is the
+          // id that matters, and it belongs on the listing rows that have one.
+          const lst = (o.fam === 'tiktok') ? ttListingsFor(o.id) : [];
+          if(lst.length) return '<b title="' + esc('Seller SKU ' + shown + ' · '
+              + (lst.length === 1 ? 'one listing: ' : lst.length + ' listings: ') + lst.join(', ')) + '">'
+            + esc(shown) + '</b>'
+            + ' <span style="opacity:.75">&middot; <span style="font-weight:400">'
+            + (lst.length === 1
+                ? 'SKU ID ' + esc(lst[0])
+                : lst.length + ' listings')
             + '</span></span>';
+          if(pids.length) return '<b title="' + esc('Seller SKU ' + shown + ' · product id(s) '
+              + pids.join(', ')) + '">' + esc(shown) + '</b>';
           if(!sk.length && (o.fam === 'tiktok' || o.fam === 'shopify'))
             return '<b title="' + esc('Seller SKU ' + shown + ' — the master sheet names no '
               + 'product id for it. Add one in its productid column to show it here.') + '">'
