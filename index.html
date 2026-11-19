@@ -7878,11 +7878,15 @@ function renderCostBook(){
           // that no SKU could be found - which was both wrong and unhelpful. Show the SKU and,
           // beside it, the marketplace product id the master sheet names for it.
           const pids = cbPidsFor(o);
-          if(pids.length) return '<b title="' + esc('Seller SKU ' + shown
-              + ' · Product ID ' + pids.join(', ')) + '">' + esc(shown) + '</b>'
-            + ' <span style="opacity:.75">&middot; <span style="font-weight:400">Product ID '
-            + esc(pids[0]) + '</span></span>'
-            + (pids.length > 1 ? '<span style="font-weight:400;opacity:.75"> +' + (pids.length - 1) + '</span>' : '');
+          // Every product id, not one and a "+2". The same SKU is often listed on TikTok more
+          // than once - a relist, a variation, a duplicate - and each listing's id is a thing
+          // you look up, so hiding all but the first behind a count made them unreadable.
+          if(pids.length) return '<b title="' + esc('Seller SKU ' + shown) + '">' + esc(shown) + '</b>'
+            + ' <span style="opacity:.75">&middot; <span style="font-weight:400" title="'
+            + esc(pids.length + ' listing(s) share this seller SKU') + '">Product ID'
+            + (pids.length > 1 ? 's' : '') + ' '
+            + pids.map(p => '<span style="white-space:nowrap">' + esc(p) + '</span>').join(', ')
+            + '</span></span>';
           if(!sk.length && (o.fam === 'tiktok' || o.fam === 'shopify'))
             return '<b title="' + esc('Seller SKU ' + shown + ' — the master sheet names no '
               + 'product id for it. Add one in its productid column to show it here.') + '">'
