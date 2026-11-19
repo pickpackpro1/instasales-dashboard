@@ -7643,6 +7643,28 @@ function cbSkusForOffer(o){
   // exists. Fall back to the product's other SKUs, marked, rather than leaving it nameless.
   return {list: cbSkusFor(o), tagged: false};
 }
+// TikTok and Shopify key on the seller SKU, so a row's id IS its SKU and the marketplace's own
+// product id has nowhere to appear - yet that is the number a TikTok export is matched on, and
+// the one worth reading off the row. The master sheet carries both columns, so index SKU ->
+// product id and show it beside the SKU exactly as an ASIN sits beside an Amazon one.
+let _skuPidIdx = null, _skuPidIdxFor = null;
+function skuPidIdx(){
+  const raw = aliasMasterRows(STATE.raw.master || []);
+  if(_skuPidIdxFor === raw && _skuPidIdx) return _skuPidIdx;
+  _skuPidIdxFor = raw; _skuPidIdx = {};
+  for(const r of raw){
+    const fam = cbFam(fixText(r['platform']));
+    if(fam !== 'tiktok' && fam !== 'shopify') continue;
+    const sku = fixText(r['sku']), pid = fixText(r['productid']);
+    if(!sku || !pid) continue;
+    const k = fam + '|' + String(sku).trim().toUpperCase();
+    (_skuPidIdx[k] = _skuPidIdx[k] || []);
+    if(!_skuPidIdx[k].includes(pid)) _skuPidIdx[k].push(pid);
+  }
+  return _skuPidIdx;
+}
+const cbPidsFor = o => (o.fam === 'tiktok' || o.fam === 'shopify')
+  ? (skuPidIdx()[o.fam + '|' + String(o.id||'').trim().toUpperCase()] || []) : [];
 function cbSkusFor(o){
   if(o._skus) return o._skus;
   const out = sellerSkusFor(o.fam === 'tiktok' ? 'tiktok' : o.fam, o.id);
@@ -7687,7 +7709,9 @@ function renderCostBook(){
   // the thing you actually type into Seller Central found nothing and the offer looked lost.
   if(q) list = list.filter(o => o.id.toLowerCase().includes(q)
     || (o.name||'').toLowerCase().includes(q)
-    || cbSkusFor(o).some(sk => sk.toLowerCase().includes(q)));
+    || cbSkusFor(o).some(sk => sk.toLowerCase().includes(q))
+    // the TikTok / Shopify product id now shows on the row, so it has to be searchable too
+    || cbPidsFor(o).some(p => p.toLowerCase().includes(q)));
   list.sort((a,b) => (b.units||0)-(a.units||0) || a.id.localeCompare(b.id) || a.chan.localeCompare(b.chan));
 
   const engineDate = costRefDate();
@@ -7850,6 +7874,19 @@ function renderCostBook(){
           const S = cbSkusForOffer(o), sk = S.list;
           const shown = cbCasedId(o.id);
           const idBit = '<span style="font-weight:400">' + esc(ID_LBL[cbFamCh(o.fam)] || 'ID') + ' ' + esc(shown) + '</span>';
+          // TikTok / Shopify: the id IS the seller SKU, so the row showed that alone and warned
+          // that no SKU could be found - which was both wrong and unhelpful. Show the SKU and,
+          // beside it, the marketplace product id the master sheet names for it.
+          const pids = cbPidsFor(o);
+          if(pids.length) return '<b title="' + esc('Seller SKU ' + shown
+              + ' · Product ID ' + pids.join(', ')) + '">' + esc(shown) + '</b>'
+            + ' <span style="opacity:.75">&middot; <span style="font-weight:400">Product ID '
+            + esc(pids[0]) + '</span></span>'
+            + (pids.length > 1 ? '<span style="font-weight:400;opacity:.75"> +' + (pids.length - 1) + '</span>' : '');
+          if(!sk.length && (o.fam === 'tiktok' || o.fam === 'shopify'))
+            return '<b title="' + esc('Seller SKU ' + shown + ' — the master sheet names no '
+              + 'product id for it. Add one in its productid column to show it here.') + '">'
+            + esc(shown) + '</b>';
           // Still nothing: say why, so a bare id reads as a gap to fill rather than a glitch.
           if(!sk.length) return '<b title="' + esc('No seller SKU found for this '
             + (ID_LBL[cbFamCh(o.fam)] || 'id') + ' — it is not in the master sheet, and no '
