@@ -7734,6 +7734,25 @@ function ttSkuIdIdx(){
   return _ttSkuIdx;
 }
 const ttListingsFor = seller => (ttSkuIdIdx().bySeller[String(seller||'').trim().toUpperCase()] || []);
+// An order that settled but is not in the orders export has no Seller SKU anywhere - the
+// settlement file does not carry one - so its row is keyed on the SKU ID and had nothing to
+// show but 19 digits. The settlement does name the variation ("0.6 Black Pack of 2"), which is
+// the nearest thing TikTok gives to a SKU for those lines, so the row borrows that.
+let _ttNameIdx = null, _ttNameIdxFor = null;
+function ttSkuNameIdx(){
+  const st = STATE.raw.tt_settle || [];
+  if(_ttNameIdxFor === st && _ttNameIdx) return _ttNameIdx;
+  _ttNameIdxFor = st; _ttNameIdx = {};
+  for(const r of st){
+    const id = String(r['SKU ID']||'').trim();
+    const nm = fixText(r['SKU name']);
+    if(!id || !nm || _ttNameIdx[id]) continue;
+    _ttNameIdx[id] = nm;
+  }
+  return _ttNameIdx;
+}
+const ttSkuNameFor = o => (o && o.fam === 'tiktok')
+  ? (ttSkuNameIdx()[String(o.id||'').trim()] || '') : '';
 // A listing's own cost if one has been set for its SKU ID, otherwise the seller SKU's - so
 // splitting the rows changes no figure until somebody actually costs a listing separately.
 function ttEntryFor(skuId, seller, refDate, M){
@@ -7800,7 +7819,9 @@ function renderCostBook(){
     || (o.name||'').toLowerCase().includes(q)
     || cbSkusFor(o).some(sk => sk.toLowerCase().includes(q))
     // the TikTok / Shopify product id now shows on the row, so it has to be searchable too
-    || cbPidsFor(o).some(p => p.toLowerCase().includes(q)));
+    || cbPidsFor(o).some(p => p.toLowerCase().includes(q))
+    // and the variation name a settlement-only row is labelled with
+    || ttSkuNameFor(o).toLowerCase().includes(q));
   // A seller SKU whose listings are each on screen does not need a row of its own as well - it
   // only restated what the listings already show, and its figures appear on them as the value
   // they inherit. A SKU with one listing keeps its row; there is nothing else to show it on.
@@ -8031,6 +8052,14 @@ function renderCostBook(){
             + '</span></span>';
           if(pids.length) return '<b title="' + esc('Seller SKU ' + shown + ' · product id(s) '
               + pids.join(', ')) + '">' + esc(shown) + '</b>';
+          // Keyed on a SKU ID because the sale only ever appeared in the settlement file: show
+          // the variation that file names, with the id beside it, instead of bare digits.
+          const vn = ttSkuNameFor(o);
+          if(!sk.length && vn) return '<b title="' + esc('Variation named by the settlement file. '
+              + 'This order is not in the Orders export, which is the only file carrying a seller SKU.')
+              + '">' + esc(vn) + '</b>'
+            + ' <span style="opacity:.75">&middot; <span style="font-weight:400">SKU ID '
+            + esc(shown) + '</span></span>';
           if(!sk.length && (o.fam === 'tiktok' || o.fam === 'shopify'))
             return '<b title="' + esc('Seller SKU ' + shown + ' — the master sheet names no '
               + 'product id for it. Add one in its productid column to show it here.') + '">'
