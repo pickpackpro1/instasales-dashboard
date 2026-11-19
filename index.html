@@ -753,7 +753,6 @@ body.cgrip-drag *{cursor:col-resize !important}
           <th class="num" title="FBM: your own shipping. FBA: the Amazon fulfilment fee.">Ship / FBA fee &pound;</th>
           <th class="num">Operational &pound;</th>
           <th class="num">Referral %</th>
-          <th title="TikTok and Shopify key on the seller SKU, so the marketplace's own listing id is typed here. Several ids separated by commas - one SKU is often listed more than once. Leave it empty to fall back to the master sheet's productid column.">Product IDs</th>
           <th>In force from</th><th style="white-space:nowrap">Save &middot; versions</th>
         </tr></thead>
         <tbody></tbody>
@@ -6986,20 +6985,6 @@ function manualPriceFor(e){
 // page changed Cost Manager and every dashboard figure along with it. They are kept here instead,
 // one entry per offer, and nothing but Product ROIs reads them. Cost Manager stays the only place
 // a cost is set for real.
-// Marketplace product ids per seller SKU, typed in Cost Manager. TikTok and Shopify key on the
-// SKU, so the listing's own id lives nowhere the app can edit - the master sheet's productid
-// column is a loaded file, and the SKU Management mapping is another. This is the editable
-// layer over both: what it holds wins, and a row cleared here falls back to the sheet.
-const LS_PIDBOOK = 'mcpd_pidbook';
-let PIDBOOK = {};          // "fam|SKU" -> [product id, ...]
-function loadPidBook(){
-  try{ PIDBOOK = JSON.parse(store.get(lsKey(LS_PIDBOOK))) || {}; }catch(e){ PIDBOOK = {}; }
-}
-function savePidBook(){
-  COST_EDIT_SEQ++;
-  try{ store.set(lsKey(LS_PIDBOOK), JSON.stringify(PIDBOOK)); }catch(e){}
-  cloudSaveCostBook();     // the same settings row as the Cost Book, under a key of its own
-}
 const LS_ROIBOOK = 'mcpd_roibook';
 let ROIBOOK = {};          // offer key -> {buy, oper, ship, ref, aff, sads, reg, fixed, bship}
 const ROI_FIELDS = ['buy','oper','ship','ref','aff','sads','reg','fixed','bship'];
@@ -7120,7 +7105,7 @@ function loadAcctSettings(){
   // against the new account deleted every id the old account held and the new one did not -
   // costs saved one day, gone the next. Cleared here, the same as on a fresh page load:
   // nothing is deleted, and whatever is held locally is pushed up.
-  ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}, pidBook:{}};
+  ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}};
   let saved = null;
   try{ saved = JSON.parse(store.get(lsKey(LS_ACCTSETTINGS))); }catch(e){ saved = null; }
   const d = (saved && saved.dirty && typeof saved.dirty === 'object') ? saved.dirty : {};
@@ -7146,11 +7131,11 @@ function onVatSettingEdited(){
 }
 // The three books as they last agreed with the database. What differs from this is what THIS
 // browser changed, and that is all a save is allowed to write.
-var ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}, pidBook:{}};
+var ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}};
 function snapshotBooks(){
   try{
-    ACCT_BOOK_SNAPSHOT = JSON.parse(JSON.stringify({costBook: COSTBOOK || {}, priceBook: PRICEBOOK || {}, roiBook: ROIBOOK || {}, pidBook: PIDBOOK || {}}));
-  }catch(e){ ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}, pidBook:{}}; }
+    ACCT_BOOK_SNAPSHOT = JSON.parse(JSON.stringify({costBook: COSTBOOK || {}, priceBook: PRICEBOOK || {}, roiBook: ROIBOOK || {}}));
+  }catch(e){ ACCT_BOOK_SNAPSHOT = {costBook:{}, priceBook:{}, roiBook:{}}; }
 }
 // Start from what is in the database right now, put back every entry this browser changed since
 // it last agreed with it, and drop the ones it deleted. Entries someone else added or changed in
@@ -7178,7 +7163,6 @@ function acctSettingsPayload(){
   out.costBook  = keepBook(mergeBook(remote.costBook,  COSTBOOK,  ACCT_BOOK_SNAPSHOT.costBook),  COSTBOOK);
   out.priceBook = keepBook(mergeBook(remote.priceBook, PRICEBOOK, ACCT_BOOK_SNAPSHOT.priceBook), PRICEBOOK);
   out.roiBook   = keepBook(mergeBook(remote.roiBook,   ROIBOOK,   ACCT_BOOK_SNAPSHOT.roiBook),   ROIBOOK);
-  out.pidBook   = keepBook(mergeBook(remote.pidBook,   PIDBOOK,   ACCT_BOOK_SNAPSHOT.pidBook),   PIDBOOK);
   if(SETTINGS_PULLED){
     out.cmpNotes = CMP_NOTES;
     out.pnlHist = PNL_HIST;
@@ -7296,7 +7280,7 @@ async function cloudSaveCostBookNow(){
       ACCT_SAVE_GEN++;
       COST_SAVED_SEQ = Math.max(COST_SAVED_SEQ, costSeqAtSend);
       // take on what the merge brought back from other browsers, so this one is now in step
-      const before = JSON.stringify([COSTBOOK, PRICEBOOK, ROIBOOK, PIDBOOK]);
+      const before = JSON.stringify([COSTBOOK, PRICEBOOK, ROIBOOK]);
       // A merge coming back empty while this browser still holds costs is always a fault. A
       // genuine "delete them all" can only reach here with the local book ALREADY empty, so
       // refusing this can never block one. Keep what we have, clear the agreed-state for the
@@ -7304,7 +7288,6 @@ async function cloudSaveCostBookNow(){
       const lost = isEmptyObj(payload.costBook || {}) && !isEmptyObj(COSTBOOK);
       if(!lost) COSTBOOK = payload.costBook || {};
       PRICEBOOK = payload.priceBook || {}; ROIBOOK = payload.roiBook || {};
-      PIDBOOK = payload.pidBook || {};
       snapshotBooks();
       if(lost){
         console.warn('cost book: merge returned empty while ' + Object.keys(COSTBOOK).length
@@ -7312,11 +7295,10 @@ async function cloudSaveCostBookNow(){
         ACCT_BOOK_SNAPSHOT.costBook = {};
         cloudSaveCostBook();
       }
-      if(JSON.stringify([COSTBOOK, PRICEBOOK, ROIBOOK, PIDBOOK]) !== before){
+      if(JSON.stringify([COSTBOOK, PRICEBOOK, ROIBOOK]) !== before){
         store.set(lsKey(LS_COSTBOOK), JSON.stringify(COSTBOOK));
         store.set(lsKey(LS_PRICEBOOK), JSON.stringify(PRICEBOOK));
         store.set(lsKey(LS_ROIBOOK), JSON.stringify(ROIBOOK));
-        store.set(lsKey(LS_PIDBOOK), JSON.stringify(PIDBOOK));
         _skuPidIdx = null;        // the typed ids changed, so the lookup must be rebuilt
         if(haveCosts()) STATE.master = buildMaster();
         if(STATE.master && loadedChannels().length){ recompute(); diagnostics(); }
@@ -7360,11 +7342,6 @@ async function cloudSyncCostBook(attempt){
       ROIBOOK = rb;
       try{ store.set(lsKey(LS_ROIBOOK), JSON.stringify(ROIBOOK)); }catch(e){}
     } else if(!isEmptyObj(ROIBOOK)) cloudSaveCostBook();
-    const pidb = data && data.data && data.data.pidBook;
-    if(pidb && typeof pidb === 'object'){
-      PIDBOOK = pidb; _skuPidIdx = null;
-      try{ store.set(lsKey(LS_PIDBOOK), JSON.stringify(PIDBOOK)); }catch(e){}
-    } else if(!isEmptyObj(PIDBOOK)) cloudSaveCostBook();
     if(STATE.page === 'products' && STATE.master && JSON.stringify([PRICEBOOK, ROIBOOK]) !== roiBefore)
       keepFocus('#prodTable', renderProducts);
     const cb = data && data.data && data.data.costBook;
@@ -7766,38 +7743,17 @@ function ttEntryFor(skuId, seller, refDate, M){
   }
   return (M || STATE.master || {tiktok:{bySku:{}}}).tiktok.bySku[seller] || null;
 }
+// The master sheet's product ids are no longer shown or edited anywhere - no TikTok export
+// carries one, so they could never be matched to a sale. They stay searchable, since pasting
+// one from a TikTok listing page is still a reasonable way to find a product.
 const cbPidKey = o => o.fam + '|' + String(o.id||'').trim().toUpperCase();
-// Only these two key on the SKU, so only these two have a product id with nowhere to live.
-const cbTakesPids = o => o.fam === 'tiktok' || o.fam === 'shopify';
-// What was typed in Cost Manager wins; the master sheet is the fallback. An entry emptied here
-// is REMOVED rather than stored blank, so the row goes back to whatever the sheet says instead
-// of being stuck showing nothing.
 const cbPidsFor = o => {
-  if(!cbTakesPids(o)) return [];
-  const own = PIDBOOK[cbPidKey(o)];
+  if(o.fam !== 'tiktok' && o.fam !== 'shopify') return [];
+  const own = skuPidIdx()[cbPidKey(o)];
   if(own && own.length) return own;
-  const sheet = skuPidIdx()[cbPidKey(o)];
-  if(sheet && sheet.length) return sheet;
-  // A listing row is keyed on its SKU ID, which the master sheet knows nothing about, so it
-  // shows its seller SKU's product ids until it is given ids of its own.
-  if(o.listingOf){
-    const k = o.fam + '|' + String(o.listingOf).trim().toUpperCase();
-    return PIDBOOK[k] || skuPidIdx()[k] || [];
-  }
+  if(o.listingOf) return skuPidIdx()[o.fam + '|' + String(o.listingOf).trim().toUpperCase()] || [];
   return [];
 };
-const cbPidsAreOwn = o => !!(cbTakesPids(o) && (PIDBOOK[cbPidKey(o)] || []).length);
-// Accepts anything typed: commas, spaces or new lines between ids, duplicates dropped.
-function cbSetPids(o, raw){
-  const ids = String(raw == null ? '' : raw).split(/[^0-9A-Za-z_-]+/)
-    .map(s => s.trim()).filter(Boolean);
-  const uniq = [];
-  for(const x of ids) if(!uniq.includes(x)) uniq.push(x);
-  const k = cbPidKey(o);
-  if(uniq.length) PIDBOOK[k] = uniq; else delete PIDBOOK[k];
-  savePidBook();
-  return uniq;
-}
 function cbSkusFor(o){
   if(o._skus) return o._skus;
   const out = sellerSkusFor(o.fam === 'tiktok' ? 'tiktok' : o.fam, o.id);
@@ -8074,19 +8030,6 @@ function renderCostBook(){
       inp(o, isFba?'fee':'ship', n2(isFba ? v.fee : v.ship)) +
       inp(o,'oper', n2(v.oper)) +
       inp(o,'ref', nRef(v.ref)) +
-      // Typed here rather than read off the row: the ids are a property of the SKU, and until
-      // now they lived only in the master sheet, which is a loaded file nobody can correct from
-      // inside the app. Blank falls back to that sheet, so clearing a row is never destructive.
-      '<td>' + (cbTakesPids(o)
-        ? '<input type="text" class="cbpid" data-cbpid="' + esc(cbPidKey(o)) + '"'
-          + ' value="' + esc(cbPidsFor(o).join(', ')) + '"'
-          + ' placeholder="' + esc(skuPidIdx()[cbPidKey(o)] ? 'from the master sheet' : 'none') + '"'
-          + ' title="' + esc(cbPidsAreOwn(o)
-              ? 'Typed here. Clear the box and press Enter to go back to the master sheet.'
-              : 'From the master sheet’s productid column. Type here to override it.') + '"'
-          + ' style="width:170px;font-size:11px;padding:3px 5px'
-          + (cbPidsAreOwn(o) ? '' : ';color:var(--muted);font-style:italic') + '">'
-        : '<span style="color:var(--muted)">&mdash;</span>') + '</td>' +
       '<td>' + (v.from ? esc(v.from) : '<span style="color:var(--muted)">not set</span>') + '</td>' +
       '<td style="white-space:nowrap">' +
         '<button class="btn" data-cbsave="' + esc(o.fam+'|'+o.id) + '" data-cbsavechan="' + o.chan + '"' +
@@ -8285,28 +8228,6 @@ function renderCostBook(){
     }
     cbShowUnsaved();
   };
-  // Product ids save on their own, on Enter or on leaving the box. They are a label, not a
-  // dated cost, so they do not belong in the row's staged figures or under its green tick -
-  // nothing about them is effective from a date.
-  document.querySelectorAll('#cbTable input[data-cbpid]').forEach(el => {
-    const key = el.dataset.cbpid, bar = key.indexOf('|');
-    const o = {fam: key.slice(0, bar), id: key.slice(bar + 1)};
-    const before = el.value;
-    const commit = () => {
-      if(el.value === before) return;
-      const ids = cbSetPids(o, el.value);
-      _skuPidIdx = null;
-      keepFocus('#cbTable', renderCostBook);
-      showBanner(ids.length
-        ? 'Saved ' + ids.length + ' product id(s) for ' + o.id + '.'
-        : 'Cleared the product ids for ' + o.id + ' — it goes back to the master sheet.', 'success');
-    };
-    el.addEventListener('keydown', ev => {
-      if(ev.key === 'Enter'){ ev.preventDefault(); commit(); }
-      else if(ev.key === 'Escape'){ ev.preventDefault(); el.value = before; el.blur(); }
-    });
-    el.addEventListener('blur', commit);
-  });
   document.querySelectorAll('#cbTable input[data-cb]').forEach(el => {
     const key = el.dataset.cb, chan = el.dataset.chan, bar = key.indexOf('|');
     const fam = key.slice(0, bar), id = key.slice(bar + 1);
@@ -13572,7 +13493,6 @@ function switchAccount(id){
   loadAsinItems();
   loadPriceBook();
   loadRoiBook();
-  loadPidBook();
   loadPnlHist();
   loadAcctSettings();
   loadCostBook();
@@ -13639,7 +13559,6 @@ function startApp(){
   loadAsinItems();
   loadPriceBook();
   loadRoiBook();
-  loadPidBook();
   loadPnlHist();
   loadAcctSettings();
   loadCostBook();
