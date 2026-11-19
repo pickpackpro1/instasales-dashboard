@@ -39,10 +39,20 @@ Two different things, with different risk:
   profit. Confirm with the user before each such change.
 - **The app** means editing `index.html` here and pushing.
 
-## Known open questions
+## Reaching the database from a local copy
 
-- The Supabase connection details ship in the public page, so the password
-  gates the UI only. Worth checking row-level security on those tables.
+The app signs in to Supabase, and that session is per ORIGIN. A local copy served
+on localhost has no session, so every read comes back empty with NO error and
+every write is refused. That is row-level security working, not a bug and not an
+empty account - do not read an empty result on localhost as data loss, and do not
+expect a local copy to exercise the cloud round trip. Check live data from the
+deployed origin, where the session exists.
+
+Checked 2026-11-19: the settings row holds the cost book (1,727 entries) and
+price book (416), and anonymous access is denied. The earlier worry that the
+public page exposed the data was wrong.
+
+## Known open questions
 - As of 2026-11-14, eBay listing 358157954894 ("Dry Floral Foam Bricks") showed
   -£3,573.67, single-handedly turning eBay from profitable to loss-making.
   Not yet investigated — could be genuine or a fee-calculation bug.
