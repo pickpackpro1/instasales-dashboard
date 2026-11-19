@@ -7924,10 +7924,15 @@ function renderCostBook(){
           // that no SKU could be found - which was both wrong and unhelpful. Show the SKU and,
           // beside it, the marketplace product id the master sheet names for it.
           const pids = cbPidsFor(o);
-          // The ids now have an editable column of their own, so the product cell is back to
-          // naming the product: repeating them here only crowded the row.
+          // Shown here AS WELL as in the editable column: the column is for correcting them,
+          // this is for reading the row. Every id, never a "+2" - each listing is its own
+          // thing to look up against an export.
           if(pids.length) return '<b title="' + esc('Seller SKU ' + shown + ' · '
-              + pids.length + ' listing(s): ' + pids.join(', ')) + '">' + esc(shown) + '</b>';
+              + pids.length + ' listing(s): ' + pids.join(', ')) + '">' + esc(shown) + '</b>'
+            + ' <span style="opacity:.75">&middot; <span style="font-weight:400">Product ID'
+            + (pids.length > 1 ? 's' : '') + ' '
+            + pids.map(p => '<span style="white-space:nowrap">' + esc(p) + '</span>').join(', ')
+            + '</span></span>';
           if(!sk.length && (o.fam === 'tiktok' || o.fam === 'shopify'))
             return '<b title="' + esc('Seller SKU ' + shown + ' — the master sheet names no '
               + 'product id for it. Add one in its productid column to show it here.') + '">'
