@@ -7801,6 +7801,14 @@ function renderCostBook(){
     || cbSkusFor(o).some(sk => sk.toLowerCase().includes(q))
     // the TikTok / Shopify product id now shows on the row, so it has to be searchable too
     || cbPidsFor(o).some(p => p.toLowerCase().includes(q)));
+  // A seller SKU whose listings are each on screen does not need a row of its own as well - it
+  // only restated what the listings already show, and its figures appear on them as the value
+  // they inherit. A SKU with one listing keeps its row; there is nothing else to show it on.
+  {
+    const parentsShown = new Set(list.filter(o => o.listingOf).map(o => String(o.listingOf).trim().toUpperCase()));
+    if(parentsShown.size)
+      list = list.filter(o => o.listingOf || !parentsShown.has(String(o.id).trim().toUpperCase()));
+  }
   // A TikTok listing sorts with its seller SKU rather than on its own units, so the parent row
   // and the listings that inherit from it stay together instead of landing pages apart.
   const grpUnits = {};
@@ -7936,16 +7944,36 @@ function renderCostBook(){
   const n2 = v => (v==null || v==='') ? '' : (+v).toFixed(2);
   const nRef = v => (v==null || v==='') ? '' : (+v > 1 ? (+v).toFixed(2) : (+v*100).toFixed(2));
   // A box shows what you last typed, saved or not, so a redraw cannot swallow an edit in flight.
-  const inp = (o, field, val) => {
+  // `ghost` is what this row would cost if nothing were typed into it - the seller SKU's figure
+  // that a TikTok listing inherits. It shows as a PLACEHOLDER, not a value: the box reads as
+  // filled so a listing never looks uncosted, while the row still holds nothing of its own and
+  // saving an untouched one writes nothing.
+  const inp = (o, field, val, ghost) => {
     const p = CB_PENDING[cbPendKey(o.fam, o.id, o.chan)];
     const held = p && Object.prototype.hasOwnProperty.call(p, field);
-    return '<td class="num"><input type="number" step="0.01" value="' + esc(held ? p[field] : val) + '"'
+    const shownVal = held ? p[field] : val;
+    const ph = (!held && (val == null || val === '') && ghost != null && ghost !== '') ? ghost : '';
+    return '<td class="num"><input type="number" step="0.01" value="' + esc(shownVal) + '"'
+      + (ph ? ' placeholder="' + esc(ph) + '" title="' + esc('Inherited from ' + (o.listingOf || '')
+          + '. Type here to cost this listing on its own.') + '"' : '')
       + ' data-cb="' + esc(o.fam+'|'+o.id) + '" data-chan="' + o.chan + '" data-f="' + field + '"'
       + (held ? ' title="Not saved yet - press the green tick on this row (or Enter)"' : '')
       + ' style="width:80px;text-align:right' + (held ? ';background:#fff8d6;border-color:#e3c65a' : '') + '"></td>';
   };
   const rows = list.map(o => {
     const v = costBookAt(o.id, o.chan, asAt, o.fam) || {};
+    // What this listing falls back to, for the placeholder figures and the "in force" cell.
+    // Resolved the way the ENGINE resolves it, so the row shows the cost actually being used:
+    // the seller SKU's Cost Book version if it has one, otherwise its master sheet figures.
+    let inh = {};
+    if(o.listingOf){
+      const iv = costBookAt(o.listingOf, o.chan, asAt, o.fam);
+      if(iv) inh = iv;
+      else {
+        const im = ttEntryFor(null, o.listingOf, asAt, STATE.master);
+        if(im) inh = {buy:im.buying, ship:im.shipping, fee:im.fbaFee, oper:im.oper, ref:im.referral};
+      }
+    }
     const rec = COSTBOOK[cbId(o.fam,o.id)];
     const nv = rec ? cbSorted(rec[o.chan]).length : 0;
     const isFba = o.chan === 'fba';
@@ -8026,11 +8054,16 @@ function renderCostBook(){
         '<div class="ptitle2" title="' + esc(o.name) + '">' + esc((o.name||o.id).slice(0,72)) + '</div>' +
       '</td>' +
       '<td>' + tag + '</td>' +
-      inp(o,'buy', n2(v.buy)) +
-      inp(o, isFba?'fee':'ship', n2(isFba ? v.fee : v.ship)) +
-      inp(o,'oper', n2(v.oper)) +
-      inp(o,'ref', nRef(v.ref)) +
-      '<td>' + (v.from ? esc(v.from) : '<span style="color:var(--muted)">not set</span>') + '</td>' +
+      inp(o,'buy', n2(v.buy), n2(inh.buy)) +
+      inp(o, isFba?'fee':'ship', n2(isFba ? v.fee : v.ship), n2(isFba ? inh.fee : inh.ship)) +
+      inp(o,'oper', n2(v.oper), n2(inh.oper)) +
+      inp(o,'ref', nRef(v.ref), nRef(inh.ref)) +
+      '<td>' + (v.from ? esc(v.from)
+        : ((inh.buy != null || inh.ship != null || inh.oper != null || inh.ref != null)
+            ? '<span style="color:var(--muted)" title="' + esc('This listing has no cost of its own, so it uses '
+                + o.listingOf + '’s' + (inh.from ? ', in force from ' + inh.from : ' from the master sheet'))
+                + '">inherited</span>'
+            : '<span style="color:var(--muted)">not set</span>')) + '</td>' +
       '<td style="white-space:nowrap">' +
         '<button class="btn" data-cbsave="' + esc(o.fam+'|'+o.id) + '" data-cbsavechan="' + o.chan + '"' +
           ' title="' + (dirty
