@@ -2165,7 +2165,7 @@ function sellerSkusFor(channel, key, ful){
       const sku = fixText(r['sku']);
       if(!sku) continue;
       const fam = cbFam(fixText(r['platform']));
-      const id = fam === 'amazon' ? (fixText(r['asin']) || fixText(r['productid']))
+      const id = isAmzFam(fam) ? (fixText(r['asin']) || fixText(r['productid']))
                : fam === 'ebay'   ? (fixText(r['productid']) || sku)
                : sku;
       if(!id) continue;
@@ -3341,7 +3341,7 @@ function haveCosts(){
 }
 function buildMaster(){
   aliasMasterRows(STATE.raw.master);
-  const M = {tiktok:{bySku:{}, byPid:{}}, amazon:{byAsin:{}, bySku:{}}, ebay:{byItem:{}, bySku:{}}, shopify:{bySku:{}}};
+  const M = {tiktok:{bySku:{}, byPid:{}}, amazon:{byAsin:{}, bySku:{}}, amazon2:{byAsin:{}, bySku:{}}, ebay:{byItem:{}, bySku:{}}, shopify:{bySku:{}}};
   let n = 0;
   const all = [];
   for(const r of STATE.raw.master){
@@ -3372,10 +3372,18 @@ function buildMaster(){
       if(old && old.referral != null && e.referral == null) return;
       map[key] = e;
     };
-    // Amazon 1 (Vemart) + Amazon 2 (Vefive) share one cost index (ASINs/SKUs are unique across
-    // the two accounts). Accept any amazon/amz/vemart/vefive/amazon2 platform label so Vefive's
-    // costs & referral in the master are found by the Amazon 2 channel too.
-    if(plat.includes('amazon') || plat.includes('amz') || plat.includes('vemart') || plat.includes('vefive')){ put(M.amazon.byAsin, asin || pid); if(sku) put(M.amazon.bySku, sku); }
+    // Amazon 1 (Vemart) and Amazon 2 (Vefive) keep SEPARATE cost indexes. They shared one on the
+    // grounds that an ASIN belongs to one account or the other; it does not hold - 496 ASINs are
+    // in both accounts' Business Reports - so a row filed under one account was setting the cost
+    // and the referral rate for the other as well. A row that names an account goes to that
+    // account alone. A bare "amazon" / "amz" row names neither, so it still answers for both:
+    // it is the only thing those ASINs have, and dropping it would cost them their cost.
+    if(plat.includes('amazon') || plat.includes('amz') || plat.includes('vemart') || plat.includes('vefive')){
+      const fam = cbFam(plat);
+      const named = plat.includes('vemart') || plat.includes('vefive') || /amazon\s*2|amz\s*2|amazon\s*1|amz\s*1/.test(plat);
+      const targets = named ? [M[fam]] : [M.amazon, M.amazon2];
+      for(const t of targets){ put(t.byAsin, asin || pid); if(sku) put(t.bySku, sku); }
+    }
     else if(plat.includes('ebay')){ put(M.ebay.byItem, pid); if(sku) put(M.ebay.bySku, sku); }
     else if(plat.includes('shopif')){ put(M.shopify.bySku, sku); }
     else { put(M.tiktok.bySku, sku); if(pid){ if(!M.tiktok.byPid[pid]) M.tiktok.byPid[pid] = []; if(!M.tiktok.byPid[pid].includes(sku)) M.tiktok.byPid[pid].push(sku); } }
@@ -3401,7 +3409,8 @@ function buildMaster(){
       if(!chan) continue;
       const e = cbAsMasterEntry(costBookAt(id, chan, refDate, fam), chan, rec.name);
       if(!e) continue;
-      const map = fam === 'amazon' ? M.amazon.byAsin : fam === 'ebay' ? M.ebay.byItem
+      const map = fam === 'amazon' ? M.amazon.byAsin : fam === 'amazon2' ? M.amazon2.byAsin
+                : fam === 'ebay' ? M.ebay.byItem
                 : fam === 'shopify' ? M.shopify.bySku : M.tiktok.bySku;
       // The book upper-cases its key; the sheet keeps whatever casing was typed. TikTok and
       // Shopify key on the SKU, so an exact lookup missed the sheet row and the product forked
@@ -3435,7 +3444,7 @@ function buildMaster(){
         // a version with no referral % of its own must not wipe the sheet's rate
         if(e.referral == null) e.referral = prior.referral;
       } else {
-        e.sku = id; e.asin = fam === 'amazon' ? id : ''; e.pid = id; e.plat = fam;
+        e.sku = id; e.asin = isAmzFam(fam) ? id : ''; e.pid = id; e.plat = fam;
       }
       map[mapKey] = e;
       overlaid++;
@@ -3443,7 +3452,7 @@ function buildMaster(){
     M.costBookCount = overlaid;
   }
   M.count = n;
-  M.list = [...Object.values(M.tiktok.bySku), ...Object.values(M.amazon.byAsin), ...Object.values(M.ebay.byItem), ...Object.values(M.shopify.bySku)];
+  M.list = [...Object.values(M.tiktok.bySku), ...Object.values(M.amazon.byAsin), ...Object.values(M.amazon2.byAsin), ...Object.values(M.ebay.byItem), ...Object.values(M.shopify.bySku)];
   return M;
 }
 
@@ -4272,7 +4281,10 @@ function computeAmazon(A){
   const refDate = costRefDate();
   // The Cost Book, where it has an entry for this ASIN + channel, always wins over the
   // uploaded sheet - it is dated, so it answers "what did this cost on the day it sold".
-  const cbFor = (asin, fba) => cbAsMasterEntry(costBookAt(asin, fba ? 'fba' : 'fbm', refDate, 'amazon'), fba ? 'fba' : 'fbm');
+  // This account's own cost family, so Vemart and Vefive no longer read one another's costs.
+  const AFAM = A.chName === 'amazon2' ? 'amazon2' : 'amazon';
+  const AM = (STATE.master && STATE.master[AFAM]) || {byAsin:{}, bySku:{}};
+  const cbFor = (asin, fba) => cbAsMasterEntry(costBookAt(asin, fba ? 'fba' : 'fbm', refDate, AFAM), fba ? 'fba' : 'fbm');
   const costAmazonRow = (row, asin, e) => {
     const parts = skuSplit[asin];
     const tot = parts ? parts.reduce((a,p) => a + p.units, 0) : 0;
@@ -4285,7 +4297,7 @@ function computeAmazon(A){
       // rows. Discarding this left one row quoting two SKUs and a blended cost.
       const offerParts = [];
       for(const p of parts){
-        const m = cbFor(asin, p.fba) || M.amazon.bySku[p.sku];
+        const m = cbFor(asin, p.fba) || AM.bySku[p.sku];
         if(!m) continue;
         const share = p.units / tot;
         const units = (row.units || 0) * share;
@@ -4333,7 +4345,7 @@ function computeAmazon(A){
     row.orders_count = a.orders;
     row.revenue_gross = a.gross;
     row.refunds = row.revenue_gross * amzRefundRate;
-    const e = M.amazon.byAsin[asin];
+    const e = AM.byAsin[asin];
     // COGS is per unit. Shipping/operational are ONE charge per ORDER - a multi-unit order
     // still ships as a single parcel - matching the TikTok engine so channels compare like
     // for like. The Business Report has no order IDs, so a multi-ASIN order books one parcel
@@ -4348,7 +4360,7 @@ function computeAmazon(A){
       let tot = 0, w = 0, cov = 0;
       for(const p of sp) tot += p.units;
       for(const p of sp){
-        const m = cbFor(asin, p.fba) || M.amazon.bySku[p.sku];
+        const m = cbFor(asin, p.fba) || AM.bySku[p.sku];
         if(!m || m.referral == null || !tot) continue;
         w += m.referral * (p.units / tot); cov += p.units / tot;
       }
@@ -4369,7 +4381,7 @@ function computeAmazon(A){
     if(used.has(asin) || a.spend === 0 || adFactor <= 0) continue;
     const row = newRow(A.chName, asin, a.label.replace(/^[A-Z0-9]{10}-?\s*/,''), asin);
     row.ads = a.spend*adFactor; row.ad_sales = a.sales*adFactor; row.clicks = Math.round(a.clicks*adFactor); row.impressions = Math.round(a.impressions*adFactor);
-    row.no_cost = !M.amazon.byAsin[asin];
+    row.no_cost = !AM.byAsin[asin];
     rows.push(row);
     wasteSpend += a.spend*adFactor;
     waste.push({channel:A.chName, key: asin, name: row.name || asin, ads:a.spend*adFactor, clicks:Math.round(a.clicks*adFactor)});
@@ -5475,8 +5487,10 @@ function computeAmazonTxn(B){
   // the date-range report has no SKU - best-effort COGS match on product name prefix
   const byName = {};
   const idxName = e => { if(e && e.name){ const k = e.name.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim().slice(0,22); if(k && !byName[k]) byName[k] = e; } };
-  for(const e of Object.values(M.amazon.byAsin)) idxName(e);
-  for(const e of Object.values(M.amazon.bySku)) idxName(e);
+  // This account's own index: Vemart and Vefive no longer share one set of costs.
+  const BM = (M && M[B.chName === 'amazon2' ? 'amazon2' : 'amazon']) || {byAsin:{}, bySku:{}};
+  for(const e of Object.values(BM.byAsin)) idxName(e);
+  for(const e of Object.values(BM.bySku)) idxName(e);
   const matchName = nm => { if(!nm) return null; const k = nm.toLowerCase().replace(/\.\.\.$/,'').replace(/[^a-z0-9 ]/g,'').trim().slice(0,22); return k ? (byName[k]||null) : null; };
   // aggregate P&L rows + per-day series, built entirely from the transaction report. Used as
   // the channel's P&L when NO Business Report is loaded for this Amazon account (so revenue,
@@ -5507,7 +5521,7 @@ function computeAmazonTxn(B){
       refTotal += amt; addDaily(date, 0, 0, 0, amt);
       continue;
     }
-    const e = M.amazon.bySku[sku] || null;
+    const e = BM.bySku[sku] || null;
     const sellingFees = Math.abs(m(r['selling fees'])), fbaFees = Math.abs(m(r['fba fees'])), otherFees = Math.abs(m(r['other transaction fees']));
     const row = newRow('amazon', sku, name, order);
     row.units = qty; row.orders_count = 1; row.revenue_gross = grossInc; row.refunds = 0;
@@ -5769,7 +5783,7 @@ function buildDiagnostics(){
       // Include the SKU for eBay: one listing (one Item ID) legitimately holds several
       // variations with different costs, and those are now costed individually from the
       // transaction report's Custom label. Only a repeated Item ID + SKU is a true duplicate.
-      let key = fam === 'amazon' ? norm(r.asin || r.productid) : fam === 'ebay' ? norm(r.productid) : norm(r.sku);
+      let key = isAmzFam(fam) ? norm(r.asin || r.productid) : fam === 'ebay' ? norm(r.productid) : norm(r.sku);
       if(fam === 'ebay' && norm(r.sku)) key += '|' + norm(r.sku);
       if(!key) continue;
       const g = (groups[fam + '::' + key] = groups[fam + '::' + key] || {list:[], name: fixText(r.Name)});
@@ -7347,6 +7361,7 @@ const cbSorted = list => (list||[]).slice().sort((a,b) => String(a.from||'').loc
 // has two live offers at once, so it is the only one that gets two rows.
 const CB_CHANS = {
   amazon:  [['fbm','FBM','Fulfilled by Merchant'], ['fba','FBA','Fulfilled by Amazon']],
+  amazon2: [['fbm','FBM','Fulfilled by Merchant'], ['fba','FBA','Fulfilled by Amazon']],
   tiktok:  [['fbm','FBS','Fulfil by Seller'], ['ttplat','FBP','Fulfil by Platform'], ['tttok','FBT','Fulfil by TikTok']],
   ebay:    [['fbm','Fulfil by Seller','Fulfil by Seller']],
   shopify: [['fbm','Fulfil by Seller','Fulfil by Seller']]
@@ -7362,7 +7377,7 @@ const cbChanLong  = (fam, k) => { const f = cbChanFind(fam, k); return f ? f[2] 
 // other - and its sales get costed at zero. Amazon is excluded: there both offers coexist.
 function cbCurrentChan(fam, id){
   const opts = cbChanList(fam);
-  if(fam === 'amazon' || opts.length < 2) return 'fbm';
+  if(isAmzFam(fam) || opts.length < 2) return 'fbm';
   const rec = COSTBOOK[cbId(fam, id)];
   if(rec) for(const [k] of opts) if(cbSorted(rec[k]).length) return k;
   return opts[0][0];
@@ -7371,10 +7386,20 @@ function cbCurrentChan(fam, id){
 // The Cost Book is the single source of costs for EVERY channel, so its key carries the
 // platform family as well as the identifier - an ASIN on Amazon, an item ID on eBay, a SKU
 // on TikTok/Shopify. FBA/FBM only ever applies to Amazon; other platforms use 'fbm' alone.
-const CB_FAM = {amazon:'amazon', amazon2:'amazon', tiktok:'tiktok', ebay:'ebay', shopify:'shopify'};
+// Vemart (Amazon 1) and Vefive (Amazon 2) each own their costs. They used to share the single
+// 'amazon' family on the grounds that an ASIN belongs to one account or the other - but 496
+// ASINs appear in both accounts' Business Reports and 395 sell on both, so one entry was
+// driving two accounts and whichever row was indexed last set the cost and the referral rate
+// for the pair. Each account now keys its own entries.
+const CB_FAM = {amazon:'amazon', amazon2:'amazon2', tiktok:'tiktok', ebay:'ebay', shopify:'shopify'};
+// Families that are an Amazon account: FBA/FBM applies, and both accounts behave alike.
+const CB_AMZ_FAMS = ['amazon', 'amazon2'];
+const isAmzFam = f => f === 'amazon' || f === 'amazon2';
 const cbFam = plat => {
   const p = String(plat||'').toLowerCase();
-  if(p.includes('amazon')||p.includes('amz')||p.includes('vemart')||p.includes('vefive')) return 'amazon';
+  // Vefive first: 'amazon-vefive' contains 'amazon' too, so the account name has to win.
+  if(p.includes('vefive') || /amazon\s*2|amz\s*2/.test(p)) return 'amazon2';
+  if(p.includes('amazon')||p.includes('amz')||p.includes('vemart')) return 'amazon';
   if(p.includes('ebay')) return 'ebay';
   if(p.includes('shopif')) return 'shopify';
   return 'tiktok';
@@ -7414,13 +7439,30 @@ function migrateCostBook(){
   return moved;
 }
 function costBookAt(id, chan, date, fam){
-  const rec = COSTBOOK[cbId(fam || 'amazon', id)];
-  if(!rec) return null;
-  const list = cbSorted(rec[chan]);
-  if(!list.length) return null;
-  let hit = null;
-  for(const v of list){ if(!v.from || v.from <= date) hit = v; }
-  return hit || list[0];   // a sale before the earliest version still uses the earliest
+  const f = fam || 'amazon';
+  const pick = rec => {
+    if(!rec) return null;
+    const list = cbSorted(rec[chan]);
+    if(!list.length) return null;
+    let hit = null;
+    for(const v of list){ if(!v.from || v.from <= date) hit = v; }
+    return hit || list[0];   // a sale before the earliest version still uses the earliest
+  };
+  const own = pick(COSTBOOK[cbId(f, id)]);
+  if(own) return own;
+  // Every cost entered before the two Amazon accounts were split is keyed 'amazon'. Vefive
+  // reads those until it has an entry of its own, so splitting the accounts changed no figure
+  // on the day it shipped - a Vefive cost only diverges once somebody sets one. Without this
+  // every Vefive product would have lost its cost and booked £0 COGS overnight.
+  if(f === 'amazon2') return pick(COSTBOOK[cbId('amazon', id)]);
+  return null;
+}
+// Does this account hold a cost of its own for this product, or is it reading the shared one?
+// The Cost Manager needs to tell the two apart, so an inherited figure is never mistaken for
+// a figure somebody set for this account.
+function cbOwnEntry(fam, id, chan){
+  const rec = COSTBOOK[cbId(fam, id)];
+  return !!(rec && cbSorted(rec[chan]).length);
 }
 // Shape a cost-book version like a master-sheet entry so the engines can use either.
 function cbAsMasterEntry(v, chan, name){
@@ -7459,10 +7501,10 @@ function cbOffers(){
   };
   for(const r of (STATE.raw.master||[])){
     const fam = cbFam(r.platform);
-    const id = fam==='amazon' ? (r.asin||r.productid) : (fam==='ebay' ? r.productid : r.sku);
+    const id = isAmzFam(fam) ? (r.asin||r.productid) : (fam==='ebay' ? r.productid : r.sku);
     if(!id) continue;
     const chanRaw = fixText(r['SKU CHANNEL']||'');
-    const isFba = fam==='amazon' && (/fba|afn|amazon/i.test(chanRaw) || /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(fixText(r.sku)));
+    const isFba = isAmzFam(fam) && (/fba|afn|amazon/i.test(chanRaw) || /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(fixText(r.sku)));
     touch(fam, id, fixText(r.Name), isFba ? 'fba' : cbCurrentChan(fam, id));
   }
   for(const [key, rec] of Object.entries(COSTBOOK)){
@@ -7475,7 +7517,7 @@ function cbOffers(){
     for(const r of (STATE.channels[ch]||[])){
       if(!r.key) continue;
       const fu = r.fbaUnits || 0, u = r.units || 0;
-      if(fam === 'amazon'){
+      if(isAmzFam(fam)){
         // Both offers always exist for an Amazon ASIN, so both are always editable even
         // before any FBA cost is entered - otherwise there would be no row to type it into.
         // Units are attributed to whichever channel actually sold them.
@@ -7494,7 +7536,7 @@ function cbOffers(){
   // Amazon rows already in the book or the sheet also get their counterpart, so an FBA cost
   // can be added to anything, not only to what happens to be selling right now.
   for(const o of Object.values(out)){
-    if(o.fam !== 'amazon') continue;
+    if(!isAmzFam(o.fam)) continue;
     const other = o.chan === 'fbm' ? 'fba' : 'fbm';
     touch(o.fam, o.id, o.name, other);
   }
@@ -7529,7 +7571,7 @@ function renderBatchPicker(){
     : '<option value="">nothing dated yet</option>';
   if(keep && b.some(x => x[0] === keep)) sel.value = keep;
 }
-const CB_PLAT_LABEL = {amazon:'Amazon', tiktok:'TikTok', ebay:'eBay', shopify:'Shopify'};
+const CB_PLAT_LABEL = {amazon:'Amazon 1 (Vemart)', amazon2:'Amazon 2 (Vefive)', tiktok:'TikTok', ebay:'eBay', shopify:'Shopify'};
 // Fulfilment filter, scoped to whichever platform is selected. Values are "family:channel"
 // because 'fbm' means Amazon FBM, TikTok FBS and eBay seller-fulfilled all at once - filtering
 // on the bare channel key would sweep up all three.
@@ -7537,8 +7579,9 @@ function renderFulPicker(famSel){
   const sel = document.getElementById('cbFul');
   if(!sel) return;
   const keep = sel.value;
-  const fam = famSel === 'amazon2' ? 'amazon' : famSel;
-  const fams = fam === 'all' ? ['amazon','tiktok','ebay','shopify'] : [fam];
+  // Amazon 2 is its own cost family now, so it scopes to itself rather than borrowing Amazon 1's.
+  const fam = famSel;
+  const fams = fam === 'all' ? ['amazon','amazon2','tiktok','ebay','shopify'] : [fam];
   let html = '<option value="all">All fulfilment</option>';
   for(const f of fams){
     const body = cbChanList(f).map(([k, short, long]) =>
@@ -7589,9 +7632,10 @@ function cbCasedId(id){
   return _casedIdx[String(id || '').toUpperCase()] || id;
 }
 function cbSkusForOffer(o){
-  if(o.fam !== 'amazon') return {list: cbSkusFor(o), tagged: true};
+  if(!isAmzFam(o.fam)) return {list: cbSkusFor(o), tagged: true};
   const ful = o.chan === 'fba';
-  const exact = [...new Set([...sellerSkusFor('amazon', o.id, ful), ...sellerSkusFor('amazon2', o.id, ful)])];
+  // This account's SKUs only. Listing both accounts' put Vefive's SKU on a Vemart row.
+  const exact = [...new Set(sellerSkusFor(o.fam, o.id, ful))];
   if(exact.length) return {list: exact, tagged: true};
   // Nothing tagged for this fulfilment. Whether a SKU counts as FBA is INFERRED - from a SKU
   // CHANNEL column that sheets fill in inconsistently, or failing that from an "FBA" in the SKU
@@ -7601,9 +7645,7 @@ function cbSkusForOffer(o){
 }
 function cbSkusFor(o){
   if(o._skus) return o._skus;
-  const out = o.fam === 'amazon'
-    ? [...new Set([...sellerSkusFor('amazon', o.id), ...sellerSkusFor('amazon2', o.id)])]
-    : sellerSkusFor(o.fam === 'tiktok' ? 'tiktok' : o.fam, o.id);
+  const out = sellerSkusFor(o.fam === 'tiktok' ? 'tiktok' : o.fam, o.id);
   // TikTok and Shopify key on the SKU itself, so the id IS the thing being searched for
   o._skus = out;
   return out;
@@ -7626,12 +7668,10 @@ function renderCostBook(){
   const all = cbOffers();
   const noCost = o => { const v = costBookAt(o.id, o.chan, asAt, o.fam); return !(v && +v.buy > 0); };
   let list = all.slice();
-  // Vemart and Vefive are one cost family, so an account filter selects on where the offer
-  // actually SELLS, not on the key. An offer selling nowhere belongs to neither account in
-  // particular, so it stays visible under both rather than disappearing from every view.
-  if(famSel === 'amazon' || famSel === 'amazon2')
-    list = list.filter(o => o.fam === 'amazon' && (o.asinOn.has(famSel) || o.asinOn.size === 0));
-  else if(famSel !== 'all') list = list.filter(o => o.fam === famSel);
+  // Each Amazon account now keys its own entries, so the account filter is simply the family.
+  // It used to select on where the offer SELLS, because one entry drove both accounts and the
+  // key could not say which was meant.
+  if(famSel !== 'all') list = list.filter(o => o.fam === famSel);
   if(fulSel !== 'all'){
     const [ff, fc] = fulSel.split(':');
     list = list.filter(o => o.fam === ff && o.chan === fc);
@@ -7666,7 +7706,7 @@ function renderCostBook(){
     const inMaster = {has:new Set(), blankSku:new Set()};
     for(const r of (STATE.raw.master || [])){
       const fam = cbFam(fixText(r.platform));
-      const id = fam === 'amazon' ? (fixText(r.asin) || fixText(r.productid))
+      const id = isAmzFam(fam) ? (fixText(r.asin) || fixText(r.productid))
                : fam === 'ebay'   ? (fixText(r.productid) || fixText(r.sku))
                : fixText(r.sku);
       if(!id) continue;
@@ -7682,9 +7722,9 @@ function renderCostBook(){
       const mk = o.fam + '|' + String(o.id).trim().toUpperCase();
       if(inMaster.blankSku.has(mk)) blankInMaster++;
       else if(!inMaster.has.has(mk)) missingFromMaster++;
-      const accts = o.fam === 'amazon'
-        ? [...(o.asinOn && o.asinOn.size ? o.asinOn : (o.on || []))]
-        : ['ebay'];
+      // The family IS the account now, so an offer no longer has to be traced to one through
+      // where it sells.
+      const accts = isAmzFam(o.fam) ? [o.fam] : ['ebay'];
       const keys = accts.length ? accts : ['amazon'];
       for(const a of keys) byAcct[a] = (byAcct[a] || 0) + 1;
     }
@@ -7740,7 +7780,7 @@ function renderCostBook(){
     let mIds = 0;
     for(const r of mrows){
       const fam = cbFam(fixText(r.platform));
-      const id = fam === 'amazon' ? (fixText(r.asin) || fixText(r.productid))
+      const id = isAmzFam(fam) ? (fixText(r.asin) || fixText(r.productid))
                : fam === 'ebay'   ? (fixText(r.productid) || fixText(r.sku)) : fixText(r.sku);
       if(id && fixText(r.sku)) mIds++;
     }
@@ -7864,7 +7904,7 @@ function renderCostBook(){
         const pl = fixText(r.platform) || '(blank)';
         perPlat[pl] = (perPlat[pl] || 0) + 1;
         const f = cbFam(pl);
-        const id = f === 'amazon' ? (fixText(r.asin) || fixText(r.productid))
+        const id = isAmzFam(f) ? (fixText(r.asin) || fixText(r.productid))
                  : f === 'ebay'   ? (fixText(r.productid) || fixText(r.sku)) : fixText(r.sku);
         if(id && fixText(r.sku)) withIdSku++;
       }
@@ -7914,7 +7954,7 @@ function renderCostBook(){
       for(const o of unnamed){
         const hits = mr.filter(r => {
           const f = cbFam(fixText(r.platform));
-          const id = f === 'amazon' ? (fixText(r.asin) || fixText(r.productid))
+          const id = isAmzFam(f) ? (fixText(r.asin) || fixText(r.productid))
                    : f === 'ebay'   ? (fixText(r.productid) || fixText(r.sku)) : fixText(r.sku);
           return id && String(id).trim().toUpperCase() === o.id;
         });
@@ -10653,7 +10693,7 @@ function ensureMasterRow(e){
     'Name': e.name || '', 'platform': e.plat || fam, 'sku': sku,
     'asin': e.asin || '',
     'productid': (e.pid && String(e.pid).toLowerCase() === String(sku).toLowerCase()) ? sku : (e.pid || ''),
-    'SKU CHANNEL': e.chan || (fam === 'amazon' ? (e.fba ? 'FBA' : 'FBM') : ''),
+    'SKU CHANNEL': e.chan || (isAmzFam(fam) ? (e.fba ? 'FBA' : 'FBM') : ''),
     'buying_cost_per_unit': e.buying || 0, 'operational_cost_per_unit': e.oper || 0,
     'shipping_cost_per_unit': e.shipping || 0,
     'Refferal fee %': e.referral == null ? null : e.referral
@@ -10728,7 +10768,7 @@ function renderProducts(){
   for(const e of list){
     const ck = chOfPlat(e.plat);
     const fam = ck === 'amazon2' ? 'amazon' : ck;
-    if(fam === 'amazon') offers.push({e, chan:'fbm'}, {e, chan:'fba'});
+    if(isAmzFam(fam)) offers.push({e, chan:'fbm'}, {e, chan:'fba'});
     else offers.push({e, chan: cbCurrentChan(fam, fam === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid))});
   }
   const CAPP = 600;
@@ -10740,7 +10780,7 @@ function renderProducts(){
   const costFor = (e, chan) => {
     const ck = chOfPlat(e.plat);
     const fam = ck === 'amazon2' ? 'amazon' : ck;
-    const id = fam === 'amazon' ? (e.asin || e.pid || e.sku) : fam === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid);
+    const id = isAmzFam(fam) ? (e.asin || e.pid || e.sku) : fam === 'ebay' ? (e.pid || e.sku) : (e.sku || e.pid);
     const v = id ? costBookAt(id, chan, costRefDate(), fam) : null;
     if(!v) return {buying:e.buying, oper:e.oper, shipping:e.shipping, referral:e.referral, fromBook:false};
     return {
@@ -10870,7 +10910,7 @@ function renderProducts(){
     const ec = prodEcon(ee, P, c, bship);
     const fam = chOf(e.plat) === 'amazon2' ? 'amazon' : chOf(e.plat);
     const isFba = chan === 'fba';
-    const tag = fam === 'amazon'
+    const tag = isAmzFam(fam)
       ? `<span class="badge ${isFba?'purple':'blue'}">#${isFba?'FBA':'FBM'}</span>`
       : `<span class="fchan-fixed">${esc(cbChanLabel(fam, chan))}</span>`;
     return `<tr>
@@ -12669,10 +12709,10 @@ document.getElementById('cbImportFile').addEventListener('change', async e => {
       const asinRaw = fixText(pick(r,'asin') || '');
       const pidRaw  = fixText(pick(r,'productid','product id','item id','ebay item id') || '');
       const fam = platRaw ? cbFam(platRaw) : (asinRaw ? 'amazon' : 'tiktok');
-      const id = fam==='amazon' ? (asinRaw || pidRaw) : (fam==='ebay' ? (pidRaw || skuRaw) : (skuRaw || pidRaw));
+      const id = isAmzFam(fam) ? (asinRaw || pidRaw) : (fam==='ebay' ? (pidRaw || skuRaw) : (skuRaw || pidRaw));
       if(!id){ skipped++; continue; }
       const chanRaw = fixText(pick(r,'sku channel','fulfilment channel','fulfillment channel') || '');
-      const chan = (fam==='amazon' && (/fba|afn|amazon/i.test(chanRaw) ||
+      const chan = (isAmzFam(fam) && (/fba|afn|amazon/i.test(chanRaw) ||
                     (!chanRaw && /(^|[^a-z])(fba|afn)([^a-z]|$)/i.test(skuRaw)))) ? 'fba' : 'fbm';
       const num = v => (v==null || String(v).trim()==='') ? null : cleanMoney(v);
       const buy  = num(pick(r,'buying_cost_per_unit','product cost','cogs','buying'));
@@ -12769,7 +12809,7 @@ document.getElementById('cbAddVersion').addEventListener('click', () => {
   // reads as "my edit did not save". Say so plainly, with the date to use if it was meant to
   // apply now - "earlier reports keep the previous cost" is true but easy to read past.
   const ref = costRefDate();
-  const lbl = fam==='amazon' ? chan.toUpperCase() : fam.toUpperCase();
+  const lbl = isAmzFam(fam) ? chan.toUpperCase() : fam.toUpperCase();
   if(from > ref){
     showBanner(`Saved ${lbl} cost for ${id}, effective ${from} — but your loaded reports are `
       + `costed as at ${ref}, which is earlier, so this will NOT change the figures you are `
@@ -12823,7 +12863,7 @@ document.getElementById('cbAddProduct').addEventListener('click', () => {
   if(!already){
     STATE.raw.master.push({
       'Name': name, 'platform': plat, 'sku': sku || id,
-      'asin': fam === 'amazon' ? id : '', 'productid': id,
+      'asin': isAmzFam(fam) ? id : '', 'productid': id,
       'buying_cost_per_unit': buy || 0, 'operational_cost_per_unit': oper || 0,
       'shipping_cost_per_unit': (chan === 'fba' ? 0 : (ship || 0)),
       'Refferal fee %': refRaw == null ? null : (refRaw > 1 ? refRaw/100 : refRaw)
@@ -12876,7 +12916,7 @@ document.getElementById('cbToMaster').addEventListener('click', () => {
   const miss = cbOffersMissingFromMaster();
   if(!miss.length){ showBanner('Every offer already has a master-sheet row.', 'success'); return; }
   const asAt = document.getElementById('cbAsAt').value || costRefDate();
-  const withSku = miss.filter(m => sellerSkusFor(m.fam === 'amazon' ? 'amazon' : m.fam, m.id).length
+  const withSku = miss.filter(m => sellerSkusFor(m.isAmzFam(fam) ? 'amazon' : m.fam, m.id).length
                                || sellerSkusFor('amazon2', m.id).length).length;
   if(!confirm(`Add ${fmtNum(miss.length)} product(s) to the master sheet?
 
@@ -12891,7 +12931,7 @@ Costs come from the Cost Book as at ${asAt}. Nothing already in the sheet is cha
     // Which Amazon account: the sheet names them separately, and the SKU lookups key on that.
     // Selling on both, or on neither yet, stays the neutral "amazon" which answers for both.
     let plat = m.fam;
-    if(m.fam === 'amazon'){
+    if(isAmzFam(m.fam)){
       const v1 = m.on.has('amazon'), v2 = m.on.has('amazon2');
       plat = (v1 && !v2) ? 'amazon-vemart' : (v2 && !v1) ? 'amazon-vefive' : 'amazon';
     }
@@ -12903,23 +12943,23 @@ Costs come from the Cost Book as at ${asAt}. Nothing already in the sheet is cha
     });
     const use = chans.length ? chans : [[...m.chans][0] || 'fbm'];
     for(const chan of use){
-      const isFba = m.fam === 'amazon' && chan === 'fba';
-      const skus = m.fam === 'amazon'
-        ? [...new Set([...sellerSkusFor('amazon', m.id, isFba), ...sellerSkusFor('amazon2', m.id, isFba)])]
+      const isFba = isAmzFam(m.fam) && chan === 'fba';
+      const skus = isAmzFam(m.fam)
+        ? [...new Set(sellerSkusFor(m.fam, m.id, isFba))]
         : sellerSkusFor(m.fam, m.id);
       // On TikTok/eBay/Shopify the id IS the seller SKU, so it belongs in that column. An ASIN
       // is NOT a SKU, so leave Amazon's blank when nothing names it rather than inventing one -
       // a fake SKU would be indistinguishable from a real one everywhere it is read.
-      const sku = skus[0] || (m.fam === 'amazon' ? '' : m.id);
+      const sku = skus[0] || (m.isAmzFam(fam) ? '' : m.id);
       if(skus.length) named++;
       const v = costBookAt(m.id, chan, asAt, m.fam) || {};
       STATE.raw.master.push({
         'Name': m.name || '',
         'platform': plat,
         'sku': sku,
-        'asin': m.fam === 'amazon' ? m.id : '',
+        'asin': m.isAmzFam(fam) ? m.id : '',
         'productid': m.id,
-        'SKU CHANNEL': m.fam === 'amazon' ? (isFba ? 'FBA' : 'FBM') : '',
+        'SKU CHANNEL': m.isAmzFam(fam) ? (isFba ? 'FBA' : 'FBM') : '',
         'buying_cost_per_unit': +v.buy || 0,
         'operational_cost_per_unit': +v.oper || 0,
         'shipping_cost_per_unit': isFba ? 0 : (+v.ship || 0),
