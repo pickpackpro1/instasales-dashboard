@@ -3611,6 +3611,7 @@ function computeTikTok(){
   const R = STATE.raw;
   if(!R.tt_orders.length) return null;
   const M = STATE.master;
+  const refDate = costRefDate();   // which dated listing cost is in force for these reports
   const inRange = d => {
     if(!STATE.dateFrom && !STATE.dateTo) return true;
     if(!d) return false;
@@ -3905,10 +3906,25 @@ function computeTikTok(){
       s._feeBase = (s._feeBase || 0) + o.fee_base;   // not settled yet - fall back to the rate
     }
     if(!o.cancelled) s._oids.add(o.oid);
-    const e = M.tiktok.bySku[o.seller_sku];
+    // Per LINE, not per row: this line's own listing cost where one is set, else the seller
+    // SKU's. With nothing set per listing every line resolves to the same entry the row used
+    // to use, so the figures are unchanged.
+    const e = ttEntryFor(o.sku_id, o.seller_sku, refDate, M);
+    o._ce = e;
     if(e && !o.cancelled){
       if(!(o.oid in orderShip) || e.shipping > orderShip[o.oid]) orderShip[o.oid] = e.shipping;
       if(!(o.oid in orderOper) || e.oper > orderOper[o.oid]) orderOper[o.oid] = e.oper;
+    }
+    // COGS accumulates per line for the same reason. s.units * e.buying gave the identical
+    // total while one cost covered every line; it cannot once two listings differ.
+    if(e) s._buyAcc = (s._buyAcc || 0) + (e.buying || 0) * o.net_qty;
+    // The referral rate can differ per listing too, so the base each rate applies to is kept
+    // apart rather than one rate being applied to the row's whole base.
+    const lineRate = (e && e.referral != null) ? e.referral : null;
+    if(!st){
+      const rk = lineRate == null ? 'default' : String(lineRate);
+      s._feeByRate = s._feeByRate || {};
+      s._feeByRate[rk] = (s._feeByRate[rk] || 0) + o.fee_base;
     }
     if(!o.cancelled){
       orderSub[o.oid] = (orderSub[o.oid]||0) + o.sub;
@@ -3952,15 +3968,22 @@ function computeTikTok(){
   }
   for(const s of Object.values(map)){
     const e = s._e;
-    s.buying = e ? s.units * e.buying : 0;
+    // Summed per line above, so two listings of one seller SKU can cost different amounts.
+    s.buying = s._buyAcc || 0;
     const rate = (e && e.referral != null) ? e.referral : STATE.ttRate;
     // Settled lines bring the charge TikTok actually made, including its shipping service fee;
     // only what has not settled is still worked out from the rate, on the product subtotal alone
     // (revenue_gross includes the buyer's shipping, the modelled fee does not).
-    s.mkt_fee = (s._feeBase || 0) * rate + (s._stComm || 0) + (s._stShip || 0) + (s._stAdj || 0);
+    // Each unsettled line's base charged at ITS listing's rate; 'default' is a line whose
+    // listing names no rate of its own and so falls back to the row's. One rate across the
+    // row gives exactly what (_feeBase * rate) gave before.
+    let modelled = 0;
+    for(const [rk, base] of Object.entries(s._feeByRate || {}))
+      modelled += base * (rk === 'default' ? rate : +rk);
+    s.mkt_fee = modelled + (s._stComm || 0) + (s._stShip || 0) + (s._stAdj || 0);
     s.affiliate += (s._stAff || 0);
     s.shop_ads  += (s._stShop || 0);
-    delete s._feeBase; delete s._stComm; delete s._stShip; delete s._stAdj; delete s._stAff; delete s._stShop;
+    delete s._feeBase; delete s._feeByRate; delete s._buyAcc; delete s._stComm; delete s._stShip; delete s._stAdj; delete s._stAff; delete s._stShop;
     if(mode === 'product'){
       const a = adsByPid[s._pid];
       const tu = pidUnits[s._pid]||0;
@@ -4004,7 +4027,7 @@ function computeTikTok(){
     const isSample = !o.cancelled && o.sub === 0 && o.gross === 0;
     let oecon = null;
     if(isSample){
-      const es = M.tiktok.bySku[o.seller_sku];
+      const es = o._ce || M.tiktok.bySku[o.seller_sku];   // this line's own listing cost
       const vDiv = 1 + STATE.vat.rate;
       const exOf = (v, k) => vatIncFor('tiktok', k) ? v/vDiv : v;
       const lines = orderLines[o.oid] || 1;
@@ -7557,6 +7580,24 @@ function cbOffers(){
       }
     }
   }
+  // One row per TikTok LISTING. A seller SKU is often sold through several listings, each with
+  // its own SKU ID and its own economics, and the orders export names the SKU ID on every line -
+  // so a listing can carry a cost of its own. The seller SKU keeps its row as the default every
+  // listing falls back to, which is why nothing moves until a listing is costed separately.
+  for(const o of Object.values(out).slice()){
+    if(o.fam !== 'tiktok' || o.listingOf) continue;
+    for(const skuId of ttListingsFor(o.id)){
+      if(String(skuId).trim().toUpperCase() === String(o.id).trim().toUpperCase()) continue;
+      const info = ttSkuIdIdx().bySkuId[skuId] || {};
+      const t = touch('tiktok', skuId, info.name || o.name, 'fbm');
+      if(!t) continue;
+      t.listingOf = o.id;                 // the seller SKU this listing belongs to
+      t.units = info.units || 0;
+      t.live = t.units > 0;
+      t.asinLive = true;
+      for(const ch of (o.on || [])) t.on.add(ch);
+    }
+  }
   // Amazon rows already in the book or the sheet also get their counterpart, so an FBA cost
   // can be added to anything, not only to what happens to be selling right now.
   for(const o of Object.values(out)){
@@ -7687,6 +7728,40 @@ function skuPidIdx(){
   }
   return _skuPidIdx;
 }
+// ---- TikTok listings (SKU IDs) ----
+// One seller SKU is often sold through several TikTok listings, each with its own SKU ID, and
+// the orders export names the SKU ID on every line. That is the only id a sale can be matched
+// on - the master sheet's Product ID appears in no TikTok export at all - so it is the id a
+// per-listing cost has to key on if it is ever going to be applied.
+let _ttSkuIdx = null, _ttSkuIdxFor = null;
+function ttSkuIdIdx(){
+  const ord = STATE.raw.tt_orders || [];
+  if(_ttSkuIdxFor === ord && _ttSkuIdx) return _ttSkuIdx;
+  _ttSkuIdxFor = ord;
+  const bySkuId = {}, bySeller = {};
+  for(const r of ord){
+    const id = String(r['SKU ID']||'').trim();
+    const seller = fixText(r['Seller SKU']);
+    if(!id || !seller) continue;
+    const e = bySkuId[id] = bySkuId[id] || {skuId:id, seller, name:fixText(r['Product Name']), units:0};
+    e.units += cleanInt(r['Quantity']) || 0;
+    const k = String(seller).trim().toUpperCase();
+    (bySeller[k] = bySeller[k] || []);
+    if(!bySeller[k].includes(id)) bySeller[k].push(id);
+  }
+  _ttSkuIdx = {bySkuId, bySeller};
+  return _ttSkuIdx;
+}
+const ttListingsFor = seller => (ttSkuIdIdx().bySeller[String(seller||'').trim().toUpperCase()] || []);
+// A listing's own cost if one has been set for its SKU ID, otherwise the seller SKU's - so
+// splitting the rows changes no figure until somebody actually costs a listing separately.
+function ttEntryFor(skuId, seller, refDate, M){
+  if(skuId){
+    const v = costBookAt(skuId, 'fbm', refDate || costRefDate(), 'tiktok');
+    if(v) return cbAsMasterEntry(v, 'fbm', (M && M.tiktok.bySku[seller] && M.tiktok.bySku[seller].name) || '');
+  }
+  return (M || STATE.master || {tiktok:{bySku:{}}}).tiktok.bySku[seller] || null;
+}
 const cbPidKey = o => o.fam + '|' + String(o.id||'').trim().toUpperCase();
 // Only these two key on the SKU, so only these two have a product id with nowhere to live.
 const cbTakesPids = o => o.fam === 'tiktok' || o.fam === 'shopify';
@@ -7697,7 +7772,15 @@ const cbPidsFor = o => {
   if(!cbTakesPids(o)) return [];
   const own = PIDBOOK[cbPidKey(o)];
   if(own && own.length) return own;
-  return skuPidIdx()[cbPidKey(o)] || [];
+  const sheet = skuPidIdx()[cbPidKey(o)];
+  if(sheet && sheet.length) return sheet;
+  // A listing row is keyed on its SKU ID, which the master sheet knows nothing about, so it
+  // shows its seller SKU's product ids until it is given ids of its own.
+  if(o.listingOf){
+    const k = o.fam + '|' + String(o.listingOf).trim().toUpperCase();
+    return PIDBOOK[k] || skuPidIdx()[k] || [];
+  }
+  return [];
 };
 const cbPidsAreOwn = o => !!(cbTakesPids(o) && (PIDBOOK[cbPidKey(o)] || []).length);
 // Accepts anything typed: commas, spaces or new lines between ids, duplicates dropped.
@@ -7758,7 +7841,20 @@ function renderCostBook(){
     || cbSkusFor(o).some(sk => sk.toLowerCase().includes(q))
     // the TikTok / Shopify product id now shows on the row, so it has to be searchable too
     || cbPidsFor(o).some(p => p.toLowerCase().includes(q)));
-  list.sort((a,b) => (b.units||0)-(a.units||0) || a.id.localeCompare(b.id) || a.chan.localeCompare(b.chan));
+  // A TikTok listing sorts with its seller SKU rather than on its own units, so the parent row
+  // and the listings that inherit from it stay together instead of landing pages apart.
+  const grpUnits = {};
+  for(const o of list){
+    const g = o.listingOf || o.id;
+    grpUnits[g] = (grpUnits[g] || 0) + (o.units || 0);
+  }
+  const grpOf = o => o.listingOf || o.id;
+  list.sort((a,b) =>
+    (grpUnits[grpOf(b)]||0) - (grpUnits[grpOf(a)]||0)
+    || grpOf(a).localeCompare(grpOf(b))
+    || (a.listingOf ? 1 : 0) - (b.listingOf ? 1 : 0)
+    || (b.units||0)-(a.units||0)
+    || a.id.localeCompare(b.id) || a.chan.localeCompare(b.chan));
 
   const engineDate = costRefDate();
   const gaps = all.filter(o => o.live && noCost(o));
@@ -7919,6 +8015,19 @@ function renderCostBook(){
           // so nothing is repeated.
           const S = cbSkusForOffer(o), sk = S.list;
           const shown = cbCasedId(o.id);
+          // A TikTok listing row: the seller SKU names it, its own SKU ID is what the cost is
+          // keyed on and what every order line carries, and the product ids follow.
+          if(o.listingOf){
+            const lp = cbPidsFor(o);
+            return '<b title="' + esc('Listing of seller SKU ' + o.listingOf) + '">&#8627; '
+              + esc(cbCasedId(o.listingOf)) + '</b>'
+              + ' <span style="opacity:.75">&middot; <span style="font-weight:400">SKU ID '
+              + esc(shown) + '</span></span>'
+              + (lp.length ? ' <span style="opacity:.75">&middot; <span style="font-weight:400">Product ID'
+                  + (lp.length > 1 ? 's' : '') + ' '
+                  + lp.map(p => '<span style="white-space:nowrap">' + esc(p) + '</span>').join(', ')
+                  + '</span></span>' : '');
+          }
           const idBit = '<span style="font-weight:400">' + esc(ID_LBL[cbFamCh(o.fam)] || 'ID') + ' ' + esc(shown) + '</span>';
           // TikTok / Shopify: the id IS the seller SKU, so the row showed that alone and warned
           // that no SKU could be found - which was both wrong and unhelpful. Show the SKU and,
