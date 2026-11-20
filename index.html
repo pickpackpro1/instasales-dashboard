@@ -7596,6 +7596,17 @@ function cbOffers(){
     for(const ch of o.on) byProduct[k].add(ch);
   }
   for(const o of Object.values(out)) o.asinOn = byProduct[cbId(o.fam, o.id)] || new Set();
+  // Variation heads out: a parent ASIN that never sold a unit is not something to cost. One
+  // that HAS been costed keeps its row, so a cost entered against a parent by mistake can
+  // still be found and removed rather than becoming unreachable.
+  const heads = amzFamilyHeads();
+  if(heads.size) for(const [k, o] of Object.entries(out)){
+    if(!isAmzFam(o.fam) || o.units > 0) continue;
+    const id = String(o.id).trim().toUpperCase();
+    if(!heads.has(id)) continue;
+    if(COSTBOOK[cbId('amazon', id)] || COSTBOOK[cbId('amazon2', id)]) continue;
+    delete out[k];
+  }
   return Object.values(out);
 }
 // Every distinct effective-date in the book, newest first. An Import stamps one date across all
@@ -7734,6 +7745,28 @@ function ttSkuIdIdx(){
   return _ttSkuIdx;
 }
 const ttListingsFor = seller => (ttSkuIdIdx().bySeller[String(seller||'').trim().toUpperCase()] || []);
+// Amazon variation families. An ASIN that is named as the PARENT of a different child heads a
+// family: it is the listing the variations hang under, not a thing anybody buys. Amazon still
+// files the odd Business Report line under the head itself - B0HC6YVS1Y has exactly one, from
+// 10 Nov, with 0 units, £0.00 sales and a single session - and that one browse-only line was
+// enough to give the parent a costing row beside its own children. It never sells, so it never
+// needs a cost. Across both accounts 67 heads exist and not one has a unit of its own.
+let _amzHeads = null, _amzHeadsA = null, _amzHeadsB = null;
+function amzFamilyHeads(){
+  const A = STATE.raw.amz_biz || [], B = STATE.raw.amz2_biz || [];
+  if(_amzHeads && _amzHeadsA === A && _amzHeadsB === B) return _amzHeads;
+  _amzHeadsA = A; _amzHeadsB = B;
+  const kids = {}, units = {};
+  for(const r of [...A, ...B]){
+    const c = String(fixText(r['(Child) ASIN'])||'').trim().toUpperCase();
+    const p = String(fixText(r['(Parent) ASIN'])||'').trim().toUpperCase();
+    if(c) units[c] = (units[c] || 0) + (cleanMoney(r['Units ordered']) || 0);
+    // p === c is an ordinary listing reported under itself, not a family - leave those alone.
+    if(p && c && p !== c) (kids[p] = kids[p] || new Set()).add(c);
+  }
+  _amzHeads = new Set(Object.keys(kids).filter(h => !(units[h] > 0)));
+  return _amzHeads;
+}
 // An order that settled but is not in the Orders export has no Seller SKU anywhere - the
 // settlement file does not carry one - so its row is keyed on the SKU ID. The settlement names
 // the variation, but a variation name is NOT a seller SKU and showing it as one would be a
