@@ -7735,7 +7735,9 @@ function ttSkuIdIdx(){
     const id = String(r['SKU ID']||'').trim();
     const seller = fixText(r['Seller SKU']);
     if(!id || !seller) continue;
-    const e = bySkuId[id] = bySkuId[id] || {skuId:id, seller, name:fixText(r['Product Name']), units:0};
+    const e = bySkuId[id] = bySkuId[id] || {skuId:id, seller, name:fixText(r['Product Name']),
+                                            variation:fixText(r['Variation']), units:0};
+    if(!e.variation) e.variation = fixText(r['Variation']);
     e.units += cleanInt(r['Quantity']) || 0;
     const k = String(seller).trim().toUpperCase();
     (bySeller[k] = bySeller[k] || []);
@@ -7865,7 +7867,9 @@ function renderCostBook(){
     // the TikTok / Shopify product id now shows on the row, so it has to be searchable too
     || cbPidsFor(o).some(p => p.toLowerCase().includes(q))
     // the variation name shown on a settlement-only row, so it can be searched for by name
-    || ttSettleNameFor(o).toLowerCase().includes(q));
+    || ttSettleNameFor(o).toLowerCase().includes(q)
+    // and the Orders export's variation, now that listing rows carry it
+    || String(((ttSkuIdIdx().bySkuId[String(o.id||'').trim()]||{}).variation)||'').toLowerCase().includes(q));
   // A seller SKU whose listings are each on screen does not need a row of its own as well - it
   // only restated what the listings already show, and its figures appear on them as the value
   // they inherit. A SKU with one listing keeps its row; there is nothing else to show it on.
@@ -8080,8 +8084,19 @@ function renderCostBook(){
           if(o.listingOf){
             // No arrow: the seller SKU's own row is hidden whenever its listings are shown, so
             // an indent pointed at a row that is not there.
-            return '<b title="' + esc('Listing of seller SKU ' + o.listingOf) + '">'
+            // The Orders export names a Variation for every SKU ID, so it goes on the row - but
+            // it does not replace the SKU ID. "Default" says nothing, a variation that merely
+            // repeats the seller SKU says nothing, and two listings of one SKU often carry the
+            // SAME variation ("Pack of 2 Red 12 heads" twice), so the id is still what tells
+            // them apart.
+            const lv = (ttSkuIdIdx().bySkuId[String(o.id||'').trim()] || {}).variation || '';
+            const useVar = lv && lv.trim().toLowerCase() !== 'default'
+              && lv.trim().toLowerCase() !== String(o.listingOf||'').trim().toLowerCase();
+            return '<b title="' + esc('Listing of seller SKU ' + o.listingOf
+                + (lv ? ' · variation ' + lv : '')) + '">'
               + esc(cbCasedId(o.listingOf)) + '</b>'
+              + (useVar ? ' <span style="opacity:.75">&middot; <span style="font-weight:400">'
+                  + esc(lv) + '</span></span>' : '')
               + ' <span style="opacity:.75">&middot; <span style="font-weight:400">SKU ID '
               + esc(shown) + '</span></span>';
           }
