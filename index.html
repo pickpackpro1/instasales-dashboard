@@ -8064,7 +8064,9 @@ function renderCostBook(){
           // A TikTok listing row: the seller SKU names it, its own SKU ID is what the cost is
           // keyed on and what every order line carries, and the product ids follow.
           if(o.listingOf){
-            return '<b title="' + esc('Listing of seller SKU ' + o.listingOf) + '">&#8627; '
+            // No arrow: the seller SKU's own row is hidden whenever its listings are shown, so
+            // an indent pointed at a row that is not there.
+            return '<b title="' + esc('Listing of seller SKU ' + o.listingOf) + '">'
               + esc(cbCasedId(o.listingOf)) + '</b>'
               + ' <span style="opacity:.75">&middot; <span style="font-weight:400">SKU ID '
               + esc(shown) + '</span></span>';
