@@ -8028,8 +8028,15 @@ function renderCostBook(){
     const rec = COSTBOOK[cbId(o.fam,o.id)];
     const nv = rec ? cbSorted(rec[o.chan]).length : 0;
     const isFba = o.chan === 'fba';
-    const tag = '<span class="fchan-fixed" title="' + esc(cbChanLong(o.fam, o.chan)) + '">' +
-      esc(cbChanLabel(o.fam, o.chan)) + '</span>';
+    // Vemart and Vefive hold their own costs now, so ONE ASIN legitimately has a row per
+    // account per offer - four in all where both sell it both ways. Without the account on the
+    // row those read as the same product listed four times over, with no way to tell which is
+    // which or why their version counts differ. The account leads, the offer follows.
+    const acct = o.fam === 'amazon2' ? 'Vefive' : o.fam === 'amazon' ? 'Vemart' : '';
+    const tag = (acct ? '<span style="font-size:10.5px;color:var(--muted);display:block">'
+        + esc(acct) + '</span>' : '')
+      + '<span class="fchan-fixed" title="' + esc((acct ? acct + ' · ' : '')
+        + cbChanLong(o.fam, o.chan)) + '">' + esc(cbChanLabel(o.fam, o.chan)) + '</span>';
     // Under an account filter, report THAT account's units - o.units is the combined figure
     // across Vemart and Vefive and would overstate whichever one you are looking at.
     const acctFilter = (famSel === 'amazon' || famSel === 'amazon2');
