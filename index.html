@@ -7772,16 +7772,28 @@ function amzFamilyHeads(){
 // the variation, but a variation name is NOT a seller SKU and showing it as one would be a
 // guess dressed as data. The row says "SKU ID" and leaves the SKU blank instead. This set only
 // tells the two apart: an id seen in the settlement is a SKU ID, not somebody's seller SKU.
-let _ttSettleIds = null, _ttSettleIdsFor = null;
+let _ttSettleIds = null, _ttSettleIdsFor = null, _ttSettleNames = null;
 function ttSettleSkuIds(){
   const st = STATE.raw.tt_settle || [];
   if(_ttSettleIdsFor === st && _ttSettleIds) return _ttSettleIds;
-  _ttSettleIdsFor = st; _ttSettleIds = new Set();
+  _ttSettleIdsFor = st; _ttSettleIds = new Set(); _ttSettleNames = {};
   for(const r of st){
     const id = String(r['SKU ID']||'').trim();
-    if(id) _ttSettleIds.add(id);
+    if(!id) continue;
+    _ttSettleIds.add(id);
+    const nm = fixText(r['SKU name']);
+    if(nm && !_ttSettleNames[id]) _ttSettleNames[id] = nm;
   }
   return _ttSettleIds;
+}
+// The variation the settlement file names for a SKU ID. Shown LABELLED as a variation, never
+// in place of a seller SKU: there is no seller SKU for these lines and pretending otherwise
+// was the mistake. It is real data from the file, and without it the row is 19 digits and
+// nothing else to recognise the product by.
+function ttSettleNameFor(o){
+  if(!o || o.fam !== 'tiktok') return '';
+  ttSettleSkuIds();
+  return (_ttSettleNames || {})[String(o.id||'').trim()] || '';
 }
 const ttIsSkuId = o => !!(o && o.fam === 'tiktok'
   && (ttSettleSkuIds().has(String(o.id||'').trim()) || ttSkuIdIdx().bySkuId[String(o.id||'').trim()]));
@@ -7851,7 +7863,9 @@ function renderCostBook(){
     || (o.name||'').toLowerCase().includes(q)
     || cbSkusFor(o).some(sk => sk.toLowerCase().includes(q))
     // the TikTok / Shopify product id now shows on the row, so it has to be searchable too
-    || cbPidsFor(o).some(p => p.toLowerCase().includes(q)));
+    || cbPidsFor(o).some(p => p.toLowerCase().includes(q))
+    // the variation name shown on a settlement-only row, so it can be searched for by name
+    || ttSettleNameFor(o).toLowerCase().includes(q));
   // A seller SKU whose listings are each on screen does not need a row of its own as well - it
   // only restated what the listings already show, and its figures appear on them as the value
   // they inherit. A SKU with one listing keeps its row; there is nothing else to show it on.
@@ -8094,11 +8108,19 @@ function renderCostBook(){
           // Keyed on a SKU ID, with no seller SKU anywhere in the loaded files. The SKU stays
           // BLANK - the settlement names a variation, but that is not a seller SKU and putting
           // it here would read as one. The id is shown labelled as the id it is.
-          if(!sk.length && ttIsSkuId(o)) return '<span style="color:var(--muted)" title="'
-              + esc('No seller SKU for this line. The order is not in the TikTok Orders export, '
-                + 'and that is the only TikTok file carrying one — the settlement file does not. '
-                + 'Re-export the orders covering it to name and cost this row.')
-              + '">SKU ID ' + esc(shown) + '</span>';
+          if(!sk.length && ttIsSkuId(o)){
+            const vn = ttSettleNameFor(o);
+            const tip = esc('No seller SKU for this line — the order is not in the TikTok Orders '
+              + 'export, and that is the only TikTok file carrying one. '
+              + (vn ? 'The name shown is the VARIATION the settlement file gives, not a seller SKU. ' : '')
+              + 'Re-export the orders covering it to name and cost this row properly.');
+            return (vn
+                ? '<span style="color:var(--muted);font-size:10.5px">variation</span> <b title="' + tip + '">'
+                    + esc(vn) + '</b>'
+                : '')
+              + (vn ? ' <span style="opacity:.75">&middot; ' : '<span style="color:var(--muted)" title="' + tip + '">')
+              + '<span style="color:var(--muted)">SKU ID ' + esc(shown) + '</span></span>';
+          }
           if(!sk.length && (o.fam === 'tiktok' || o.fam === 'shopify'))
             return '<b title="' + esc('Seller SKU ' + shown + ' — the master sheet names no '
               + 'product id for it. Add one in its productid column to show it here.') + '">'
