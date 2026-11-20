@@ -285,7 +285,10 @@ input[type=range]{accent-color:var(--accent);width:150px}
    rather than behind it. Only for tables whose FIRST column is the identity; where it is not
    (Product ROIs leads with the channel chip) this rule would pin the wrong thing. */
 table.freeze-1 tbody td:first-child{position:sticky;left:0;z-index:3;background:#eaf2fb;
-  border-right:2px solid #c6d8ec}
+  border-right:2px solid #c6d8ec;
+  /* A frozen cell draws OVER the columns to its right, so anything wider than the column -
+     a 19-digit SKU ID on the end of a long seller SKU - ran straight across the next one. */
+  overflow:hidden}
 /* Only the FIRST header row's first cell. Comparison PNL stacks two header rows with the
    product cell spanning both, so the second row's first cell belongs to the leftmost month -
    pinning that too slid a month's "Units" underneath the Product heading. */
@@ -7842,7 +7845,33 @@ function renderCostBook(){
   const fulSel = document.getElementById('cbFul').value;
   const q = (document.getElementById('cbSearch').value||'').toLowerCase();
   const all = cbOffers();
-  const noCost = o => { const v = costBookAt(o.id, o.chan, asAt, o.fam); return !(v && +v.buy > 0); };
+  // "Missing a cost" has to mean the COGS this offer is actually charged, not the COGS it
+  // holds in its own name. It only looked in the Cost Book under the offer's own key, so a
+  // TikTok listing inheriting its seller SKU's cost, and anything costed from the master sheet
+  // alone, were both counted as gaps - the filter listed rows with 4.58 sitting on them and
+  // the warning said 61 offers book £0 COGS when they do nothing of the sort.
+  const cbMasterEntryFor = o => {
+    const M = STATE.master; if(!M) return null;
+    const ids = [o.id, cbCasedId(o.id)];
+    const pick = m => { for(const i of ids){ if(m && m[i]) return m[i]; } return null; };
+    if(isAmzFam(o.fam)) return pick((M[o.fam] || {}).byAsin);
+    if(o.fam === 'ebay') return pick(M.ebay.byItem) || pick(M.ebay.bySku);
+    if(o.fam === 'shopify') return pick(M.shopify.bySku);
+    return pick(M.tiktok.bySku);
+  };
+  const effectiveBuy = o => {
+    const own = costBookAt(o.id, o.chan, asAt, o.fam);
+    if(own && +own.buy > 0) return +own.buy;
+    if(o.listingOf){                                   // a TikTok listing falls back to its SKU
+      const iv = costBookAt(o.listingOf, o.chan, asAt, o.fam);
+      if(iv && +iv.buy > 0) return +iv.buy;
+      const im = ttEntryFor(null, o.listingOf, asAt, STATE.master);
+      return (im && +im.buying > 0) ? +im.buying : 0;
+    }
+    const m = cbMasterEntryFor(o);
+    return (m && +m.buying > 0) ? +m.buying : 0;
+  };
+  const noCost = o => !(effectiveBuy(o) > 0);
   let list = all.slice();
   // Each Amazon account now keys its own entries, so the account filter is simply the family.
   // It used to select on where the offer SELLS, because one entry drove both accounts and the
@@ -8072,7 +8101,7 @@ function renderCostBook(){
         : justSet ? ' style="background:#eefaf4"'
         : (o.live && noCost(o) ? ' style="background:#fff5f5"' : '')) + '>' +
       '<td style="max-width:330px">' +
-        '<div style="font-size:11.5px;color:var(--muted)">' + (() => {
+        '<div style="font-size:11.5px;color:var(--muted);overflow-wrap:anywhere">' + (() => {
           // The seller SKU leads, because that is what a product is recognised by and what gets
           // typed into Seller Central; the ASIN or item ID follows it, labelled, so the row can
           // still be matched against a report. On TikTok and Shopify the id already IS the SKU,
