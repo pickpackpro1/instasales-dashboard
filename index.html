@@ -8659,15 +8659,26 @@ function readStockFile(file, kind){
 // Limitation: SKUs containing the keyword "Box" are excluded. Uses SKU + Stock Level.
 function importDcStockLevel(rows){
   const num = v => { const n = parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,'')); return isNaN(n) ? 0 : n; };
-  let matched = 0, excluded = 0;
+  // Packaging lines are not sellable stock, so they are left out. The test used to be "the SKU
+  // says box anywhere", which also threw away "Christmas EVE BOX RED" - a product whose name
+  // simply contains the word. The packaging SKUs all count their boxes ("box 20 box",
+  // "20X Box", "50x box only"), so the number beside the word is what marks them, not the word.
+  const isPackaging = s => /\bbox\s*only\b/i.test(s)
+    || /\d+\s*x?\s*box\b/i.test(s)
+    || /\bbox\s*\d+/i.test(s);
+  let matched = 0; const skipped = [];
   for(const r of rows){
     const sku = String(r['SKU']==null?'':r['SKU']).trim();
     if(!sku) continue;
-    if(/box/i.test(sku)){ excluded++; continue; }
+    if(isPackaging(sku)){ skipped.push(sku); continue; }
     stockProduct(sku).inventory = num(r['Stock Level']);
     matched++;
   }
-  return {matched, note:`SKU + Stock Level; ${excluded} "Box" SKU(s) excluded`};
+  // Name what was left out rather than counting it: a product dropped by mistake is invisible
+  // otherwise - its stock simply never appears and nothing says why.
+  const list = skipped.length ? ' — ' + skipped.slice(0, 6).join(', ')
+    + (skipped.length > 6 ? ' +' + (skipped.length - 6) + ' more' : '') : '';
+  return {matched, note:`SKU + Stock Level; ${skipped.length} packaging SKU(s) excluded${list}`};
 }
 // DC stock-transactions export -> daily units sold per product (the pivot the user did manually).
 // Limitations: Action = "decrease", Notes start "Stock deduction for order", User != "Ahmed mithani".
